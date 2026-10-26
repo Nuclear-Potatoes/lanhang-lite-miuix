@@ -1,0 +1,1131 @@
+package com.lanhang.miuix.schedule
+
+import android.content.res.ColorStateList
+import android.graphics.Color
+import android.os.Bundle
+import android.view.Gravity
+import android.view.LayoutInflater
+import android.view.MotionEvent
+import android.view.View
+import android.view.ViewConfiguration
+import android.view.ViewGroup
+import android.widget.FrameLayout
+import android.widget.ImageButton
+import android.graphics.Bitmap
+import android.widget.ImageView
+import android.widget.LinearLayout
+import android.widget.ProgressBar
+import android.widget.TextView
+import android.widget.Toast
+import androidx.fragment.app.Fragment
+import androidx.lifecycle.lifecycleScope
+import androidx.swiperefreshlayout.widget.SwipeRefreshLayout
+import com.lanhang.miuix.R
+import com.lanhang.miuix.ui.MainActivity
+import com.lanhang.miuix.ui.miuix.isNightMode
+import com.lanhang.miuix.ui.miuix.showMiuixDialog
+import com.lanhang.miuix.ui.miuix.MiuixDialogSpec
+import com.lanhang.miuix.ui.miuix.showMiuixPicker
+import com.lanhang.miuix.ui.shell.ShellScroll
+import com.lanhang.miuix.ui.shell.ShellState
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.time.DayOfWeek
+import java.time.LocalDate
+import kotlin.math.abs
+
+class ScheduleFragment : Fragment() {
+
+    /** Miuix 头部（周次胶囊 + 网格/周视图分段控件），2026-10-24 取代四个 ImageButton */
+    private lateinit var headerState: ScheduleHeaderState
+    private lateinit var contentWeek: View
+    private lateinit var contentGrid: View
+    private lateinit var dayStrip: LinearLayout
+    private lateinit var daySections: LinearLayout
+    private lateinit var tvEmpty: TextView
+    private lateinit var progress: ProgressBar
+    private lateinit var swipeRefresh: SwipeRefreshLayout
+    /** 当前配色令牌：只来自应用主题（浅色/深色） */
+    private lateinit var style: ScheduleStyle
+
+    private var currentWeek = 1
+    private var maxWeek = 20
+    private var startWeek = 1
+    private var actualCurrentWeek = 1
+    private var scheduleData: ScheduleData? = null
+    /** 按周缓存的服务端数据（官方 GetSchedule&week=N 每周一份） */
+    private val weekData = HashMap<Int, ScheduleData>()
+    private var showingGrid = true  // 默认网格视图
+
+    // 课程配色：HSL 黄金角算法（同课同色）
+    private val courseColorMap = mutableMapOf<String, Int>()
+    private lateinit var gridScroll: android.view.View
+    private var gridRelayoutPending = false
+
+    /** 换周/切视图过渡用的「旧内容快照」View 的标记（清理残留时按它识别） */
+    private val GHOST_TAG = "schedule_swap_ghost"
+
+    /** 课表内容层的诊断日志 tag（`adb logcat -s ScheduleUi`） */
+    private val TAG = "ScheduleUi"
+
+    /** 双击回顶的滚动动画；再次触发时先取消上一个 */
+    private var scrollAnimator: android.animation.ValueAnimator? = null
+
+    override fun onCreateView(inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?): View? {
+        return inflater.inflate(R.layout.fragment_schedule, container, false)
+    }
+
+    override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
+        super.onViewCreated(view, savedInstanceState)
+        headerState = ScheduleHeaderState()
+        contentWeek = view.findViewById(R.id.contentWeek)
+        contentGrid = view.findViewById(R.id.contentGrid)
+        dayStrip = view.findViewById(R.id.dayStrip)
+        daySections = view.findViewById(R.id.daySections)
+        tvEmpty = view.findViewById(R.id.tvEmpty)
+        progress = view.findViewById(R.id.progress)
+        swipeRefresh = view.findViewById(R.id.swipeRefresh)
+
+        style = ScheduleStyle.fromTheme(requireContext())
+        applyChromeStyle()
+
+        val header = view.findViewById<androidx.compose.ui.platform.ComposeView>(R.id.scheduleHeader)
+        header.setViewCompositionStrategy(
+            androidx.compose.ui.platform.ViewCompositionStrategy.DisposeOnViewTreeLifecycleDestroyed
+        )
+        header.setContent {
+            com.lanhang.miuix.ui.miuix.LanhangMiuixTheme(
+                darkTheme = androidx.compose.ui.platform.LocalContext.current.isNightMode()
+            ) {
+                ScheduleHeader(
+                    state = headerState,
+                    onPrev = { switchWeek(currentWeek - 1) },
+                    onNext = { switchWeek(currentWeek + 1) },
+                    onPickWeek = { showWeekPicker(header) },
+                    onSelectView = { grid -> if (grid != showingGrid) switchView(grid) },
+                    onToday = { switchWeek(actualCurrentWeek) },
+                )
+            }
+        }
+        swipeRefresh.setOnRefreshListener { refresh() }
+        val weekScroll = view.findViewById<androidx.core.widget.NestedScrollView>(R.id.weekScroll)
+        installWeekSwipe(weekScroll)
+        gridScroll = view.findViewById(R.id.gridScroll)
+        installWeekSwipe(gridScroll)
+
+        // 2026-10-25 用户要求：课表也要像工作圈那样，往下滚时顶栏跟着收起/展开。
+        // 工作圈/成绩/设置是 Compose 列表，用 ReportListScroll 上报；课表是自绘网格 +
+        // NestedScrollView，所以这里直接从 View 的滚动位置上报同一套进度。
+        weekScroll.setOnScrollChangeListener { _, _, y, _, _ ->
+            ShellScroll.report(ShellState.TAB_SCHEDULE, y / BAR_COLLAPSE_SPAN_PX)
+        }
+        (gridScroll as? androidx.core.widget.NestedScrollView)?.setOnScrollChangeListener { _, _, y, _, _ ->
+            ShellScroll.report(ShellState.TAB_SCHEDULE, y / BAR_COLLAPSE_SPAN_PX)
+        }
+
+        // 先读缓存再上样式：反过来的话首帧会拿「currentWeek 还是默认 1、数据还没进来」去渲染，
+        // 屏幕闪一下空态提示（第十一轮排查时在 logcat 里看到的那次 renderGrid: 无数据）
+        loadCacheOrRefresh()
+        applyThemeStyle()
+    }
+
+    /**
+     * 双击底栏「课表」：网格与周视图都滚回顶部。
+     *
+     * 课表不是 Compose 列表，所以不走 [com.lanhang.miuix.ui.shell.ScrollToTop] 信号，
+     * 由 MainActivity 直接调用（见 `onTabDoubleTap`）。
+     */
+    fun scrollToTop() {
+        scrollSlowly(gridScroll as? androidx.core.widget.NestedScrollView)
+        scrollSlowly(view?.findViewById(R.id.weekScroll))
+    }
+
+    /**
+     * 用 ValueAnimator 自己跑一条缓出曲线。
+     *
+     * `NestedScrollView.smoothScrollTo` 的时长由内部的 OverScroller 决定，
+     * 距离一大就是「唰」一下到底（用户反馈太快），也调不了速度；
+     * 自己插值就能按距离给 0.4~0.8 秒，跟 Compose 那几页的节奏对齐。
+     */
+    private fun scrollSlowly(sv: androidx.core.widget.NestedScrollView?) {
+        if (sv == null) return
+        val from = sv.scrollY
+        if (from <= 0) return
+        scrollAnimator?.cancel()
+        val animator = android.animation.ValueAnimator.ofInt(from, 0)
+        animator.duration = (380L + from / 4L).coerceIn(380L, 820L)
+        animator.interpolator = android.view.animation.DecelerateInterpolator(1.7f)
+        animator.addUpdateListener { sv.scrollTo(0, it.animatedValue as Int) }
+        scrollAnimator = animator
+        animator.start()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // 从「课表背景」设置返回后，背景/配色可能已变化
+        applyThemeStyle()
+    }
+
+    /**
+     * 刷新课表配色令牌：**只跟随应用主题**（浅色/深色），没有自定义背景这个概念。
+     *
+     * 历史：旧版本支持「课表背景」（图片/纯色/渐变），会按背景明暗推导正文色；
+     * 推导出的正文色与底色接近时整页就是白字白底 —— 表现为「课表一片空白」。
+     * 该功能已整体移除（见 README「已移除」一节），配色只有主题一个来源。
+     */
+    private fun applyThemeStyle() {
+        val ctx = context ?: return
+        style = ScheduleStyle.fromTheme(ctx)
+        applyChromeStyle()
+        renderAll()
+    }
+
+    /** 面板与头部配色随令牌刷新（头部是 Compose，靠 headerState 上的颜色覆盖） */
+    private fun applyChromeStyle() {
+        val density = resources.displayMetrics.density
+        // 网格面板底色：**默认透明**（参照 NexioSchedule 主课表——网格直接铺在页面底色上，
+        // 只有课程胶囊本身是实心块，没有大白色卡片框着）。设了自定义课表背景（图片/纯色）时
+        // 才重新铺一层半透明面板，否则壁纸会透进课程网格里、字看不清。
+        // 「课表背景」功能已移除：网格永远直接铺在页面底色上，不铺自定义半透明面板
+        contentGrid.background = null
+        tvEmpty.setTextColor(style.onBackgroundVariant)
+        if (::headerState.isInitialized) {
+            // 页头高亮文字/图标要用**可见**的主色：accentFill 是 colorSecondaryContainer（近白），
+            // 用在「第 N 周」上会和页面底色融为一体（用户 2026-10-24 指出第 9 周看不见）
+            headerState.accent = androidx.compose.ui.graphics.Color(style.accent)
+            headerState.onAccent = androidx.compose.ui.graphics.Color(style.onAccentFill)
+            headerState.container = androidx.compose.ui.graphics.Color(style.chipFill)
+            headerState.onContainer = androidx.compose.ui.graphics.Color(style.onBackground)
+        }
+        updateWeekPill()
+    }
+
+    /**
+     * 仅识别明显的横向手势：左滑进入下一周、右滑返回上一周。
+     * NestedScrollView 保持处理纵向滚动；识别到横滑后才阻止 SwipeRefreshLayout 拦截。
+     */
+    private fun installWeekSwipe(target: View) {
+        val touchSlop = ViewConfiguration.get(requireContext()).scaledTouchSlop
+        val minimumDistance = dp(56).toFloat()
+        var downX = 0f
+        var downY = 0f
+        var horizontal = false
+
+        target.setOnTouchListener { touchedView, event ->
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    downX = event.x
+                    downY = event.y
+                    horizontal = false
+                    false
+                }
+
+                MotionEvent.ACTION_MOVE -> {
+                    val dx = event.x - downX
+                    val dy = event.y - downY
+                    if (!horizontal && abs(dx) > touchSlop && abs(dx) > abs(dy)) {
+                        horizontal = true
+                        touchedView.parent?.requestDisallowInterceptTouchEvent(true)
+                    }
+                    false
+                }
+
+                MotionEvent.ACTION_UP -> {
+                    val dx = event.x - downX
+                    val dy = event.y - downY
+                    val isWeekSwipe = horizontal &&
+                        abs(dx) >= minimumDistance &&
+                        abs(dx) > abs(dy) * 1.2f
+                    if (isWeekSwipe) {
+                        switchWeek(if (dx < 0f) currentWeek + 1 else currentWeek - 1)
+                        true
+                    } else {
+                        false
+                    }
+                }
+
+                MotionEvent.ACTION_CANCEL -> {
+                    horizontal = false
+                    false
+                }
+
+                else -> false
+            }
+        }
+    }
+
+    /** 数据固定在本地：有缓存直接显示，不自动联网；只有手动下拉刷新才重新拉取覆盖 */
+    private fun loadCacheOrRefresh() {
+        val cached = ScheduleRepository.loadCached()
+        if (cached?.data != null) {
+            scheduleData = cached.data
+            applyWeekInfo(cached.data)
+            ScheduleRepository.loadCachedWeek(actualCurrentWeek)?.data?.let {
+                weekData[actualCurrentWeek] = it
+            }
+            renderAll()
+        } else {
+            progress.visibility = View.VISIBLE
+            refresh()
+        }
+    }
+
+    private fun applyWeekInfo(data: ScheduleData) {
+        data.weekInfo?.let { info ->
+            info.currentWeek?.toIntOrNull()?.let { actualCurrentWeek = it; currentWeek = it }
+            info.endWeek?.toIntOrNull()?.let { maxWeek = it }
+            info.startWeek?.toIntOrNull()?.let { startWeek = it }
+        }
+        updateWeekPill()
+    }
+
+    /** 手动下拉刷新：从教务系统重新拉取并覆盖本地缓存；刷新期间保持当前浏览周不变 */
+    private fun refresh() {
+        viewLifecycleOwner.lifecycleScope.launch {
+            try {
+                val browseWeek = currentWeek
+                val first = withContext(Dispatchers.IO) { ScheduleRepository.refresh(null) }
+                scheduleData = first.data
+                first.data?.let { applyWeekInfo(it) }
+                currentWeek = browseWeek
+                if (browseWeek == actualCurrentWeek) {
+                    first.data?.let { weekData[browseWeek] = it }
+                } else {
+                    // 浏览的不是当前实际周：再拉一次浏览周数据覆盖该周缓存
+                    try {
+                        val byWeek = withContext(Dispatchers.IO) { ScheduleRepository.refresh(browseWeek) }
+                        byWeek.data?.let { weekData[browseWeek] = it }
+                    } catch (_: Exception) {
+                    }
+                }
+                updateWeekPill()
+                renderAll()
+            } catch (e: Exception) {
+                Toast.makeText(
+                    requireContext(),
+                    getString(R.string.schedule_refresh_failed, e.message.orEmpty()),
+                    Toast.LENGTH_SHORT
+                ).show()
+                // 拉取失败且本来就没数据：重画一次，让**当前可见层**里出现「暂无数据」提示
+                // （以前只把 tvEmpty 点亮，而 tvEmpty 住在周视图层里，网格模式下根本看不见
+                //  → 用户看到的就是「课表一片空白」，2026-10-26 第十一轮）
+                if (scheduleData == null) renderAll()
+            } finally {
+                progress.visibility = View.GONE
+                swipeRefresh.isRefreshing = false
+            }
+        }
+    }
+
+    private fun switchWeek(week: Int) {
+        if (week < startWeek || week > maxWeek) return
+        if (week == currentWeek) {
+            // 已经在这一周：再点左上角「回到本周」不应该再播一次切换动画（用户反馈）
+            ensureWeekData(week)
+            return
+        }
+        val direction = if (week > currentWeek) 1 else -1
+        val layer = activeContentLayer()
+        val snapshot = captureSnapshot(layer)
+        currentWeek = week
+        updateWeekPill()
+        renderAll()
+        slideSwap(layer, snapshot, direction)
+        ensureWeekData(week)
+    }
+
+    /** 当前可见的内容层（网格或周视图），两者都是 FrameLayout */
+    private fun activeContentLayer(): FrameLayout =
+        (if (showingGrid) contentGrid else contentWeek) as FrameLayout
+
+    /** 把当前内容画进位图，做「旧内容滑出」的那一层 */
+    private fun captureSnapshot(view: View): Bitmap? {
+        if (view.width <= 0 || view.height <= 0) return null
+        return try {
+            val bmp = Bitmap.createBitmap(view.width, view.height, Bitmap.Config.ARGB_8888)
+            view.draw(android.graphics.Canvas(bmp))
+            bmp
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
+    /** 渲染优先用该周专属数据；无则回退主缓存全量+本地周次过滤 */
+    private fun dataForWeek(week: Int): ScheduleData? =
+        weekData[week]
+            ?: ScheduleRepository.loadCachedWeek(week)?.data?.also { weekData[week] = it }
+            ?: scheduleData
+
+    /** 该周无数据时按官方方式 GetSchedule&week=N 补拉 */
+    private fun ensureWeekData(week: Int) {
+        if (weekData.containsKey(week)) return
+        viewLifecycleOwner.lifecycleScope.launch {
+            try {
+                val resp = withContext(Dispatchers.IO) { ScheduleRepository.refresh(week) }
+                resp.data?.let { weekData[week] = it }
+                if (currentWeek == week) renderAll()
+            } catch (_: Exception) {
+            }
+        }
+    }
+
+    private fun updateWeekPill() {
+        if (!::headerState.isInitialized) return
+        headerState.weekLabel = getString(R.string.schedule_week_format, currentWeek)
+        headerState.isCurrentWeek = currentWeek == actualCurrentWeek
+    }
+
+    /** 跳周：Miuix 对话框列表（原来是 Material PopupMenu） */
+    private fun showWeekPicker(anchor: View?) {
+        val weeks = (startWeek..maxWeek).toList()
+        showMiuixPicker(
+            context = requireContext(),
+            title = getString(R.string.schedule_jump_week),
+            items = weeks.map { getString(R.string.schedule_week_format, it) },
+            selectedIndex = weeks.indexOf(currentWeek),
+            cancelText = getString(R.string.common_cancel),
+            onPick = { index -> weeks.getOrNull(index)?.let { switchWeek(it) } },
+        )
+    }
+
+    /** 网格 / 周视图切换（顶部 TabRow 触发），带淡入 + 横向位移的过渡 */
+    private fun switchView(grid: Boolean) {
+        val layer = activeContentLayer()
+        val snapshot = captureSnapshot(layer)
+        showingGrid = grid
+        headerState.showingGrid = grid
+        contentWeek.visibility = if (grid) View.GONE else View.VISIBLE
+        contentGrid.visibility = if (grid) View.VISIBLE else View.GONE
+        if (grid) renderGrid() else renderWeekView()
+        slideSwap(activeContentLayer(), snapshot, if (grid) 1 else -1)
+    }
+
+    /**
+     * 换周 / 切视图的过渡：新内容从侧向 26dp 落下并淡入。
+     *
+     * 网格是自绘 View，做不了 Compose 的共享元素转场，这里用最朴素的位移+透明度动画，
+     * 但足以让「翻周」不再是一帧硬切（用户反馈「翻课程表时没有过渡动画」）。
+     */
+    private fun slideSwap(layer: FrameLayout, snapshot: Bitmap?, direction: Int) {
+        val width = layer.width.takeIf { it > 0 } ?: resources.displayMetrics.widthPixels
+        val shift = width.toFloat() * if (direction >= 0) 1f else -1f
+        val others = (0 until layer.childCount).map { layer.getChildAt(it) }
+        if (snapshot == null) {
+            // 首帧/未量到尺寸：没有旧内容快照，只让新内容滑入
+            others.forEach {
+                it.animate().cancel()
+                it.translationX = shift
+                it.animate().translationX(0f)
+                    .setDuration(MainActivity.TAB_SWAP_MS)
+                    .setInterpolator(MainActivity.TAB_INTERPOLATOR)
+                    .start()
+            }
+            return
+        }
+        // 参照 Tab 切换：旧内容（快照）整幅滑出，新内容从另一侧滑入，纯位移 220ms
+        val ghost = ImageView(requireContext()).apply {
+            tag = GHOST_TAG
+            setImageBitmap(snapshot)
+            scaleType = ImageView.ScaleType.FIT_XY
+        }
+        layer.addView(ghost, FrameLayout.LayoutParams(width, layer.height))
+        ghost.animate().cancel()
+        ghost.animate().translationX(-shift)
+            .setDuration(MainActivity.TAB_SWAP_MS)
+            .setInterpolator(MainActivity.TAB_INTERPOLATOR)
+            .withEndAction { layer.removeView(ghost) }
+            .start()
+        others.forEach {
+            it.animate().cancel()
+            it.translationX = shift
+            it.animate().translationX(0f)
+                .setDuration(MainActivity.TAB_SWAP_MS)
+                .setInterpolator(MainActivity.TAB_INTERPOLATOR)
+                .start()
+        }
+    }
+
+    private fun renderAll() {
+        if (showingGrid) renderGrid() else renderWeekView()
+    }
+
+    /**
+     * 切回本 Tab 时调用（MainActivity.switchTab）。
+     *
+     * 用户 2026-10-25 反馈：从工作圈切回课表，课表一片空白。原因是切走时若正好有
+     * 换周/切视图的位移动画在跑，层里的子 View 会停在 translationX = ±整屏宽 的位置，
+     * 而 Fragment 是 detach/attach（视图复用），回来后没人把位移复位，看起来就是空的。
+     * 这里把残留（位移动画、幽灵快照）清干净再重画一遍。
+     */
+    fun onTabSelected() {
+        if (!isAdded || view == null || !::contentGrid.isInitialized) return
+        android.util.Log.d(
+            TAG,
+            "onTabSelected: grid=$showingGrid week=$currentWeek data=${scheduleData != null} " +
+                "weekKeys=${weekData.keys} gridVis=${contentGrid.visibility} weekVis=${contentWeek.visibility}"
+        )
+        clearTransitionLeftovers(contentGrid as android.view.ViewGroup)
+        clearTransitionLeftovers(contentWeek as android.view.ViewGroup)
+        // 视图是 detach/attach **复用**的：把「当前模式」和实际可见层重新对齐一遍。
+        // 第十一轮彻底排查：只要这两者不同步（例如切换/动画被打断后状态回到默认），
+        // 就会出现「标题栏正常、下面一片空白」——因为内容画在了看不见的那一层里。
+        contentWeek.visibility = if (showingGrid) View.GONE else View.VISIBLE
+        contentGrid.visibility = if (showingGrid) View.VISIBLE else View.GONE
+        headerState.showingGrid = showingGrid
+        swipeRefresh.isRefreshing = false
+        renderAll()
+        // 渲染完自检一次：内容层还是空的就补一次，别把白屏留给用户
+        view?.post { ensureContentNotEmpty() }
+    }
+
+    /**
+     * 自检：当前内容层到底有没有东西。
+     *
+     * 「切走再回来课表一片空白」这类问题不该靠用户反馈才发现，所以这里每次切回本页都查一遍，
+     * 并把当时的真实状态打进 logcat（tag [TAG]），下次再有线索直接看日志即可。
+     */
+    private fun ensureContentNotEmpty() {
+        if (!isAdded || view == null) return
+        val filled = if (showingGrid) {
+            view?.findViewById<LinearLayout>(R.id.gridContent)?.childCount ?: 0
+        } else {
+            dayStrip.childCount + daySections.childCount
+        }
+        android.util.Log.d(
+            TAG,
+            "ensureContentNotEmpty: grid=$showingGrid filled=$filled data=${scheduleData != null} " +
+                "week=$currentWeek progress=${progress.visibility}"
+        )
+        if (filled > 0) {
+            if (tvEmpty.visibility == View.VISIBLE && !showingGrid) tvEmpty.visibility = View.GONE
+            return
+        }
+        // 真的空了：重画一次（数据还在的话这一步就能恢复），并明确亮出提示
+        renderAll()
+        val refilled = if (showingGrid) {
+            view?.findViewById<LinearLayout>(R.id.gridContent)?.childCount ?: 0
+        } else {
+            dayStrip.childCount + daySections.childCount
+        }
+        if (refilled == 0) {
+            android.util.Log.w(TAG, "课表内容层两次渲染后仍为空（数据=${scheduleData != null}）")
+            progress.visibility = View.GONE
+            swipeRefresh.isRefreshing = false
+            if (!showingGrid) tvEmpty.visibility = View.VISIBLE
+        }
+    }
+
+    /** 数据没加载出来时的提示（绝不留一张纯白屏） */
+    private fun noDataHint(): View {
+        val ctx = requireContext()
+        return TextView(ctx).apply {
+            text = getString(R.string.schedule_no_data_hint)
+            setTextColor(style.onBackgroundVariant)
+            gravity = Gravity.CENTER
+            setPadding(0, dp(56), 0, dp(56))
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+            )
+        }
+    }
+
+    /** 清掉 slideSwap 留下的位移与幽灵快照 */
+    private fun clearTransitionLeftovers(layer: ViewGroup) {
+        for (i in layer.childCount - 1 downTo 0) {
+            val c = layer.getChildAt(i)
+            if (c is ImageView && c.tag == GHOST_TAG) {
+                layer.removeViewAt(i)
+                continue
+            }
+            c.animate().cancel()
+            c.translationX = 0f
+            c.translationY = 0f
+            c.alpha = 1f
+        }
+    }
+
+    // ==================== 周视图 ====================
+
+    private fun renderWeekView() {
+        val week = currentWeek
+        val data = dataForWeek(week)
+        dayStrip.removeAllViews()
+        daySections.removeAllViews()
+        if (data == null) {
+            android.util.Log.w(
+                TAG,
+                "renderWeekView: 无数据 week=$week scheduleData=${scheduleData != null} weekKeys=${weekData.keys}"
+            )
+            daySections.addView(noDataHint())
+            return
+        }
+
+        val density = resources.displayMetrics.density
+        val s = style
+
+        val today = LocalDate.now()
+        val dayNames = resources.getStringArray(R.array.schedule_day_names)
+        val monday = today.with(DayOfWeek.MONDAY)
+        val offset = week - actualCurrentWeek
+        val weekMonday = monday.plusWeeks(offset.toLong())
+
+        var totalCourses = 0
+
+        for (dayIdx in 0 until 7) {  // 周一~周日
+            val date = weekMonday.plusDays(dayIdx.toLong())
+            val isToday = date == today
+            val courses = getCoursesForDay(data, dayIdx, week)
+            // 相邻的同名同教室连续节次（如高等数学B1 连上 1-2 节）算**一门课**：
+            // 统计与预览都必须用合并后的列表，否则周一 3 门课会显示成「6 门」
+            // （用户 2026-10-25 反馈：一二节都是高等数学B1，应视为一节课）
+            val merged = mergeCourses(courses)
+            if (merged.isNotEmpty()) totalCourses++
+
+            // 摘要格
+            val summary = LayoutInflater.from(context).inflate(R.layout.item_day_summary, dayStrip, false)
+            summary.background = s.rounded(density, 12f, if (isToday) s.accentFill else s.chipFill)
+            summary.findViewById<TextView>(R.id.tvDayName).apply {
+                text = dayNames[dayIdx]
+                setTextColor(if (isToday) s.onAccentFill else s.onBackground)
+            }
+            summary.findViewById<TextView>(R.id.tvCount).apply {
+                // 2026-10-25 用户反馈：「第 8 周周四显示 0 而非 0 门」——plurals 在窄卡里被
+                // 父容器量成窄宽度后直接裁掉了量词。改成固定格式串 + 单行 + 卡片内满宽居中，
+                // 保证「0 门 / 4 门」这种短文本永远完整。
+                text = resources.getString(R.string.schedule_day_count_format, merged.size)
+                setSingleLine(true)
+                ellipsize = null
+                textSize = 9.5f
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                ).also { it.topMargin = dp(6) }
+                background = s.rounded(density, 50f, s.badgeFill(isToday))
+                setTextColor(if (isToday) s.onAccentFill else s.onBackgroundVariant)
+            }
+
+            val preview = summary.findViewById<LinearLayout>(R.id.coursePreview)
+            // 只放合并后的课名，且**单行省略**：摘要卡固定 132dp，课程名换行会把最后一行
+            // 顶到卡片边缘截断（用户看到的就是「文字异常换行」）
+            merged.take(4).forEach { ci ->
+                val tv = TextView(context).apply {
+                    text = ci.course.name ?: ""
+                    textSize = 8.5f
+                    setTextColor(if (isToday) s.onAccentFill else s.onBackgroundVariant)
+                    // 2026-10-25 用户反馈：窄卡里课名被省略号吃掉了。
+                    // 改成最多 2 行自动换行，常见课名（高等数学B1、大学计算机基础训练）能完整显示
+                    maxLines = 2
+                    ellipsize = android.text.TextUtils.TruncateAt.END
+                    setPadding(0, 1, 0, 1)
+                    // 2026-10-25 用户反馈：课名右侧留了空白就变成「高等数…」。
+                    // 显式给 MATCH_PARENT，省略号才会落在卡片右边缘。
+                    layoutParams = LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT,
+                    )
+                }
+                preview.addView(tv)
+            }
+            dayStrip.addView(summary)
+
+            // 课程区
+            val section = LayoutInflater.from(requireContext()).inflate(R.layout.item_day_section, daySections, false)
+            section.background = s.rounded(density, 16f, s.cardFill)
+            val header = section.findViewById<TextView>(R.id.tvDayHeader)
+            header.text = if (isToday) {
+                getString(R.string.schedule_day_today, dayNames[dayIdx])
+            } else {
+                dayNames[dayIdx]
+            }
+            header.setTextColor(if (isToday) s.accent else s.onBackground)
+            val container = section.findViewById<LinearLayout>(R.id.lessonContainer)
+
+            if (merged.isEmpty()) {
+                // 空日文案必须单行：换行会让「周四没有课程」在窄卡里折成两行（用户 2026-10-25 反馈）
+                val tv = TextView(context).apply {
+                    text = getString(R.string.schedule_day_no_course, dayNames[dayIdx])
+                    textSize = 12f
+                    setTextColor(s.onBackgroundVariant)
+                    maxLines = 1
+                    ellipsize = android.text.TextUtils.TruncateAt.END
+                }
+                container.addView(tv)
+            } else {
+                merged.forEach { ci ->
+                    addLessonRow(container, ci)
+                }
+            }
+            daySections.addView(section)
+        }
+
+        tvEmpty.setTextColor(s.onBackgroundVariant)
+        tvEmpty.visibility = if (totalCourses == 0) View.VISIBLE else View.GONE
+    }
+
+    private fun addLessonRow(parent: LinearLayout, ci: CourseItem) {
+        val view = LayoutInflater.from(parent.context).inflate(R.layout.item_lesson_row, parent, false)
+        val color = courseColor(ci.course.name ?: "?")
+        val density = resources.displayMetrics.density
+        view.background = style.rounded(density, 12f, style.courseFill(color))
+        view.findViewById<View>(R.id.vAccent).background = style.rounded(density, 1.5f, color)
+        val textColor = style.onCourseTint(color)
+
+        val periodLabel = if (ci.periodStart == ci.periodEnd) {
+            getString(R.string.schedule_period_single, ci.periodStart)
+        } else {
+            getString(R.string.schedule_period_range, ci.periodStart, ci.periodEnd)
+        }
+        view.findViewById<TextView>(R.id.tvTimeLabel).apply {
+            text = periodLabel
+            setTextColor(textColor)
+        }
+        view.findViewById<TextView>(R.id.tvName).apply {
+            text = ci.course.name ?: ""
+            setTextColor(textColor)
+        }
+        view.findViewById<TextView>(R.id.tvMeta).apply {
+            text = "${ci.course.teacher ?: ""} · ${ci.course.room ?: ""}"
+            setTextColor(textColor)
+            alpha = 0.78f
+        }
+
+        view.setOnClickListener { showCourseDetail(ci) }
+        parent.addView(view)
+    }
+
+    /** 课程详情：Miuix 对话框（键值行版），标题用课程名，副标题给色块色相提示 */
+    private fun showCourseDetail(ci: CourseItem) {
+        val odd = when (ci.course.oddEven) {
+            "1" -> getString(R.string.course_odd_suffix)
+            "2" -> getString(R.string.course_even_suffix)
+            else -> ""
+        }
+        val week = ci.course.weekRange?.takeIf { it.isNotBlank() }
+            ?.let { getString(R.string.course_week_value, it, odd) } ?: "—"
+        val period = if (ci.periodStart == ci.periodEnd) {
+            getString(R.string.course_period_single, ci.periodStart)
+        } else {
+            getString(R.string.course_period_range, ci.periodStart, ci.periodEnd)
+        }
+        showMiuixDialog(
+            requireContext(),
+            MiuixDialogSpec(
+                title = ci.course.name?.takeIf { it.isNotBlank() } ?: "—",
+                rows = listOf(
+                    getString(R.string.course_label_room) to (ci.course.room?.takeIf { it.isNotBlank() } ?: "—"),
+                    getString(R.string.course_label_teacher) to (ci.course.teacher?.takeIf { it.isNotBlank() } ?: "—"),
+                    getString(R.string.course_label_week) to week,
+                    getString(R.string.course_label_period) to period,
+                ),
+                actions = listOf(getString(R.string.common_ok) to {}),
+            ),
+        )
+    }
+
+    // ==================== 网格视图 ====================
+
+    private fun renderGrid() {
+        val container = requireView().findViewById<LinearLayout>(R.id.gridContent)
+        container.removeAllViews()
+        val data = dataForWeek(currentWeek)
+        if (data == null) {
+            // 以前这里直接 return：容器已经被清空，屏幕上就是一片空白，连句提示都没有
+            android.util.Log.w(
+                TAG,
+                "renderGrid: 无数据 week=$currentWeek scheduleData=${scheduleData != null} weekKeys=${weekData.keys}"
+            )
+            container.addView(noDataHint())
+            return
+        }
+
+        val ctx = requireContext()
+        val density = resources.displayMetrics.density
+        val s = style
+        val today = LocalDate.now()
+        val dayNames = resources.getStringArray(R.array.schedule_day_names)
+        val monday = today.with(DayOfWeek.MONDAY)
+        val weekMonday = monday.plusWeeks((currentWeek - actualCurrentWeek).toLong())
+
+        // 每天：收集并合并连续节次的同一课程（跨节大块）
+        val dayCourses = Array(7) { d -> mergeCourses(getCoursesForDay(data, d, currentWeek)) }
+        val maxPeriod = dayCourses.maxOf { list -> list.maxOfOrNull { it.periodEnd } ?: 0 }
+        if (maxPeriod == 0) {
+            container.addView(TextView(ctx).apply {
+                text = getString(R.string.schedule_week_no_course)
+                setTextColor(s.onBackgroundVariant)
+                gravity = Gravity.CENTER
+                setPadding(0, 64, 0, 0)
+            })
+            return
+        }
+
+        // 一律画满 11 节（rowH 也是按 11 节反推的），否则最后几节没课时下半屏会留一片空白
+        val drawPeriods = 11
+
+        val periodTimes = mapOf(
+            1 to "08:00-08:45", 2 to "08:55-09:40", 3 to "10:00-10:45", 4 to "10:55-11:40",
+            5 to "14:00-14:45", 6 to "14:55-15:40", 7 to "16:00-16:45", 8 to "16:55-17:40",
+            9 to "19:00-19:45", 10 to "19:55-20:40", 11 to "20:50-21:35"
+        )
+
+        // 尺寸
+        //
+        // 2026-10-24 用户要求「尽量能在一个屏幕范围内容纳」：行高不再写死 56dp，
+        // 而是用网格滚动区的实际高度反推（11 节 + 10 个间隙 + 2 个休息带 + 表头），
+        // 并夹在 32~56dp 之间——高屏一屏装完，矮屏才允许滑动。
+        // 2026-10-25 十次改版（用户：节次没到屏幕最左端、右侧出现裁切）：
+        // 宽度不再用「屏幕宽 - 常量」估算，直接量 contentGrid 的**内宽**。
+        // 之前少减了面板左右 padding，colW 偏大 12dp，最后一列被父容器裁掉。
+        val gapH = dp(3)
+        val gapW = dp(4)
+        val timeW = dp(44)
+        val availW = contentGrid.let { it.width - it.paddingLeft - it.paddingRight }
+            .takeIf { it > 0 }
+            ?: (resources.displayMetrics.widthPixels - dp(12))
+        val colW = ((availW - timeW - gapW * 8) / 7f).toInt().coerceAtLeast(dp(30))
+        val bandH = dp(18)
+        val headerRowH = dp(46)
+        val panelPad = dp(22)   // 面板上下内边距 + 表头下方 2px 间隔的总预留
+        val availH = gridScroll.height
+        // 只在「完全没量到高度」（首帧）时补一次重绘；量到高度后无论多小都不再重排，
+        // 否则可视区高度真的偏小时会自己触发自己（死循环）。
+        if (availH == 0 && !gridRelayoutPending) {
+            gridRelayoutPending = true
+            gridScroll.post {
+                gridRelayoutPending = false
+                if (isAdded && view != null) renderAll()
+            }
+        }
+        val usable = availH - panelPad - headerRowH - bandH * 2 - gapH * 10
+        val rowH = (usable / 11).coerceIn(dp(32), dp(56))
+        val breaksAfter = mapOf(
+            4 to getString(R.string.schedule_break_noon),
+            8 to getString(R.string.schedule_break_evening)
+        )
+        fun breaksBefore(p: Int): Int = breaksAfter.keys.count { it < p }
+        fun yTopOfRow(p: Int): Int = (p - 1) * (rowH + gapH) + breaksBefore(p) * bandH
+
+        // ===== 表头行：左占位 + 7 天头（小爱风格：无底色，星期+日期） =====
+        val headerRow = LinearLayout(ctx).apply {
+            orientation = LinearLayout.HORIZONTAL
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+            )
+        }
+        headerRow.addView(View(ctx).apply {
+            layoutParams = LinearLayout.LayoutParams(timeW + gapW, headerRowH)
+        })
+        for (d in 0 until 7) {
+            val date = weekMonday.plusDays(d.toLong())
+            val isToday = date == today
+            val head = LinearLayout(ctx).apply {
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.CENTER
+                layoutParams = LinearLayout.LayoutParams(colW, headerRowH).apply {
+                    if (d < 6) marginEnd = gapW
+                }
+                if (isToday) {
+                    background = s.rounded(density, 10f, s.accentFill)
+                }
+            }
+            head.addView(TextView(ctx).apply {
+                text = dayNames[d]
+                textSize = 13f
+                setTypeface(null, android.graphics.Typeface.BOLD)
+                setTextColor(if (isToday) s.onAccentFill else s.onBackground)
+                gravity = Gravity.CENTER
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+                )
+            })
+            head.addView(TextView(ctx).apply {
+                text = String.format("%d/%d", date.monthValue, date.dayOfMonth)
+                textSize = 9f
+                setTextColor(if (isToday) s.onAccentFill else s.onBackgroundVariant)
+                gravity = Gravity.CENTER
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+                )
+            })
+            headerRow.addView(head)
+        }
+        container.addView(headerRow)
+        container.addView(View(ctx).apply { layoutParams = LinearLayout.LayoutParams(1, dp(2)) })
+
+        // ===== 主体：左时间列 + 块区 =====
+        val body = LinearLayout(ctx).apply {
+            orientation = LinearLayout.HORIZONTAL
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT
+            )
+        }
+
+        // 左侧节次列（小爱风格：节次号 + 起止时间，无底色）
+        val timeCol = LinearLayout(ctx).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = LinearLayout.LayoutParams(timeW + gapW, LinearLayout.LayoutParams.WRAP_CONTENT)
+        }
+        for (p in 1..drawPeriods) {
+            val cell = LinearLayout(ctx).apply {
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.CENTER
+                layoutParams = LinearLayout.LayoutParams(timeW, rowH).apply { bottomMargin = gapH }
+            }
+            cell.addView(TextView(ctx).apply {
+                text = "$p"
+                textSize = if (rowH < dp(38)) 12f else 13f
+                setTypeface(null, android.graphics.Typeface.BOLD)
+                setTextColor(s.onBackground)
+                gravity = Gravity.CENTER
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+                )
+            })
+            val times = (periodTimes[p] ?: "").split("-")
+            for (t in times) {
+                cell.addView(TextView(ctx).apply {
+                    text = t
+                    textSize = if (rowH < dp(38)) 7f else 8f
+                    setTextColor(s.onBackgroundVariant)
+                    gravity = Gravity.CENTER
+                    layoutParams = LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+                    )
+                })
+            }
+            timeCol.addView(cell)
+            // 午休/晚休：时间列只留同高占位（文案统一由块区的全宽胶囊显示，
+            // 否则「午休」会在时间列和胶囊里各出现一次）
+            breaksAfter[p]?.let {
+                timeCol.addView(View(ctx).apply {
+                    layoutParams = LinearLayout.LayoutParams(timeW + gapW, bandH)
+                })
+            }
+        }
+        body.addView(timeCol)
+
+        // 课程块区（FrameLayout 绝对定位）
+        val gridH = yTopOfRow(drawPeriods) + rowH + gapH
+        val blockArea = FrameLayout(ctx).apply {
+            layoutParams = LinearLayout.LayoutParams(7 * colW + 6 * gapW, gridH)
+        }
+
+        // 横向网格线（有休息带的行不画）
+        for (p in 1 until drawPeriods) {
+            if (breaksAfter.containsKey(p)) continue
+            val divider = View(ctx)
+            divider.setBackgroundColor(s.divider)
+            divider.alpha = 0.5f
+            val dlp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, dp(1))
+            dlp.topMargin = yTopOfRow(p) + rowH + gapH / 2
+            blockArea.addView(divider, dlp)
+        }
+
+        // 纵向网格线：参照 NexioSchedule 主课表 —— **不画**。
+        // 以前每列都有一条 1px 竖线，整块看起来像 Excel 表格，满屏线条抢课程块的视觉重心；
+        // 去掉后课程胶囊成为唯一主体，页面底色（page_bg）直接透出来，观感轻盈很多。
+        // 横向线保留但压得很淡（见上），仍然能看出「第几节」的节奏。
+
+        // 午休/晚休分隔带
+        for ((k, label) in breaksAfter) {
+            if (k >= drawPeriods) continue
+            // 2026-10-25 用户要求：午休/晚休不要叠一层灰底（看着像阴影），正常显示文字即可
+            val band = TextView(ctx).apply {
+                text = label
+                textSize = 10f
+                setTextColor(s.onBackgroundVariant)
+                alpha = 0.7f
+                gravity = Gravity.CENTER
+            }
+            val blp = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, bandH)
+            blp.topMargin = k * (rowH + gapH) + breaksBefore(k) * bandH
+            blockArea.addView(band, blp)
+        }
+
+        // 课程块
+        for (d0 in 0 until 7) {
+            val dayBlocks = dayCourses[d0]
+            val lanes = laneLayout(dayBlocks)
+            dayBlocks.forEachIndexed { bi, ci ->
+                val info = lanes[bi]
+                val span = ci.periodEnd - ci.periodStart + 1
+                val blockColor = courseColor(ci.course.name ?: "?")
+                val blockText = style.onCourseTint(blockColor)
+                // 参考截图的观感：整块浅色胶囊 + 同色系深字，块内居中，不加色条
+                val nameSize = if (rowH < dp(40)) 8.5f else 9.5f
+                // 外层 FrameLayout：底色胶囊 + 内容 + 右下角色点（参照 NexioSchedule 课程块右下角的实心小圆）
+                val block = FrameLayout(ctx).apply {
+                    background = s.rounded(density, 10f, style.courseFill(blockColor))
+                }
+                val blockInner = LinearLayout(ctx).apply {
+                    orientation = LinearLayout.VERTICAL
+                    gravity = Gravity.CENTER
+                    setPadding(dp(2), dp(3), dp(2), dp(3))
+                }
+                block.addView(blockInner, FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT
+                ))
+                // 右下角色点 = 「这一格有多门课重合」的标记（NexioSchedule 的语义），
+                // 正常不重合的块不画点（用户 2026-10-25 反馈：之前连堂就画点，语义不对）
+                if (info.overlap) {
+                    block.addView(View(ctx).apply {
+                        background = s.rounded(density, 3f, blockColor)
+                    }, FrameLayout.LayoutParams(dp(6), dp(6)).apply {
+                        gravity = Gravity.BOTTOM or Gravity.END
+                        rightMargin = dp(5)
+                        bottomMargin = dp(4)
+                    })
+                }
+                blockInner.addView(TextView(ctx).apply {
+                    text = ci.course.name ?: ""
+                    textSize = nameSize
+                    setTypeface(null, android.graphics.Typeface.BOLD)
+                    setTextColor(blockText)
+                    gravity = Gravity.CENTER
+                    maxLines = 8
+                    layoutParams = LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f
+                    )
+                })
+                val room = ci.course.room ?: ""
+                if (room.isNotEmpty()) {
+                    blockInner.addView(TextView(ctx).apply {
+                        text = room
+                        textSize = nameSize - 1f
+                        setTextColor(blockText)
+                        alpha = 0.8f
+                        gravity = Gravity.CENTER
+                        maxLines = 2
+                        layoutParams = LinearLayout.LayoutParams(
+                            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+                        )
+                    })
+                }
+                // 重合时才分栏（两门课同时段横向各占一半），否则占满整列
+                val blockW = if (info.lanes > 1) (colW - gapW) / info.lanes else colW
+                val lp = FrameLayout.LayoutParams(blockW, span * (rowH + gapH) - gapH)
+                lp.leftMargin = d0 * (colW + gapW) + info.lane * (blockW + gapW)
+                lp.topMargin = yTopOfRow(ci.periodStart)
+                block.setOnClickListener { showCourseDetail(ci) }
+                blockArea.addView(block, lp)
+            }
+        }
+        body.addView(blockArea)
+        container.addView(body)
+    }
+
+    // ==================== 数据处理 ====================
+
+    private fun getCoursesForDay(data: ScheduleData, dayIdx: Int, week: Int): List<CourseItem> {
+        val dayNames = listOf("星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日")
+        val targetName = dayNames.getOrNull(dayIdx) ?: return emptyList()
+        val day = data.schedule?.find { it.dayName == targetName } ?: return emptyList()
+
+        val result = mutableListOf<CourseItem>()
+        day.periods?.forEach { period ->
+            val periodNum = period.periodName?.trim()?.toIntOrNull() ?: return@forEach
+            period.courses?.forEach { course ->
+                if (course.isWeekValid(week) && course.isOddEvenValid(week)) {
+                    result.add(CourseItem(course, periodNum, periodNum))
+                }
+            }
+        }
+        return result.sortedBy { it.periodStart }
+    }
+
+    private fun mergeCourses(courses: List<CourseItem>): List<CourseItem> {
+        if (courses.size <= 1) return courses
+        val result = mutableListOf<CourseItem>()
+        var cur = courses[0]
+        for (i in 1 until courses.size) {
+            val next = courses[i]
+            // 连续节次且不跨越午休/晚休（4→5、8→9）
+            if (next.course.name == cur.course.name && next.course.room == cur.course.room &&
+                next.periodStart == cur.periodEnd + 1 &&
+                cur.periodEnd != 4 && cur.periodEnd != 8
+            ) {
+                cur = cur.copy(periodEnd = next.periodEnd)
+            } else {
+                result.add(cur)
+                cur = next
+            }
+        }
+        result.add(cur)
+        return result
+    }
+
+    // ==================== 配色 ====================
+
+    // 黄金角色相分布：同课同色，不同课色相差 ~137°，区分度最大（算法见 ScheduleStyle）
+    private fun courseColor(courseName: String): Int {
+        courseColorMap[courseName]?.let { return it }
+        // 配色参照 NexioSchedule：不用 hash 散列，而是一组固定的鲜艳色板（Material 500 系），
+        // 按课程首次出现的顺序分配「与已用色色相距离最远」的那一支，保证相邻课程区分明显。
+        val usedHues = courseColorMap.values.map { hueOf(it) }
+        val color = if (usedHues.isEmpty()) {
+            COURSE_PALETTE[0]
+        } else {
+            COURSE_PALETTE.maxByOrNull { c -> usedHues.minOf { hueDistance(hueOf(c), it) } }
+                ?: COURSE_PALETTE[0]
+        }
+        courseColorMap[courseName] = color
+        return color
+    }
+
+    private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
+
+    /** 色相（0..360） */
+    private fun hueOf(color: Int): Float {
+        val hsv = FloatArray(3)
+        android.graphics.Color.colorToHSV(color, hsv)
+        return hsv[0]
+    }
+
+    /** 两个色相之间的最短角距 */
+    private fun hueDistance(a: Float, b: Float): Float {
+        val d = kotlin.math.abs(a - b) % 360f
+        return if (d > 180f) 360f - d else d
+    }
+
+    /** 一块课在当天占第几栏：同一时段有多门课时横向分栏，重合的块画色点 */
+    private data class LaneInfo(val lane: Int, val lanes: Int, val overlap: Boolean)
+
+    private fun laneLayout(blocks: List<CourseItem>): List<LaneInfo> {
+        if (blocks.isEmpty()) return emptyList()
+        val laneEnds = mutableListOf<Int>()
+        val laneOf = IntArray(blocks.size)
+        blocks.forEachIndexed { i, b ->
+            var lane = laneEnds.indexOfFirst { it < b.periodStart }
+            if (lane < 0) {
+                lane = laneEnds.size
+                laneEnds.add(b.periodEnd)
+            } else {
+                laneEnds[lane] = b.periodEnd
+            }
+            laneOf[i] = lane
+        }
+        val overlaps = blocks.indices.map { i ->
+            blocks.indices.any { j ->
+                j != i && blocks[j].periodStart <= blocks[i].periodEnd &&
+                    blocks[i].periodStart <= blocks[j].periodEnd
+            }
+        }
+        val lanes = maxOf(1, laneEnds.size)
+        return blocks.indices.map { i -> LaneInfo(laneOf[i], lanes, overlaps[i]) }
+    }
+
+    private companion object {
+        /** NexioSchedule 的课程色板（Course.kt: courseColors），按 Material 500 系挑的 11 个鲜艳色 */
+        val COURSE_PALETTE = intArrayOf(
+            0xFF4CAF50.toInt(), 0xFF2196F3.toInt(), 0xFFFF9800.toInt(),
+            0xFFF44336.toInt(), 0xFFE91E63.toInt(), 0xFF00BCD4.toInt(),
+            0xFF3F51B5.toInt(), 0xFFAB47BC.toInt(), 0xFF009688.toInt(),
+            0xFF673AB7.toInt(), 0xFFE6B422.toInt()
+        )
+    }
+}
+
+/** 向下滚多少像素后顶栏完全收起（和工作圈 ReportListScroll 的 320px 对齐） */
+private const val BAR_COLLAPSE_SPAN_PX = 320f

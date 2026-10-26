@@ -1,0 +1,457 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">蓝航Lite</string>
+    <string name="login_subtitle">轻量课表</string>
+    <string name="username_hint">学号</string>
+    <string name="password_hint">密码</string>
+    <string name="login">登录</string>
+    <string name="tab_schedule">课表</string>
+    <string name="action_logout">退出登录</string>
+    <string name="common_back">返回</string>
+    <string name="common_home">回我的主页</string>
+    <string name="common_more">更多</string>
+    <string name="grades_semester">学期</string>
+    <string name="moments_loading">加载中…</string>
+    <string name="moments_load_more">加载更多</string>
+    <string name="moments_no_more">没有更多了</string>
+    <string name="settings_account_section">账号</string>
+    <string name="settings_general_section">通用</string>
+    <string name="settings_about_section">关于</string>
+    <string name="widget_schedule_name">全周网格</string>
+    <string name="widget_schedule_description">按星期和节次显示整周课程</string>
+    <string name="widget_week_format">第 %1$d 周</string>
+    <!-- 底部胶囊在窄（2×2）宽度下放不下「第 4 周」时用的紧凑写法 -->
+    <string name="widget_week_compact">第%1$d周</string>
+    <string name="widget_open_description">打开蓝航Lite课表</string>
+    <string name="widget_empty_sync">打开应用同步课表</string>
+    <string name="widget_empty_login">打开应用登录并同步</string>
+    <string name="widget_empty_hint">点击此处打开课程表</string>
+    <string name="widget_no_course_week">本周暂无课程</string>
+    <string name="widget_schedule_small_name">今日课程</string>
+    <string name="widget_schedule_small_description">以课程卡片显示今天的课程</string>
+    <string name="widget_today_empty">今天没有课程</string>
+    <string name="widget_day_empty">这天没有课程</string>
+    <string name="widget_today_done">今天的课已上完</string>
+    <string name="widget_today_done_hint">第 %1$d 周 · 点开看完整课表</string>
+    <string name="widget_today_countdown">剩 %1$d 分</string>
+    <string name="widget_today_yesterday">昨天</string>
+    <string name="widget_today_tomorrow">明天</string>
+    <string name="widget_day_offset_format">%1$s 天</string>
+    <string name="widget_nav_prev">前一天</string>
+    <string name="widget_nav_next">后一天</string>
+    <string name="widget_nav_reset">回到今天</string>
+    <!-- 选择器预览占位内容（不是真实课程数据，仅供 previewLayout 展示结构） -->
+    <string name="widget_preview_today_title">今天 · 周一</string>
+    <string name="widget_preview_today_date">8/31</string>
+    <string name="widget_preview_course_name_1">高等数学A</string>
+    <string name="widget_preview_course_name_2">大学物理</string>
+    <string name="widget_preview_course_name_3">数据结构</string>
+    <string name="widget_preview_course_room_2">B203</string>
+    <string name="widget_preview_course_room_3">C305</string>
+    <string name="widget_preview_countdown">剩 35 分</string>
+    <string name="widget_preview_week">第 4 周</string>
+    <string name="settings_schedule_tools">课表工具</string>
+    <string name="settings_export_schedule">导出课表</string>
+    <string name="settings_export_schedule_subtitle">保存为日历/表格文件或分享课表文本</string>
+    <string name="settings_appearance">外观</string>
+    <string name="settings_theme">主题模式</string>
+    <string name="settings_tools_summary">导出为 ICS、CSV 或文本</string>
+    <string name="settings_about_app">蓝航 Lite</string>
+    <string name="settings_about_version">版本 %1$s</string>
+    <string name="settings_account">当前账号</string>
+    <string name="settings_app_version">应用版本</string>
+    <string name="settings_proto">接口标识</string>
+    <string name="settings_diagnostics">诊断与日志</string>
+    <string name="settings_diagnostics_subtitle">查看最近错误并分享</string>
+    <string name="settings_footer">蓝航 Lite · 南昌航空大学第三方轻量客户端</string>
+    <string name="settings_theme_title">主题模式</string>
+    <string name="settings_theme_light">亮色</string>
+    <string name="settings_theme_dark">暗色</string>
+    <string name="settings_theme_system">跟随系统</string>
+    <string name="schedule_export_title">导出课表</string>
+    <string name="schedule_export_message">共 %1$d 门课程 · 第 %2$d-%3$d 周（整学期）\n可保存为 .ics 日历文件、.csv 表格，或直接分享文本。\nCSV 用的是学期实际周次，导入第三方课表 App 时请把「开学日期」设为第 1 周周一。</string>
+    <string name="schedule_export_ics">保存日历文件（.ics）</string>
+    <string name="schedule_export_csv">保存表格文件（.csv）</string>
+    <string name="schedule_export_share">分享课表文本</string>
+    <string name="schedule_export_saved">已导出：%1$s</string>
+    <string name="schedule_export_failed">导出失败，请重试</string>
+    <string name="schedule_export_no_data">暂无可导出的课表，请先同步课表</string>
+    <string name="schedule_export_chooser">分享课表</string>
+    <string name="schedule_export_subject">蓝航Lite课表</string>
+    <string name="schedule_export_sync_needed">需要同步缺少的 %1$d 个周次，是否继续？</string>
+    <string name="schedule_export_preparing">正在准备课表…</string>
+    <string name="schedule_export_syncing">正在同步第 %1$d 周\n已完成 %2$d/%3$d</string>
+    <string name="schedule_export_cancel">取消</string>
+    <string name="schedule_export_start_sync">开始同步</string>
+    <string name="schedule_export_file_prefix">蓝航Lite课表</string>
+    <string name="schedule_export_summary">第 %1$d-%2$d 周 · 共 %3$d 门课程</string>
+    <string name="schedule_export_week_header">第 %1$d 周（%2$s - %3$s）</string>
+    <string name="schedule_export_period_single">第 %1$d 节</string>
+    <string name="schedule_export_period_range">第 %1$d-%2$d 节</string>
+    <!-- 课表背景 -->
+
+    <!-- ==================== 通用 ==================== -->
+    <string name="common_cancel">取消</string>
+    <string name="common_delete">删除</string>
+    <string name="common_close">关闭</string>
+    <string name="common_share">分享</string>
+    <string name="common_send">发送</string>
+
+    <!-- ==================== 底栏 / 页面标题 ==================== -->
+    <string name="tab_grades">成绩</string>
+    <string name="tab_moments">工作圈</string>
+    <string name="tab_settings">设置</string>
+
+    <!-- ==================== 登录 ==================== -->
+    <string name="login_input_required">请输入学号和密码</string>
+    <string name="login_no_token">登录失败：未获得 token</string>
+    <string name="login_welcome">欢迎，%1$s</string>
+    <string name="login_failed">登录失败(%1$d)：%2$s</string>
+    <string name="login_network_error">网络异常：%1$s</string>
+
+    <!-- ==================== 课表 ==================== -->
+    <string name="schedule_week_format">第 %1$d 周</string>
+    <string name="schedule_day_today">%1$s · 今天</string>
+    <string name="schedule_day_no_course">%1$s没有课程</string>
+    <string name="schedule_week_no_course">本周无课</string>
+    <string name="schedule_no_data_hint">课表数据还没加载出来\n下拉可以重新拉取</string>
+    <string name="schedule_period_single">%1$d节</string>
+    <string name="schedule_period_range">%1$d-%2$d节</string>
+    <string name="schedule_refresh_failed">刷新失败：%1$s</string>
+    <string name="schedule_jump_week">跳转周次</string>
+    <string name="schedule_prev_week">上一周</string>
+    <string name="schedule_next_week">下一周</string>
+    <!-- 右上角按钮的语义：描述「点一下会切到哪个视图」，图标与之一致 -->
+    <string name="schedule_switch_to_week">切换到周视图</string>
+    <string name="schedule_switch_to_grid">切换到网格视图</string>
+    <string name="schedule_break_noon">午休</string>
+    <string name="schedule_break_evening">晚休</string>
+    <string name="schedule_unnamed_course">未命名课程</string>
+    <string name="schedule_week_menu_format">第 %1$d 周</string>
+    <string name="schedule_day_count_format">%1$d 门</string>
+    <plurals name="schedule_day_count">
+        <item quantity="one">%1$d 门</item>
+        <item quantity="other">%1$d 门</item>
+    </plurals>
+    <string-array name="schedule_day_names">
+        <item>周一</item>
+        <item>周二</item>
+        <item>周三</item>
+        <item>周四</item>
+        <item>周五</item>
+        <item>周六</item>
+        <item>周日</item>
+    </string-array>
+    <string-array name="schedule_day_names_compact">
+        <item>一</item>
+        <item>二</item>
+        <item>三</item>
+        <item>四</item>
+        <item>五</item>
+        <item>六</item>
+        <item>日</item>
+    </string-array>
+
+    <!-- ==================== 课程详情 ==================== -->
+    <string name="course_detail_title">课程详情</string>
+    <string name="course_label_name">课程名：</string>
+    <string name="course_label_room">教室：</string>
+    <string name="course_label_teacher">教师：</string>
+    <string name="course_label_week">周次：</string>
+    <string name="course_label_period">节次：</string>
+    <string name="course_odd_suffix">（单周）</string>
+    <string name="course_even_suffix">（双周）</string>
+    <string name="course_week_value">%1$s 周%2$s</string>
+    <string name="course_period_single">%1$02d 节</string>
+    <string name="course_period_range">%1$02d-%2$02d 节</string>
+
+    <!-- ==================== 成绩 ==================== -->
+    <string name="grades_weighted_avg">加权平均分</string>
+    <string name="grades_total_credits">总学分</string>
+    <string name="grades_course_count">课程数</string>
+    <string name="grades_empty">本学期暂无成绩</string>
+    <string name="grades_empty_hint">成绩由教务系统在结课后陆续公布，可在上方切换学期查看</string>
+    <string name="grades_credit">%1$s 学分</string>
+    <string name="grades_load_failed">加载失败：%1$s</string>
+
+    <!-- ==================== 工作圈 ==================== -->
+    <string name="moments_empty">暂无动态</string>
+    <string name="moments_network_error">网络异常</string>
+    <string name="moments_load_failed">加载失败：%1$s</string>
+    <string name="moments_action_failed">操作失败：%1$s</string>
+    <string name="moments_publish_hint">分享点什么…</string>
+    <string name="moments_add_image">＋ 添加图片</string>
+    <string name="moments_publish_title">发表动态</string>
+    <string name="moments_publish">发表</string>
+    <string name="moments_publish_images">图片</string>
+    <string name="moments_publish_tip">最多可添加 9 张图片，点击可预览大图</string>
+    <string name="moments_publish_reorder_hint">长按图片可拖动排序，松手即生效</string>
+    <string name="moments_publish_add_image">添加图片</string>
+    <string name="moments_publish_remove_image">移除图片</string>
+    <string name="moments_publish_empty">请填写内容或选择图片</string>
+    <string name="moments_publish_too_long">内容不能超过 2000 字</string>
+    <string name="moments_image_hint">最多选择 9 张图片</string>
+    <string name="moments_image_selected">已选择 %1$d/9 张</string>
+    <string name="moments_publish_done">已发表</string>
+    <string name="moments_publish_failed">发表失败：%1$s</string>
+    <string name="moments_comment_hint">说点什么…</string>
+    <string name="moments_comment_title">发表评论</string>
+    <string name="moments_reply_title">回复 %1$s</string>
+    <string name="moments_sent">已发送</string>
+    <string name="moments_send_failed">发送失败：%1$s</string>
+    <string name="moments_no_deletable">没有可删除的评论</string>
+    <string name="moments_delete_item">删除：%1$s</string>
+    <string name="moments_my_comments">我的评论</string>
+    <string name="moments_delete_confirm">删除这条评论？</string>
+    <string name="moments_delete">删除</string>
+    <string name="moments_delete_post">删除这条动态</string>
+    <string name="moments_delete_post_confirm">删除这条动态？删除后无法恢复。</string>
+    <string name="moments_my_post">我的动态</string>
+    <string name="moments_not_my_post">只能删除自己发布的动态</string>
+    <string name="moments_deleted">已删除</string>
+    <string name="moments_delete_failed">删除失败：%1$s</string>
+    <string name="moments_anonymous">用户</string>
+    <string name="moments_like">赞 %1$d</string>
+    <string name="moments_liked">已赞 %1$d</string>
+    <string name="moments_comment_count">评论 %1$d</string>
+    <string name="moments_reply_inline">回复</string>
+    <string name="moments_comment_separator">：</string>
+    <string name="moments_server_no_id">服务器未返回动态编号</string>
+    <string name="moments_cd_publish">发表动态</string>
+    <string name="moments_cd_like">赞</string>
+    <string name="moments_cd_comment">评论</string>
+    <string name="moments_cd_avatar">头像</string>
+    <string name="moments_tag_load">工作圈加载</string>
+    <string name="moments_tag_publish">工作圈发表</string>
+
+    <!-- ==================== 设置 ==================== -->
+    <string name="settings_language">语言</string>
+    <string name="settings_language_system">跟随系统</string>
+    <string name="settings_language_zh">简体中文</string>
+    <string name="settings_language_en">English</string>
+    <string name="settings_week_empty">第 %1$d 周课表为空</string>
+    <string name="settings_diagnostics_subject">蓝航 Lite 诊断日志</string>
+    <string name="settings_diagnostics_chooser">分享诊断信息</string>
+
+    <!-- ==================== 诊断报告 ==================== -->
+    <string name="diagnostics_title">蓝航 Lite 诊断信息</string>
+    <string name="diagnostics_version">版本：%1$s</string>
+    <string name="diagnostics_device">设备：%1$s</string>
+    <string name="diagnostics_time">时间：%1$s</string>
+    <string name="diagnostics_scope">日志级别：Warning / Error；仅本机最近日志</string>
+    <string name="diagnostics_app_errors">应用错误记录：</string>
+    <string name="diagnostics_log_begin">— 日志开始 —</string>
+    <string name="diagnostics_log_end">— 日志结束 —</string>
+    <string name="diagnostics_log_failed">读取系统日志失败：%1$s</string>
+    <string name="diagnostics_redacted">已隐藏</string>
+
+    <!-- ==================== 小部件（今日课程） ==================== -->
+    <string name="widget_today_prefix">今天 · </string>
+    <string name="widget_tomorrow_prefix">明天 · </string>
+    <string name="widget_yesterday_prefix">昨天 · </string>
+    <!-- 调试菜单 -->
+    <string name="debug_schedule_title">课表接口调试</string>
+    <string name="debug_handshake_failed">握手失败：ldapToken=%1$s…</string>
+    <string name="debug_handshake_ok">握手 OK，GetSchedule 返回 %1$d 字符</string>
+    <string name="debug_failed">调试失败：%1$s</string>
+
+    <!-- ==================== 错误提示 ==================== -->
+    <string name="error_payload_invalid">数据异常：%1$s</string>
+    <string name="error_request_failed">请求失败</string>
+    <string name="error_request_failed_code">请求失败(%1$d)</string>
+    <string name="error_cookie_missing">未登录（无 Cookie）</string>
+    <string name="error_user_missing">未登录（无用户信息）</string>
+    <string name="error_auth_empty">认证返回为空</string>
+    <string name="error_auth_missing">认证返回缺少 authorization</string>
+    <string name="error_relogin">登录已失效，请重新登录</string>
+    <string name="error_schedule_login">课表登录失败，请重新登录</string>
+    <string name="error_schedule_request">课表数据请求失败</string>
+    <string name="error_grades_terms">学期列表数据异常</string>
+    <string name="error_grades_scores">成绩数据异常</string>
+    <string name="error_image_read">无法读取所选图片</string>
+    <string name="error_image_upload_url">服务器没有提供图片上传地址</string>
+    <string name="error_image_access_url">服务器没有提供图片访问地址</string>
+    <string name="error_image_token_empty">图片上传令牌为空</string>
+    <string name="error_image_upload_failed">图片上传失败 (%1$d)：%2$s</string>
+    <string name="error_image_invalid">所选文件不是有效图片</string>
+    <string name="error_image_decode">图片解码失败</string>
+    <string name="error_image_too_large">图片超过服务器大小限制</string>
+    <string name="error_content_empty">文字或图片至少需要一项</string>
+    <string name="web_title_fallback">应用</string>
+    <string name="menu_debug_schedule">调试课表接口</string>
+
+    <!-- ==================== 布局设计期占位（运行时被真实数据覆盖） ==================== -->
+    <string name="ph_course_name">课程名</string>
+    <string name="ph_lesson_meta">教师 · 教室</string>
+    <string name="ph_period">5-6节</string>
+    <string name="ph_day_name">周一</string>
+    <string name="ph_day_count">4 门</string>
+    <string name="ph_week">第 1 周</string>
+    <string name="settings_logout_confirm">退出后将清除本机登录状态与缓存，需要重新登录。</string>
+    <string name="settings_logout_summary">清除本机登录状态与缓存</string>
+    <string name="settings_debug_summary">重新握手并拉取一次课表原始数据</string>
+    <string name="schedule_view_grid">网格</string>
+    <string name="schedule_view_week">周视图</string>
+    <string name="common_ok">确定</string>
+    <string name="schedule_back_to_today">回到本周</string>
+    <string name="refresh_pull">下拉刷新</string>
+    <string name="refresh_release">松开立即刷新</string>
+    <string name="refresh_refreshing">正在刷新…</string>
+    <string name="refresh_done">刷新完成</string>
+    <string name="diagnostics_crash">最近一次崩溃</string>
+    <string name="moments_images_full">最多只能选 %1$d 张图片</string>
+    <string name="moments_delete_comment">删除评论</string>
+    <string name="moments_delete_comment_confirm">删除后不可恢复，确定删除这条评论吗？</string>
+    <string name="moments_delete_comment_own_only">只能删除自己发表的评论</string>
+
+    <!-- ===== 「我的」tab（0.8.0）===== -->
+    <string name="mine_support_section">支持</string>
+    <string name="mine_settings">设置</string>
+    <string name="mine_about">关于</string>
+    <string name="mine_contacts">通讯录</string>
+    <string name="mine_contacts_summary">全校部门、老师与同学</string>
+    <string name="mine_messages">消息</string>
+    <string name="mine_messages_summary">收到的评论和赞</string>
+    <string name="contacts_search_hint">搜索部门或姓名</string>
+    <string name="contacts_root_section">组织架构</string>
+    <string name="contacts_sub_section">下级部门</string>
+    <string name="contacts_member_section">成员</string>
+    <string name="contacts_member_count">%1$d 人</string>
+    <string name="contacts_loading">正在加载通讯录…</string>
+    <string name="contacts_load_failed">通讯录加载失败</string>
+    <string name="contacts_retry">重试</string>
+    <string name="contacts_no_match">没有找到匹配的部门</string>
+    <string name="contacts_dept_empty">这个部门下没有成员</string>
+    <string name="contacts_loading_more">正在加载更多…</string>
+    <string name="contacts_tip">通讯录来自学校组织架构，只在本机缓存展示。</string>
+    <string name="contacts_phone">手机</string>
+    <string name="contacts_view_profile">查看个人主页</string>
+    <string name="contacts_close">关闭</string>
+    <string name="messages_filter_all">全部</string>
+    <string name="messages_filter_comment">评论</string>
+    <string name="messages_filter_like">赞</string>
+    <string name="messages_refresh">刷新</string>
+    <string name="messages_loading">正在加载消息…</string>
+    <string name="messages_load_failed">消息加载失败</string>
+    <string name="messages_empty">还没有收到评论或赞</string>
+    <string name="messages_action_comment">评论了你</string>
+    <string name="messages_action_like">赞了你的动态</string>
+    <string name="messages_just_now">刚刚</string>
+    <string name="messages_minutes_ago">%1$d 分钟前</string>
+    <string name="messages_hours_ago">%1$d 小时前</string>
+    <string name="messages_yesterday">昨天</string>
+    <string name="tab_mine">我的</string>
+    <string name="mine_profile">个人主页</string>
+    <string name="mine_work">工作</string>
+    <string name="mine_work_summary">办事大厅、请假报修都在这里</string>
+    <string name="mine_work_placeholder_title">办事大厅</string>
+    <string name="mine_work_placeholder_body">本科生、研究生、校领导各自的应用目录都在这里。</string>
+    <string name="mine_idcard">身份码</string>
+    <string name="mine_idcard_summary">出示二维码与条码</string>
+    <string name="mine_album">相册</string>
+    <string name="mine_album_summary">我发过的所有动态</string>
+    <string name="mine_guest">点右上角重新登录可获取资料</string>
+    <string name="mine_no_department">暂无院系信息</string>
+
+    <!-- 身份码页 -->
+    <string name="idcard_title">身份码</string>
+    <string name="idcard_hint">屏幕调亮，出示给门禁或工作人员扫描</string>
+    <string name="idcard_staff_no">学号/工号</string>
+    <string name="idcard_refresh_time">刷新时间：%1$s</string>
+    <string name="idcard_refresh">刷新</string>
+    <string name="idcard_loading">正在获取身份码…</string>
+    <string name="idcard_failed">身份码获取失败，点二维码重试</string>
+    <string name="idcard_retry_hint">点二维码可重新获取</string>
+
+    <!-- 个人主页 / 相册 -->
+    <string name="profile_title">个人主页</string>
+    <string name="profile_title_of">%1$s 的个人主页</string>
+    <string name="profile_label_staff_no">学号</string>
+    <string name="profile_label_name">姓名</string>
+    <string name="profile_label_email">邮箱</string>
+    <string name="profile_label_phone">手机号</string>
+    <string name="profile_school">南昌航空大学</string>
+    <string name="profile_section_album">相册</string>
+    <string name="profile_section_feeds">TA 的动态</string>
+    <string name="profile_empty_other">TA 还没有发过动态</string>
+    <string name="profile_empty_self">你还没有发过动态</string>
+    <string name="album_empty">你还没有发过动态</string>
+    <string name="work_identity_title">使用身份</string>
+    <string name="work_identity_hint">学校下发的办事应用会按人群区分，这里按身份筛选；没标注适用范围的应用在三个身份下都会显示。</string>
+    <string name="work_identity_undergrad">本科生</string>
+    <string name="work_identity_postgrad">研究生</string>
+    <string name="work_identity_leader">校领导</string>
+    <string name="work_portal_section">工作台</string>
+    <string name="work_portal_title">打开办事大厅</string>
+    <string name="work_portal_summary">网页版 OA，跟电脑上看到的一致</string>
+    <string name="work_search_hint">搜索办事应用</string>
+    <string name="work_common_title">常用功能</string>
+    <string name="work_loading">正在拉取办事应用…</string>
+    <string name="work_retry">重试</string>
+    <string name="work_empty">这个账号暂时没有可用的办事应用</string>
+    <string name="work_empty_filter">当前身份下没有匹配的应用</string>
+    <string name="work_section_loose">其他</string>
+    <string name="work_count">已显示 %1$d / %2$d 个应用</string>
+    <string name="work_opening">打开中…</string>
+    <string name="mine_open_source_section">开源</string>
+    <string name="mine_open_source">开源地址</string>
+    <string name="mine_open_source_summary">github.com/Nuclear-Potatoes/lanhang-lite-miuix</string>
+    <string name="mine_credits_section">致谢</string>
+    <string name="mine_credits_upstream">原项目 lanhang-lite</string>
+    <string name="mine_credits_upstream_summary">github.com/Micheal-Reber/lanhang-lite</string>
+    <string name="mine_im">私信</string>
+    <string name="mine_im_summary">和老师同学单聊</string>
+    <string name="im_loading">正在连接私信…</string>
+    <string name="im_connecting">正在连接私信服务…</string>
+    <string name="im_connected">私信已连接</string>
+    <string name="im_failed">私信连接失败</string>
+    <string name="im_refresh">刷新</string>
+    <string name="im_empty">还没有私信</string>
+    <string name="im_empty_hint">在别人的个人主页点「发私信」就能开始聊天</string>
+    <string name="im_thread_empty">打个招呼吧</string>
+    <string name="im_input_hint">输入消息</string>
+    <string name="im_send">发送</string>
+    <string name="im_emoji">表情</string>
+    <string name="im_emoji_backspace">退格</string>
+    <string name="im_sending">发送中</string>
+    <string name="im_send_failed">发送失败</string>
+    <string name="im_other_message">[其他消息]</string>
+    <string name="im_self">我</string>
+    <string name="im_group">群聊</string>
+    <string name="im_join_group">加入群聊</string>
+    <string name="im_join_group_id">群 ID</string>
+    <string name="im_join_group_name">群名称（可留空）</string>
+    <string name="im_join_group_tip">客户端只能加入已有的群；建群要由学校融云服务端发起。</string>
+    <string name="im_join_group_do">加入</string>
+    <string name="im_group_empty">群里还没人说话</string>
+    <string name="im_group_sender">%1$s：%2$s</string>
+    <!-- 私信的系统通知（2026-10-26 第二轮：放弃 MiPush，改普通通知） -->
+    <string name="im_notify_channel">私信消息</string>
+    <string name="im_notify_channel_desc">收到新私信时提醒。只在 App 运行期间有效</string>
+    <string name="im_notify_new_message">新私信</string>
+    <string name="im_notify_member">群成员</string>
+    <string name="im_member_short">成员 · %1$s</string>
+    <string name="profile_message">发私信</string>
+
+    <string name="im_attach">附件</string>
+    <string name="im_attach_image">图片</string>
+    <string name="im_attach_video">视频</string>
+    <string name="im_attach_file">文件</string>
+    <string name="im_attach_location">位置</string>
+    <string name="im_attach_failed">这个文件读不出来，换一个试试</string>
+    <string name="im_voice">语音</string>
+    <string name="im_voice_hold">按住 说话</string>
+    <string name="im_voice_release">松开发送</string>
+    <string name="im_voice_too_short">说话时间太短</string>
+    <string name="im_record_permission">需要麦克风权限才能发语音</string>
+    <string name="im_record_failed">录音启动失败，检查麦克风是否被占用</string>
+    <string name="im_keyboard">键盘</string>
+    <string name="im_file">文件</string>
+    <string name="im_file_tap_open">点击打开</string>
+    <string name="im_location">位置</string>
+    <string name="im_location_failed">暂时取不到当前位置</string>
+    <string name="im_location_permission">需要定位权限才能发送位置</string>
+
+    <string name="tab_work">工作</string>
+    <string name="mine_grades_summary">各学期成绩与加权平均</string>
+</resources>

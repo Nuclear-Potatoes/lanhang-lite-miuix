@@ -1,0 +1,192 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  小部件根布局：底层是整张课程位图（点击打开课表），底栏（胶囊 + 翻天按钮）用真实 View 叠加。
+
+  **底栏为什么全在布局里、一个像素都不画进位图？**
+  位图是「应用进程」按自己的 displayMetrics.density 画的，而这份布局是桌面进程 inflate 的、
+  dp 走桌面的 Configuration。两者 density 一旦不一致（vivo/OriginOS 会给桌面和小部件
+  套独立缩放），位图里的东西和这里的 View 就会错开：越靠左偏得越多——vivo 实测最左的
+  ◀ 底板上是空的、⟳ 骑在两个底板中间、▶ 才勉强对齐。
+  所以凡是需要和点击区/图标对齐的东西，一律用布局 + drawable 实现；
+  位图只负责标题 / 课程卡 / 空态文案（它们不需要和任何 View 对齐）。
+
+  结构（高 22dp，贴着位图 footer 区，左右各 9dp 内边距 = 位图的 outerPad）：
+  - 左：胶囊 TextView（18dp 高，圆角 9dp）。宽度被外层 weight=1 的容器约束，
+    内容短就 wrap、长了就 ellipsize，**永远不会顶到右边的按钮**。
+  - 右：◀ ⟳ ▶ 按钮组。当天只有 ◀ ▶；翻到别的日期后才插入中间 ⟳
+    （GONE↔VISIBLE 时组宽 52dp↔80dp，右侧始终贴边，不用重算 margin）。
+
+  **浅/深两套为什么是两组独立 View，而不是一套 View 切背景？**
+  项目红线禁止 `views.setInt(id, "setBackgroundResource"/"setTextColor", …)` 这类
+  反射调 View 方法（launcher 端可能静默拒绝）。这里改成浅色组 + 深色组同时存在、
+  按主题切 setViewVisibility —— 只用 RemoteViews 的一等 API，任何桌面都不会失效。
+  改几何时两组必须一起改（每组都是 24×18dp、间距 4dp）。
+-->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent">
+
+    <ImageView
+        android:id="@+id/widget_bitmap"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:adjustViewBounds="false"
+        android:contentDescription="@string/widget_open_description"
+        android:scaleType="fitXY" />
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="22dp"
+        android:layout_gravity="bottom"
+        android:layout_marginBottom="9dp"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingStart="9dp"
+        android:paddingEnd="9dp">
+
+        <!-- 胶囊容器：weight=1 吃掉按钮组之外的全部宽度，把胶囊的测量上限锁在这里 -->
+        <LinearLayout
+            android:layout_width="0dp"
+            android:layout_height="18dp"
+            android:layout_weight="1"
+            android:gravity="start|center_vertical"
+            android:orientation="horizontal">
+
+            <TextView
+                android:id="@+id/widget_week_pill"
+                android:layout_width="wrap_content"
+                android:layout_height="18dp"
+                android:background="@drawable/widget_pill_light"
+                android:ellipsize="end"
+                android:gravity="center"
+                android:includeFontPadding="false"
+                android:maxLines="1"
+                android:paddingStart="5dp"
+                android:paddingEnd="5dp"
+                android:textColor="#FF084168"
+                android:textSize="10sp"
+                android:textStyle="bold"
+                android:visibility="gone" />
+
+            <TextView
+                android:id="@+id/widget_week_pill_dark"
+                android:layout_width="wrap_content"
+                android:layout_height="18dp"
+                android:background="@drawable/widget_pill_dark"
+                android:ellipsize="end"
+                android:gravity="center"
+                android:includeFontPadding="false"
+                android:maxLines="1"
+                android:paddingStart="5dp"
+                android:paddingEnd="5dp"
+                android:textColor="#FF8ED8F8"
+                android:textSize="10sp"
+                android:textStyle="bold"
+                android:visibility="gone" />
+        </LinearLayout>
+
+        <!-- 浅色主题按钮组 -->
+        <LinearLayout
+            android:id="@+id/widget_nav_group"
+            android:layout_width="wrap_content"
+            android:layout_height="18dp"
+            android:layout_marginStart="6dp"
+            android:orientation="horizontal">
+
+            <ImageView
+                android:id="@+id/widget_nav_prev"
+                android:layout_width="24dp"
+                android:layout_height="18dp"
+                android:background="@drawable/widget_nav_button_light"
+                android:contentDescription="@string/widget_nav_prev"
+                android:paddingStart="6dp"
+                android:paddingTop="4dp"
+                android:paddingEnd="6dp"
+                android:paddingBottom="4dp"
+                android:scaleType="fitCenter"
+                android:src="@drawable/ic_widget_nav_left"
+                android:visibility="gone" />
+
+            <ImageView
+                android:id="@+id/widget_nav_reset"
+                android:layout_width="24dp"
+                android:layout_height="18dp"
+                android:layout_marginStart="4dp"
+                android:background="@drawable/widget_nav_button_reset_light"
+                android:contentDescription="@string/widget_nav_reset"
+                android:padding="3dp"
+                android:scaleType="fitCenter"
+                android:src="@drawable/ic_widget_nav_reset"
+                android:visibility="gone" />
+
+            <ImageView
+                android:id="@+id/widget_nav_next"
+                android:layout_width="24dp"
+                android:layout_height="18dp"
+                android:layout_marginStart="4dp"
+                android:background="@drawable/widget_nav_button_light"
+                android:contentDescription="@string/widget_nav_next"
+                android:paddingStart="6dp"
+                android:paddingTop="4dp"
+                android:paddingEnd="6dp"
+                android:paddingBottom="4dp"
+                android:scaleType="fitCenter"
+                android:src="@drawable/ic_widget_nav_right"
+                android:visibility="gone" />
+
+        </LinearLayout>
+
+        <!-- 深色主题按钮组：几何与上面一组完全一致，只是配色不同 -->
+        <LinearLayout
+            android:id="@+id/widget_nav_group_dark"
+            android:layout_width="wrap_content"
+            android:layout_height="18dp"
+            android:layout_marginStart="6dp"
+            android:orientation="horizontal"
+            android:visibility="gone">
+
+            <ImageView
+                android:id="@+id/widget_nav_prev_dark"
+                android:layout_width="24dp"
+                android:layout_height="18dp"
+                android:background="@drawable/widget_nav_button_dark"
+                android:contentDescription="@string/widget_nav_prev"
+                android:paddingStart="6dp"
+                android:paddingTop="4dp"
+                android:paddingEnd="6dp"
+                android:paddingBottom="4dp"
+                android:scaleType="fitCenter"
+                android:src="@drawable/ic_widget_nav_left_on_dark"
+                android:visibility="gone" />
+
+            <ImageView
+                android:id="@+id/widget_nav_reset_dark"
+                android:layout_width="24dp"
+                android:layout_height="18dp"
+                android:layout_marginStart="4dp"
+                android:background="@drawable/widget_nav_button_reset_dark"
+                android:contentDescription="@string/widget_nav_reset"
+                android:padding="3dp"
+                android:scaleType="fitCenter"
+                android:src="@drawable/ic_widget_nav_reset_on_dark"
+                android:visibility="gone" />
+
+            <ImageView
+                android:id="@+id/widget_nav_next_dark"
+                android:layout_width="24dp"
+                android:layout_height="18dp"
+                android:layout_marginStart="4dp"
+                android:background="@drawable/widget_nav_button_dark"
+                android:contentDescription="@string/widget_nav_next"
+                android:paddingStart="6dp"
+                android:paddingTop="4dp"
+                android:paddingEnd="6dp"
+                android:paddingBottom="4dp"
+                android:scaleType="fitCenter"
+                android:src="@drawable/ic_widget_nav_right_on_dark"
+                android:visibility="gone" />
+
+        </LinearLayout>
+    </LinearLayout>
+
+</FrameLayout>

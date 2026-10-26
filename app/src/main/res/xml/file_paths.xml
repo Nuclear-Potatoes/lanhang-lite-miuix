@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- FileProvider 可共享的目录：私信文件/视频都放在 cache/im 下 -->
+<paths>
+    <cache-path name="im" path="im/" />
+    <cache-path name="cache" path="." />
+</paths>

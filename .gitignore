@@ -1,0 +1,58 @@
+# Gradle / Android
+.gradle/
+build/
+app/build/
+local.properties
+.cxx/
+*.apk
+*.aab
+*.ap_
+*.dex
+
+# IDE
+.idea/
+*.iml
+.vscode/
+.DS_Store
+
+# Kotlin
+.kotlin/
+
+# 签名与密钥
+*.jks
+*.keystore
+keystore.properties
+
+# 反编译产物（官方 APK 源码，不入库）
+decompiled/
+tools/
+
+# 调试/抓包产物（含个人会话与课表数据）
+cookies*.xml
+sp_*.xml
+sched_*.json
+w[0-9]*.json
+cfg_dump*
+moments_last*.json
+schedule_summary.txt
+edge_*.txt
+lens_scan.txt
+ui.xml
+build_log.txt
+analyze_sched.ps1
+chunk_*.js
+miniapp_index.*
+_pd_nav.json
+
+# 实验性/参考代码目录
+_pocketdiary/
+_backdrop/
+
+# 本地调试工作区（截图/临时脚本/笔记，含真机界面上的个人数据）
+# 约定：一切测试/调试产物只放 .workbuddy/tmp/，仓库根目录不留临时文件
+.workbuddy/
+_tmp/
+
+# 根目录调试截图
+*.png
+!app/src/main/res/**/*.png

@@ -1,0 +1,10 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <!-- 通知栏小图标：纯白剪影（系统会按状态栏配色自动着色），线条口径与 ui/miuix/LanhangIcons 一致 -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M12,3C6.9,3 2.8,6.6 2.8,11C2.8,13.3 3.9,15.4 5.7,16.9L4.6,21.2L9.2,19.4C10.1,19.6 11,19.8 12,19.8C17.1,19.8 21.2,16.2 21.2,11.8C21.2,7.4 17.1,3 12,3Z" />
+</vector>

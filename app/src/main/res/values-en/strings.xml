@@ -1,0 +1,429 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Lanhang Lite</string>
+    <string name="login_subtitle">Lightweight schedule</string>
+    <string name="username_hint">Student ID</string>
+    <string name="password_hint">Password</string>
+    <string name="login">Sign in</string>
+    <string name="tab_schedule">Schedule</string>
+    <string name="action_logout">Sign out</string>
+    <string name="common_back">Back</string>
+    <string name="common_more">More</string>
+    <string name="grades_semester">Semester</string>
+    <string name="moments_loading">Loading…</string>
+    <string name="moments_load_more">Load more</string>
+    <string name="moments_no_more">No more</string>
+    <string name="settings_account_section">Account</string>
+    <string name="settings_general_section">General</string>
+    <string name="settings_about_section">About</string>
+
+    <!-- Widgets -->
+    <string name="widget_schedule_name">Whole week</string>
+    <string name="widget_schedule_description">Show the full week by weekday and period</string>
+    <string name="widget_week_format">Week %1$d</string>
+    <!-- Compact form used when the footer pill cannot fit "Week 4" in a 2×2 layout -->
+    <string name="widget_week_compact">W%1$d</string>
+    <string name="widget_open_description">Open the Lanhang Lite schedule</string>
+    <string name="widget_empty_sync">Open the app to sync</string>
+    <string name="widget_empty_login">Open the app to sign in</string>
+    <string name="widget_empty_hint">Tap here to open the schedule</string>
+    <string name="widget_no_course_week">No classes this week</string>
+    <string name="widget_schedule_small_name">Today</string>
+    <string name="widget_schedule_small_description">Show today as class cards</string>
+    <string name="widget_today_empty">No classes today</string>
+    <string name="widget_day_empty">No classes on this day</string>
+    <string name="widget_today_done">Done for today</string>
+    <string name="widget_today_done_hint">Week %1$d · open the full schedule</string>
+    <string name="widget_today_countdown">%1$d min left</string>
+    <string name="widget_today_yesterday">Yesterday</string>
+    <string name="widget_today_tomorrow">Tomorrow</string>
+    <string name="widget_day_offset_format">%1$s d</string>
+    <string name="widget_nav_prev">Previous day</string>
+    <string name="widget_nav_next">Next day</string>
+    <string name="widget_nav_reset">Back to today</string>
+    <!-- Picker preview placeholders (layout structure only, not real data) -->
+    <string name="widget_preview_today_title">Today · Mon</string>
+    <string name="widget_preview_today_date">8/31</string>
+    <string name="widget_preview_course_name_1">Calculus A</string>
+    <string name="widget_preview_course_name_2">Physics</string>
+    <string name="widget_preview_course_name_3">Data Structures</string>
+    <string name="widget_preview_course_room_2">B203</string>
+    <string name="widget_preview_course_room_3">C305</string>
+    <string name="widget_preview_countdown">35 min left</string>
+    <string name="widget_preview_week">Week 4</string>
+
+    <!-- Settings -->
+    <string name="settings_schedule_tools">Schedule tools</string>
+    <string name="settings_export_schedule">Export schedule</string>
+    <string name="settings_export_schedule_subtitle">Save as a calendar or spreadsheet file, or share as text</string>
+    <string name="settings_appearance">Appearance</string>
+    <string name="settings_theme">Theme</string>
+    <string name="settings_tools_summary">Export to ICS, CSV or text</string>
+    <string name="settings_about_app">Lanhang Lite</string>
+    <string name="settings_about_version">Version %1$s</string>
+    <string name="settings_account">Signed in as</string>
+    <string name="settings_app_version">App version</string>
+    <string name="settings_proto">Client ID</string>
+    <string name="settings_diagnostics">Diagnostics &amp; logs</string>
+    <string name="settings_diagnostics_subtitle">Review recent errors and share them</string>
+    <string name="settings_footer">Lanhang Lite · A third-party lightweight client for NCHU</string>
+    <string name="settings_theme_title">Theme</string>
+    <string name="settings_theme_light">Light</string>
+    <string name="settings_theme_dark">Dark</string>
+    <string name="settings_theme_system">System default</string>
+    <string name="settings_language">Language</string>
+    <string name="settings_language_system">System default</string>
+    <string name="settings_language_zh">简体中文</string>
+    <string name="settings_language_en">English</string>
+    <string name="settings_week_empty">Week %1$d has no data</string>
+    <string name="settings_diagnostics_subject">Lanhang Lite diagnostics</string>
+    <string name="settings_diagnostics_chooser">Share diagnostics</string>
+
+    <!-- Export schedule -->
+    <string name="schedule_export_title">Export schedule</string>
+    <string name="schedule_export_message">%1$d courses · weeks %2$d–%3$d (full term)\nSave as an .ics calendar, a .csv spreadsheet, or share as text.\nThe CSV uses the term week numbers, so when importing into another app set the term start date to the Monday of week 1.</string>
+    <string name="schedule_export_ics">Save calendar file (.ics)</string>
+    <string name="schedule_export_csv">Save spreadsheet file (.csv)</string>
+    <string name="schedule_export_share">Share schedule text</string>
+    <string name="schedule_export_saved">Exported: %1$s</string>
+    <string name="schedule_export_failed">Export failed, please try again</string>
+    <string name="schedule_export_no_data">Nothing to export yet — sync the schedule first</string>
+    <string name="schedule_export_chooser">Share schedule</string>
+    <string name="schedule_export_subject">Lanhang Lite schedule</string>
+    <string name="schedule_export_sync_needed">%1$d weeks are missing. Sync them now?</string>
+    <string name="schedule_export_preparing">Preparing schedule…</string>
+    <string name="schedule_export_syncing">Syncing week %1$d\n%2$d of %3$d done</string>
+    <string name="schedule_export_cancel">Cancel</string>
+    <string name="schedule_export_start_sync">Start sync</string>
+    <string name="schedule_export_file_prefix">LanhangLite_schedule</string>
+    <string name="schedule_export_summary">Weeks %1$d–%2$d · %3$d courses</string>
+    <string name="schedule_export_week_header">Week %1$d (%2$s – %3$s)</string>
+    <string name="schedule_export_period_single">Period %1$d</string>
+    <string name="schedule_export_period_range">Periods %1$d-%2$d</string>
+
+    <!-- Schedule background -->
+
+    <!-- Common -->
+    <string name="common_cancel">Cancel</string>
+    <string name="common_delete">Delete</string>
+    <string name="common_close">Close</string>
+    <string name="common_share">Share</string>
+    <string name="common_send">Send</string>
+
+    <!-- Bottom bar / titles -->
+    <string name="tab_grades">Grades</string>
+    <string name="tab_moments">Feed</string>
+    <string name="tab_settings">Settings</string>
+
+    <!-- Login -->
+    <string name="login_input_required">Enter your student ID and password</string>
+    <string name="login_no_token">Sign-in failed: no token received</string>
+    <string name="login_welcome">Welcome, %1$s</string>
+    <string name="login_failed">Sign-in failed (%1$d): %2$s</string>
+    <string name="login_network_error">Network error: %1$s</string>
+
+    <!-- Schedule -->
+    <string name="schedule_week_format">Week %1$d</string>
+    <string name="schedule_day_today">%1$s · Today</string>
+    <string name="schedule_day_no_course">No classes on %1$s</string>
+    <string name="schedule_week_no_course">No classes this week</string>
+    <string name="schedule_no_data_hint">Schedule data has not loaded yet\nPull down to retry</string>
+    <string name="schedule_period_single">P%1$d</string>
+    <string name="schedule_period_range">P%1$d-%2$d</string>
+    <string name="schedule_refresh_failed">Refresh failed: %1$s</string>
+    <string name="schedule_jump_week">Jump to week</string>
+    <string name="schedule_prev_week">Previous week</string>
+    <string name="schedule_next_week">Next week</string>
+    <string name="schedule_switch_to_week">Switch to week view</string>
+    <string name="schedule_switch_to_grid">Switch to grid view</string>
+    <string name="schedule_break_noon">Lunch</string>
+    <string name="schedule_break_evening">Break</string>
+    <string name="schedule_unnamed_course">Untitled course</string>
+    <string name="schedule_week_menu_format">Week %1$d</string>
+    <string name="schedule_day_count_format">%1$d</string>
+    <plurals name="schedule_day_count">
+        <item quantity="one">%1$d class</item>
+        <item quantity="other">%1$d classes</item>
+    </plurals>
+    <string-array name="schedule_day_names">
+        <item>Mon</item>
+        <item>Tue</item>
+        <item>Wed</item>
+        <item>Thu</item>
+        <item>Fri</item>
+        <item>Sat</item>
+        <item>Sun</item>
+    </string-array>
+    <string-array name="schedule_day_names_compact">
+        <item>Mo</item>
+        <item>Tu</item>
+        <item>We</item>
+        <item>Th</item>
+        <item>Fr</item>
+        <item>Sa</item>
+        <item>Su</item>
+    </string-array>
+
+    <!-- Course details -->
+    <string name="course_detail_title">Course details</string>
+    <string name="course_label_name">Course: </string>
+    <string name="course_label_room">Room: </string>
+    <string name="course_label_teacher">Instructor: </string>
+    <string name="course_label_week">Weeks: </string>
+    <string name="course_label_period">Periods: </string>
+    <string name="course_odd_suffix"> (odd weeks)</string>
+    <string name="course_even_suffix"> (even weeks)</string>
+    <string name="course_week_value">%1$s%2$s</string>
+    <string name="course_period_single">%1$02d</string>
+    <string name="course_period_range">%1$02d-%2$02d</string>
+
+    <!-- Grades -->
+    <string name="grades_weighted_avg">Weighted avg.</string>
+    <string name="grades_total_credits">Credits</string>
+    <string name="grades_course_count">Courses</string>
+    <string name="grades_empty">No grades this semester</string>
+    <string name="grades_empty_hint">Grades are published after each term ends. Use the Term row above to switch.</string>
+    <string name="grades_credit">%1$s cr</string>
+    <string name="grades_load_failed">Load failed: %1$s</string>
+
+    <!-- Feed -->
+    <string name="moments_empty">No posts yet</string>
+    <string name="moments_network_error">Network error</string>
+    <string name="moments_load_failed">Load failed: %1$s</string>
+    <string name="moments_action_failed">Action failed: %1$s</string>
+    <string name="moments_publish_hint">Share something…</string>
+    <string name="moments_add_image">+ Add photos</string>
+    <string name="moments_publish_tip">Up to 9 photos. Tap one to preview</string>
+    <string name="moments_publish_title">New post</string>
+    <string name="moments_publish_reorder_hint">Long-press a photo to drag and reorder</string>
+    <string name="moments_publish">Post</string>
+    <string name="moments_publish_empty">Add some text or photos first</string>
+    <string name="moments_publish_too_long">Posts are limited to 2000 characters</string>
+    <string name="moments_image_hint">Up to 9 photos</string>
+    <string name="moments_image_selected">%1$d/9 selected</string>
+    <string name="moments_publish_done">Posted</string>
+    <string name="moments_publish_failed">Post failed: %1$s</string>
+    <string name="moments_comment_hint">Say something…</string>
+    <string name="moments_comment_title">Add comment</string>
+    <string name="moments_reply_title">Reply to %1$s</string>
+    <string name="moments_sent">Sent</string>
+    <string name="moments_send_failed">Failed to send: %1$s</string>
+    <string name="moments_no_deletable">No comments to delete</string>
+    <string name="moments_delete_item">Delete: %1$s</string>
+    <string name="moments_my_comments">My comments</string>
+    <string name="moments_delete_confirm">Delete this comment?</string>
+    <string name="moments_delete">Delete</string>
+    <string name="moments_delete_post">Delete this post</string>
+    <string name="moments_delete_post_confirm">Delete this post? This cannot be undone.</string>
+    <string name="moments_my_post">My post</string>
+    <string name="moments_not_my_post">You can only delete your own posts</string>
+    <string name="moments_deleted">Deleted</string>
+    <string name="moments_delete_failed">Delete failed: %1$s</string>
+    <string name="moments_anonymous">User</string>
+    <string name="moments_like">Like %1$d</string>
+    <string name="moments_liked">Liked %1$d</string>
+    <string name="moments_comment_count">Comment %1$d</string>
+    <string name="moments_reply_inline">replied to</string>
+    <string name="moments_comment_separator">: </string>
+    <string name="moments_server_no_id">The server did not return a post id</string>
+    <string name="moments_cd_publish">New post</string>
+    <string name="moments_cd_like">Like</string>
+    <string name="moments_cd_comment">Comment</string>
+    <string name="moments_cd_avatar">Avatar</string>
+    <string name="moments_tag_load">Feed load</string>
+    <string name="moments_tag_publish">Feed publish</string>
+
+    <!-- Diagnostics -->
+    <string name="diagnostics_title">Lanhang Lite diagnostics</string>
+    <string name="diagnostics_version">Version: %1$s</string>
+    <string name="diagnostics_device">Device: %1$s</string>
+    <string name="diagnostics_time">Time: %1$s</string>
+    <string name="diagnostics_scope">Level: Warning / Error; recent local logs only</string>
+    <string name="diagnostics_app_errors">App errors:</string>
+    <string name="diagnostics_log_begin">— log start —</string>
+    <string name="diagnostics_log_end">— log end —</string>
+    <string name="diagnostics_log_failed">Could not read system logs: %1$s</string>
+    <string name="diagnostics_redacted">redacted</string>
+
+    <!-- Widget: today header -->
+    <string name="widget_today_prefix">Today · </string>
+    <string name="widget_tomorrow_prefix">Tomorrow · </string>
+    <string name="widget_yesterday_prefix">Yesterday · </string>
+    <!-- Debug menu -->
+    <string name="debug_schedule_title">Schedule API debug</string>
+    <string name="debug_handshake_failed">Handshake failed: ldapToken=%1$s…</string>
+    <string name="debug_handshake_ok">Handshake OK, GetSchedule returned %1$d chars</string>
+    <string name="debug_failed">Debug failed: %1$s</string>
+
+    <!-- Error messages -->
+    <string name="error_payload_invalid">Unexpected data: %1$s</string>
+    <string name="error_request_failed">Request failed</string>
+    <string name="error_request_failed_code">Request failed (%1$d)</string>
+    <string name="error_cookie_missing">Not signed in (no cookie)</string>
+    <string name="error_user_missing">Not signed in (no user id)</string>
+    <string name="error_auth_empty">Empty auth response</string>
+    <string name="error_auth_missing">Auth response has no authorization</string>
+    <string name="error_relogin">Session expired, please sign in again</string>
+    <string name="error_schedule_login">Schedule sign-in failed, please sign in again</string>
+    <string name="error_schedule_request">Schedule request failed</string>
+    <string name="error_grades_terms">Unexpected semester data</string>
+    <string name="error_grades_scores">Unexpected grade data</string>
+    <string name="error_image_read">Could not read the selected image</string>
+    <string name="error_image_upload_url">Server did not provide an upload URL</string>
+    <string name="error_image_access_url">Server did not provide an image URL</string>
+    <string name="error_image_token_empty">Upload token is empty</string>
+    <string name="error_image_upload_failed">Image upload failed (%1$d): %2$s</string>
+    <string name="error_image_invalid">That file is not a valid image</string>
+    <string name="error_image_decode">Could not decode the image</string>
+    <string name="error_image_too_large">Image exceeds the server size limit</string>
+    <string name="error_content_empty">Add text or at least one photo</string>
+    <string name="web_title_fallback">App</string>
+    <string name="menu_debug_schedule">Debug schedule API</string>
+
+    <!-- Layout placeholders (overwritten at runtime) -->
+    <string name="ph_course_name">Course name</string>
+    <string name="ph_lesson_meta">Instructor · Room</string>
+    <string name="ph_period">P5-6</string>
+    <string name="ph_day_name">Mon</string>
+    <string name="ph_day_count">4 classes</string>
+    <string name="ph_week">Week 1</string>
+    <string name="settings_logout_confirm">Signing out clears the local session and caches; you will need to sign in again.</string>
+    <string name="settings_logout_summary">Clear the local session and caches</string>
+    <string name="settings_debug_summary">Re-handshake and fetch raw schedule data once</string>
+    <string name="schedule_view_grid">Grid</string>
+    <string name="schedule_view_week">Week</string>
+    <string name="common_ok">OK</string>
+    <string name="schedule_back_to_today">Back to this week</string>
+    <string name="refresh_pull">Pull down to refresh</string>
+    <string name="refresh_release">Release to refresh</string>
+    <string name="refresh_refreshing">Refreshing…</string>
+    <string name="refresh_done">Refreshed</string>
+    <string name="diagnostics_crash">Latest crash</string>
+    <string name="moments_images_full">You can pick up to %1$d images</string>
+    <string name="moments_delete_comment">Delete comment</string>
+    <string name="moments_delete_comment_confirm">This cannot be undone. Delete this comment?</string>
+    <string name="moments_delete_comment_own_only">You can only delete your own comments</string>
+
+    <!-- ===== Mine tab (0.8.0) ===== -->
+    <string name="mine_support_section">Support</string>
+    <string name="mine_settings">Settings</string>
+    <string name="mine_about">About</string>
+    <string name="mine_contacts">Contacts</string>
+    <string name="mine_contacts_summary">Departments, teachers and students</string>
+    <string name="mine_messages">Messages</string>
+    <string name="mine_messages_summary">Comments and likes you received</string>
+    <string name="contacts_search_hint">Search departments or names</string>
+    <string name="contacts_root_section">Organization</string>
+    <string name="contacts_sub_section">Sub-departments</string>
+    <string name="contacts_member_section">Members</string>
+    <string name="contacts_member_count">%1$d people</string>
+    <string name="contacts_loading">Loading contacts…</string>
+    <string name="contacts_load_failed">Failed to load contacts</string>
+    <string name="contacts_retry">Retry</string>
+    <string name="contacts_no_match">No matching department</string>
+    <string name="contacts_dept_empty">No member in this department</string>
+    <string name="contacts_loading_more">Loading more…</string>
+    <string name="contacts_tip">Contacts come from the school directory and are cached locally.</string>
+    <string name="contacts_phone">Phone</string>
+    <string name="contacts_view_profile">Open profile</string>
+    <string name="contacts_close">Close</string>
+    <string name="messages_filter_all">All</string>
+    <string name="messages_filter_comment">Comments</string>
+    <string name="messages_filter_like">Likes</string>
+    <string name="messages_refresh">Refresh</string>
+    <string name="messages_loading">Loading messages…</string>
+    <string name="messages_load_failed">Failed to load messages</string>
+    <string name="messages_empty">No comments or likes yet</string>
+    <string name="messages_action_comment">commented on your post</string>
+    <string name="messages_action_like">liked your post</string>
+    <string name="messages_just_now">just now</string>
+    <string name="messages_minutes_ago">%1$d min ago</string>
+    <string name="messages_hours_ago">%1$d h ago</string>
+    <string name="messages_yesterday">Yesterday</string>
+    <string name="tab_mine">Mine</string>
+    <string name="mine_profile">Profile</string>
+    <string name="mine_work">Work</string>
+    <string name="mine_work_summary">Service hall, leave requests, repairs</string>
+    <string name="mine_work_placeholder_title">Service hall</string>
+    <string name="mine_work_placeholder_body">App directories for undergraduates, postgraduates and leadership.</string>
+    <string name="mine_idcard">ID code</string>
+    <string name="mine_idcard_summary">Show QR and barcode</string>
+    <string name="mine_album">Album</string>
+    <string name="mine_album_summary">Everything I have posted</string>
+    <string name="mine_guest">Sign in again to load your profile</string>
+    <string name="mine_no_department">No department info</string>
+
+    <string name="idcard_title">ID code</string>
+    <string name="idcard_hint">Turn the brightness up and show it to the scanner</string>
+    <string name="idcard_staff_no">Student/Staff No.</string>
+    <string name="idcard_refresh_time">Refreshed at %1$s</string>
+    <string name="idcard_refresh">Refresh</string>
+    <string name="idcard_loading">Fetching ID code…</string>
+    <string name="idcard_failed">Failed to fetch the code, tap the QR to retry</string>
+    <string name="idcard_retry_hint">Tap the QR code to refresh</string>
+
+    <string name="profile_title">Profile</string>
+    <string name="profile_title_of">"%1$s's profile"</string>
+    <string name="profile_label_staff_no">No.</string>
+    <string name="profile_label_name">Name</string>
+    <string name="profile_label_email">Email</string>
+    <string name="profile_label_phone">Phone</string>
+    <string name="profile_school">Nanchang Hangkong University</string>
+    <string name="profile_section_album">Album</string>
+    <string name="profile_section_feeds">Posts</string>
+    <string name="profile_empty_other">No posts yet</string>
+    <string name="profile_empty_self">You have not posted anything yet</string>
+    <string name="album_empty">You have not posted anything yet</string>
+    <string name="work_identity_title">Viewing as</string>
+    <string name="work_identity_hint">School apps are published for different groups. Filter by identity here; apps without a declared audience show for all three.</string>
+    <string name="work_identity_undergrad">Undergraduate</string>
+    <string name="work_identity_postgrad">Postgraduate</string>
+    <string name="work_identity_leader">Leadership</string>
+    <string name="work_portal_section">Workbench</string>
+    <string name="work_portal_title">Open the service hall</string>
+    <string name="work_portal_summary">Web OA — same as on a desktop browser</string>
+    <string name="work_search_hint">Search apps</string>
+    <string name="work_common_title">Frequently used</string>
+    <string name="work_loading">Loading apps…</string>
+    <string name="work_retry">Retry</string>
+    <string name="work_empty">No apps available for this account yet</string>
+    <string name="work_empty_filter">No apps match this identity</string>
+    <string name="work_section_loose">Other</string>
+    <string name="work_count">Showing %1$d of %2$d apps</string>
+    <string name="work_opening">Opening…</string>
+    <string name="mine_open_source_section">Open source</string>
+    <string name="mine_open_source">Source code</string>
+    <string name="mine_open_source_summary">github.com/Nuclear-Potatoes/lanhang-lite-miuix</string>
+    <string name="mine_credits_section">Credits</string>
+    <string name="mine_credits_upstream">Upstream project lanhang-lite</string>
+    <string name="mine_credits_upstream_summary">github.com/Micheal-Reber/lanhang-lite</string>
+    <!-- IM 的系统通知（2026-10-26） -->
+    <string name="im_notify_channel">Messages</string>
+    <string name="im_notify_channel_desc">Alerts for new direct messages. Only while the app is running</string>
+    <string name="im_notify_new_message">New message</string>
+    <string name="im_notify_member">Group member</string>
+    <string name="im_member_short">Member · %1$s</string>
+    <string name="im_emoji">Emoji</string>
+    <string name="im_emoji_backspace">Delete</string>
+    <string name="im_attach">Attach</string>
+    <string name="im_attach_image">Image</string>
+    <string name="im_attach_video">Video</string>
+    <string name="im_attach_file">File</string>
+    <string name="im_attach_location">Location</string>
+    <string name="im_attach_failed">This file can’t be read, try another one</string>
+    <string name="im_voice">Voice</string>
+    <string name="im_voice_hold">Hold to talk</string>
+    <string name="im_voice_release">Release to send</string>
+    <string name="im_voice_too_short">Too short</string>
+    <string name="im_record_permission">Microphone permission is required for voice messages</string>
+    <string name="im_record_failed">Recorder failed to start, check the microphone</string>
+    <string name="im_keyboard">Keyboard</string>
+    <string name="im_file">File</string>
+    <string name="im_file_tap_open">Tap to open</string>
+    <string name="im_location">Location</string>
+    <string name="im_location_failed">Current location is unavailable</string>
+    <string name="im_location_permission">Location permission is required to send a location</string>
+
+    <string name="tab_work">Work</string>
+    <string name="mine_grades_summary">Grades and weighted average by semester</string>
+</resources>

@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 回到今天：开口圆环 + 箭头（浅色主题配色 #5E7482，与左右三角同色系）。
+     20×20 视口，r=8.2、stroke=3.1：24×22dp 的按钮里约 12dp，与两侧三角箭头视觉重量相当。
+     改成别的几何请同步 .workbuddy/tmp/gen_widget_preview.py（预览图）-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="12dp"
+    android:height="12dp"
+    android:viewportWidth="20"
+    android:viewportHeight="20">
+    <path
+        android:fillColor="@android:color/transparent"
+        android:pathData="M15.80,4.20 A8.2,8.2 0 1 1 5.90,2.90"
+        android:strokeColor="#5E7482"
+        android:strokeLineCap="round"
+        android:strokeWidth="3.1" />
+    <path
+        android:fillColor="#5E7482"
+        android:pathData="M14.10,5.90 L17.35,2.65 L12.66,1.82 Z" />
+</vector>

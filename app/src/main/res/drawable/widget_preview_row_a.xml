@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 预览占位课程卡（配色同 renderer 的 courseColorFor("高等数学A")：白字可读的压深版，仅用于选择器预览） -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <solid android:color="#FF5394CD" />
+    <corners android:radius="12dp" />
+</shape>

@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Miuix 语义色（暗色）：与 top.yukonga.miuix.kmp.theme.darkColorScheme() 对齐 -->
+<resources>
+    <color name="page_bg">#000000</color>
+    <color name="card_bg">#242424</color>
+    <color name="card_bg_pressed">#2D2D2D</color>
+    <color name="text_primary">#E6FFFFFF</color>
+    <color name="text_secondary">#80FFFFFF</color>
+    <color name="text_tertiary">#66FFFFFF</color>
+    <color name="divider">#1FFFFFFF</color>
+
+    <color name="link">#3482FF</color>
+    <color name="moment_interact">#2D2D2D</color>
+    <color name="primary_container">#103D58</color>
+    <color name="on_primary_container">#C7E9FA</color>
+    <color name="secondary_container">#2D2D2D</color>
+    <color name="on_secondary_container">#A9A9A9</color>
+    <color name="week_pill_bg">#1A3482FF</color>
+    <color name="week_pill_text">#7FB2FF</color>
+    <color name="icon_muted">#787E96</color>
+    <color name="nav_checked">#7FB2FF</color>
+</resources>

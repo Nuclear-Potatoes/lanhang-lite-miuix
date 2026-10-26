@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 深色主题下的翻天按钮底：半透明白，圆角 7dp（与浅色版同一套几何） -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <corners android:radius="7dp" />
+    <solid android:color="#33FFFFFF" />
+</shape>

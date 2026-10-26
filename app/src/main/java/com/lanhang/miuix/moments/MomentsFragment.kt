@@ -1,0 +1,668 @@
+package com.lanhang.miuix.moments
+
+import android.net.Uri
+import android.os.Bundle
+import android.view.LayoutInflater
+import android.view.View
+import android.view.ViewGroup
+import android.widget.Toast
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.OnBackPressedCallback
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.platform.ComposeView
+import androidx.compose.ui.platform.ViewCompositionStrategy
+import androidx.fragment.app.Fragment
+import androidx.lifecycle.lifecycleScope
+import androidx.compose.ui.platform.LocalContext
+import com.lanhang.miuix.R
+import com.lanhang.miuix.net.ApiException
+import com.lanhang.miuix.mine.UserProfilePage
+import com.lanhang.miuix.moments.UserInfoCache
+import com.lanhang.miuix.net.MomentsApi
+import com.lanhang.miuix.net.RceApi
+import com.lanhang.miuix.net.cleanOrgName
+import com.lanhang.miuix.net.StaffBrief
+import com.lanhang.miuix.net.StaffInfo
+import com.lanhang.miuix.ui.miuix.MiuiNavStack
+import com.lanhang.miuix.ui.miuix.rememberStickyListState
+import com.lanhang.miuix.schedule.AppContext
+import com.lanhang.miuix.session.Session
+import com.lanhang.miuix.ui.MainActivity
+import com.lanhang.miuix.settings.Diagnostics
+import com.lanhang.miuix.ui.miuix.LanhangMiuixTheme
+import com.lanhang.miuix.ui.miuix.isNightMode
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import top.yukonga.miuix.kmp.theme.MiuixTheme
+
+/**
+ * 工作圈宿主。视觉层换成 Compose + Miuix（见 [MomentsScreen]），
+ * 这里只保留数据、翻页与增删改动作。
+ */
+class MomentsFragment : Fragment() {
+
+    private var items by mutableStateOf<List<MomentItem>>(emptyList())
+    private var loading by mutableStateOf(false)
+    private var refreshing by mutableStateOf(false)
+    private var ended by mutableStateOf(false)
+    private var publishing by mutableStateOf(false)
+    private var emptyText by mutableStateOf<String?>(null)
+
+    private var fromFeedId: String? = null
+
+    /** 点赞/评论会改 MomentItem 里的普通可变列表，靠它触发重组 */
+    private var revision by mutableStateOf(0)
+
+    /** 已选图片（Compose 状态，选图回调直接改它） */
+    private val pickedImages = mutableStateListOf<Uri>()
+
+    /** 当前页：列表 / 发表页 / 某个人的主页（都是本 Tab 内的二级页） */
+    private var page by mutableStateOf(MomentPage.LIST)
+
+    // ---- 他人主页（0.8.0）----
+    private var profileUid: String? = null
+    private var profileStaff by mutableStateOf<StaffInfo?>(null)
+    private var profileItems by mutableStateOf<List<MomentItem>>(emptyList())
+    private var profileLoading by mutableStateOf(false)
+    private var profileRefreshing by mutableStateOf(false)
+    private var profileEnded by mutableStateOf(false)
+    private var profileRevision by mutableStateOf(0)
+    private var profileFromFeedId: String? = null
+
+    /** 发表页正文 */
+    private var publishText by mutableStateOf("")
+
+    /** 「消息」里点帖子时要定位的 feed_id（滚动到就清空） */
+    private var focusFeedId by mutableStateOf<String?>(null)
+
+    /** 物理返回键：发表页里先退页面 */
+    private val backCallback = object : OnBackPressedCallback(false) {
+        override fun handleOnBackPressed() {
+            when (page) {
+                MomentPage.PUBLISH -> closePublish()
+                MomentPage.PROFILE -> closeProfile()
+                else -> Unit
+            }
+        }
+    }
+
+    /**
+     * 选图入口：**每次点「+」都按剩余名额限制**（2026-10-25 用户要求）。
+     *
+     * `PickMultipleVisualMedia(maxItems)` 只能在注册时固定上限，做不到「已选 8 张时
+     * 只允许再选 1 张」，所以这里自己发 Intent：
+     *  · Android 13+：`ACTION_PICK_IMAGES` + `EXTRA_PICK_IMAGES_MAX = 剩余名额`
+     *  · 更低版本：`ACTION_OPEN_DOCUMENT`（多选），回来后仍按剩余名额截断
+     */
+    private val imagePicker = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode != android.app.Activity.RESULT_OK) return@registerForActivityResult
+        val data = result.data ?: return@registerForActivityResult
+        val uris = buildList {
+            data.clipData?.let { clip ->
+                for (i in 0 until clip.itemCount) add(clip.getItemAt(i).uri)
+            }
+            if (isEmpty()) data.data?.let { add(it) }
+        }
+        appendPickedImages(uris)
+    }
+
+    /** 剩余可选名额 */
+    private fun remainingImageSlots(): Int = (MAX_MOMENT_IMAGES - pickedImages.size).coerceAtLeast(0)
+
+    private fun launchImagePicker() {
+        val remaining = remainingImageSlots()
+        if (remaining <= 0) {
+            toast(getString(R.string.moments_images_full, MAX_MOMENT_IMAGES))
+            return
+        }
+        val intent = if (android.os.Build.VERSION.SDK_INT >= 33) {
+            android.content.Intent(android.provider.MediaStore.ACTION_PICK_IMAGES).apply {
+                type = "image/*"
+                putExtra(android.provider.MediaStore.EXTRA_PICK_IMAGES_MAX, remaining)
+            }
+        } else {
+            android.content.Intent(android.content.Intent.ACTION_OPEN_DOCUMENT).apply {
+                addCategory(android.content.Intent.CATEGORY_OPENABLE)
+                type = "image/*"
+                putExtra(android.content.Intent.EXTRA_ALLOW_MULTIPLE, true)
+            }
+        }
+        runCatching { imagePicker.launch(intent) }
+            .onFailure { toast(getString(R.string.moments_action_failed, it.message.orEmpty())) }
+    }
+
+    private fun appendPickedImages(uris: List<Uri>) {
+        if (uris.isNotEmpty()) {
+            // 2026-10-25 用户反馈：已经加过图后再点「+」选图，应该是**追加**到已有图片后面，
+            // 而不是把之前选的图全清掉、换成这一批。这里做追加 + 去重 + 仍以 9 张为上限。
+            uris.forEach { uri ->
+                if (pickedImages.size < 9 && pickedImages.none { it == uri }) {
+                    pickedImages.add(uri)
+                }
+            }
+        }
+    }
+
+    override fun onCreateView(
+        inflater: LayoutInflater,
+        container: ViewGroup?,
+        savedInstanceState: Bundle?,
+    ): View = ComposeView(requireContext()).apply {
+        setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnViewTreeLifecycleDestroyed)
+        setContent {
+            LanhangMiuixTheme(darkTheme = LocalContext.current.isNightMode()) {
+                // 发表动态是「新页面」：左右滑动切页（往左进新页，退回时反过来）
+                val publishCurve = spring<IntOffset>(dampingRatio = 1f, stiffness = 146f)
+                // 动态流的滚动位置提到 AnimatedContent **外面**：进个人主页会把列表页的组合整个销毁，
+                // 状态放在里面就跟着没了，返回时会跳回顶部（用户 2026-10-25 两次反馈）
+                // 跨 Tab 切换存活（第十三轮）：Tab 切页 detach/attach 会重建 view，
+                // 普通 rememberLazyListState() 会丢掉滚动位置，回来时跳回顶部、顶栏也跟着闪。
+                val feedListState = rememberStickyListState("tab_moments")
+                // 光把状态提出来还不够：返回的那一帧列表可能还没数据（首次加载/刷新中），
+                // LazyListState 会把自己夹回 0，位置照样丢。所以再存一份「第几条 + 偏移」快照，
+                // 等回到列表且列表真有内容时精确滚回去。
+                var feedRestoreIndex by remember { mutableIntStateOf(0) }
+                var feedRestoreOffset by remember { mutableIntStateOf(0) }
+                var feedRestorePending by remember { mutableStateOf(false) }
+                LaunchedEffect(page) {
+                    if (page != MomentPage.LIST) {
+                        feedRestoreIndex = feedListState.firstVisibleItemIndex
+                        feedRestoreOffset = feedListState.firstVisibleItemScrollOffset
+                        feedRestorePending = true
+                    }
+                }
+                LaunchedEffect(page, items.size) {
+                    // 从「消息」点名要看某条动态时，别让「返回原位置」把列表拽回顶部
+                    if (focusFeedId != null) return@LaunchedEffect
+                    if (page == MomentPage.LIST && feedRestorePending && items.isNotEmpty()) {
+                        feedListState.scrollToItem(feedRestoreIndex, feedRestoreOffset)
+                        feedRestorePending = false
+                    }
+                }
+                // 统一转场：和「我的」二级页、通讯录下钻完全同一套几何/时长/曲线
+                // （第十轮重写：发表页以前还用 600ms 弹簧 + 视差淡入，观感和别处不一致）
+                MiuiNavStack(
+                    key = page,
+                    forward = pageForward,
+                    pageBackground = MiuixTheme.colorScheme.background,
+                ) { currentKey: Any ->
+                    val current = currentKey as MomentPage
+                    when (current) {
+                        MomentPage.PUBLISH -> {
+                            PublishMomentScreen(
+                            text = publishText,
+                            onTextChange = { publishText = it },
+                            images = pickedImages,
+                            onPickImages = { launchImagePicker() },
+                            onRemoveImage = { index ->
+                                if (index in pickedImages.indices) pickedImages.removeAt(index)
+                            },
+                                onPreviewImage = { index ->
+                                    ImagePreviewActivity.start(
+                                        requireContext(),
+                                        pickedImages.map { it.toString() },
+                                        index,
+                                    )
+                                },
+                                // 长按拖拽排序：就地换位（九宫格自己做让位动画）
+                                onMoveImage = { from, to ->
+                                    if (from in pickedImages.indices &&
+                                        to in pickedImages.indices && from != to
+                                    ) {
+                                        pickedImages.add(to, pickedImages.removeAt(from))
+                                    }
+                                },
+                            )
+                        }
+
+                        MomentPage.PROFILE -> UserProfilePage(
+                            staff = profileStaff,
+                            userId = profileUid.orEmpty(),
+                            isSelf = false,
+                            items = profileItems,
+                            loading = profileLoading,
+                            refreshing = profileRefreshing,
+                            ended = profileEnded,
+                            revision = profileRevision,
+                            emptyText = getString(R.string.profile_empty_other),
+                            onRefresh = { loadProfile(reset = true) },
+                            onLoadMore = { loadProfile(reset = false) },
+                            onLike = { toggleLike(it) },
+                            onPostComment = { item, replyTo, text -> postComment(item, replyTo, text) },
+                            onDeleteComment = { item, comment -> deleteComment(item, comment) },
+                            onDeletePost = { item -> deletePost(item) },
+                            onImage = { urls, index, rect ->
+                                ImagePreviewActivity.start(requireContext(), urls, index, rect)
+                            },
+                            // 在别人的主页里再点别人的头像/名字 → 进那个人的主页（自己则忽略）
+                            onOpenProfile = { openProfile(it) },
+                            // 「发私信」→ 切到「我的」里的私信聊天页
+                            onMessage = {
+                                (activity as? com.lanhang.miuix.ui.MainActivity)
+                                    ?.openDirectChat(profileUid.orEmpty())
+                            },
+                        )
+
+                        else -> MomentsScreen(
+                            listState = feedListState,
+                            focusFeedId = focusFeedId,
+                            onFocusConsumed = { focusFeedId = null },
+                            items = items,
+                            loading = loading,
+                            refreshing = refreshing,
+                            ended = ended,
+                            emptyText = emptyText,
+                            revision = revision,
+                            onRefresh = { load(reset = true) },
+                            onLoadMore = { load(reset = false) },
+                            onLike = { toggleLike(it) },
+                            onPostComment = { item, replyTo, text -> postComment(item, replyTo, text) },
+                            onDeleteComment = { item, comment -> deleteComment(item, comment) },
+                            onDeletePost = { item -> deletePost(item) },
+                            onImage = { urls, index, rect ->
+                                // rect = 缩略图在窗口里的位置，预览页据此做「从缩略图放大 / 缩回原位」
+                                ImagePreviewActivity.start(requireContext(), urls, index, rect)
+                            },
+                            onOpenPublish = { openPublish() },
+                            onOpenProfile = { openProfile(it) },
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
+        requireActivity().onBackPressedDispatcher.addCallback(viewLifecycleOwner, backCallback)
+        // 视图重建（进程恢复/主题切换）后列表必为空，不能因 savedInstanceState 跳过加载
+        if (items.isEmpty()) load(reset = true)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        syncToolbar()
+    }
+
+    /** 这次换页是「往里推」还是「往回退」，交给 MiuiNavStack 决定动画方向（第十轮） */
+    private var pageForward = true
+
+    /** 发表页 = 二级页（返回箭头 + 右上角「发表」）；列表页 = 主 Tab。 */
+    fun syncToolbar() {
+        val act = activity as? MainActivity ?: return
+        if (isHidden || !isAdded) return
+        when (page) {
+            MomentPage.PUBLISH -> act.showToolbarSub(
+                getString(R.string.moments_publish_title),
+                { closePublish() },
+                if (publishing) null else getString(R.string.moments_publish),
+                { publish(publishText) },
+            )
+
+            MomentPage.PROFILE -> act.showToolbarSub(
+                // 「xxx 的个人主页」；资料还没回来时退回通用的「个人主页」
+                profileStaff?.name?.takeIf { it.isNotBlank() }
+                    ?.let { getString(R.string.profile_title_of, it) }
+                    ?: getString(R.string.profile_title),
+                { closeProfile() },
+            )
+
+            else -> act.showToolbarMain(getString(R.string.tab_moments))
+        }
+    }
+
+    /** 外部入口（通讯录 / 消息）打开某个人的主页；自己则忽略 */
+    fun openProfileForUser(userId: String) {
+        if (!isAdded || view == null) return
+        openProfile(userId)
+    }
+
+    /** 「消息」里点帖子内容：切回动态流，并把这条动态滚进视野（找不到会继续翻页） */
+    fun openFeed(feedId: String) {
+        if (!isAdded || view == null || feedId.isBlank()) return
+        if (page != MomentPage.LIST) {
+            page = MomentPage.LIST
+            backCallback.isEnabled = false
+        }
+        focusFeedId = feedId
+        syncToolbar()
+        if (items.isEmpty()) load(reset = true)
+    }
+
+    private fun openPublish() {
+        publishText = ""
+        pickedImages.clear()
+        emptyText = null
+        pageForward = true
+        page = MomentPage.PUBLISH
+        backCallback.isEnabled = true
+        syncToolbar()
+    }
+
+    private fun closePublish() {
+        if (page != MomentPage.PUBLISH) return
+        pageForward = false
+        page = MomentPage.LIST
+        backCallback.isEnabled = false
+        syncToolbar()
+    }
+
+    /** 点头像/姓名 → 这个人的主页（帖子列表按 /timeline/{user_id} 拉） */
+    private fun openProfile(userId: String) {
+        if (userId.isBlank() || userId == Session.userId) {
+            // 自己：交给「我的」Tab（那边才有我的资料与相册）
+            return
+        }
+        profileUid = userId
+        profileStaff = null
+        profileItems = emptyList()
+        profileFromFeedId = null
+        profileEnded = false
+        profileRevision = 0
+        pageForward = true
+        page = MomentPage.PROFILE
+        backCallback.isEnabled = true
+        syncToolbar()
+        // 先批量接口解析一遍（证件照就在这里面），头像立刻有；失败也不影响下面的请求
+        viewLifecycleOwner.lifecycleScope.launch {
+            withContext(Dispatchers.IO) { UserInfoCache.resolve(listOf(userId)) }
+            profileRevision++   // 让头部头像跟着刷新
+        }
+        loadProfileStaff(userId)
+        loadProfile(reset = true)
+    }
+
+    private fun closeProfile() {
+        if (page != MomentPage.PROFILE) return
+        pageForward = false
+        page = MomentPage.LIST
+        backCallback.isEnabled = false
+        syncToolbar()
+    }
+
+    /** 他人资料：GET /staffs/{id}（官方 UserTask.STAFF_INFO） */
+    private fun loadProfileStaff(userId: String) {
+        viewLifecycleOwner.lifecycleScope.launch {
+            val staff = runCatching {
+                withContext(Dispatchers.IO) { RceApi.getStaff(userId) }
+            }.getOrNull()
+            if (staff != null && profileUid == userId) {
+                profileStaff = staff
+                UserInfoCache.put(
+                    StaffBrief(
+                        id = userId,
+                        name = staff.name,
+                        portrait_url = staff.portraitUrl,
+                        depart_name = staff.depart_name ?: staff.org.cleanOrgName(),
+                        duty_name = null,
+                        company_id = staff.company_id,
+                    )
+                )
+                syncToolbar()   // 顶栏标题用姓名
+            }
+        }
+    }
+
+    private fun loadProfile(reset: Boolean) {
+        val uid = profileUid ?: return
+        if (profileLoading) return
+        if (!reset && profileEnded) return
+        profileLoading = true
+        profileRefreshing = reset && profileItems.isNotEmpty()
+        viewLifecycleOwner.lifecycleScope.launch {
+            try {
+                val from = if (reset) null else profileFromFeedId
+                val fetched = MomentFeedSource.load(uid, from, MomentsApi.PAGE_SIZE)
+                val merged = if (reset) fetched else profileItems + fetched
+                if (fetched.isNotEmpty()) {
+                    profileFromFeedId = fetched.last().feed.feed_id ?: profileFromFeedId
+                }
+                profileItems = merged
+                profileEnded = fetched.size < MomentsApi.PAGE_SIZE
+            } catch (e: Exception) {
+                toast(getString(R.string.moments_load_failed, e.message.orEmpty()))
+            } finally {
+                profileLoading = false
+                profileRefreshing = false
+            }
+        }
+    }
+
+    /** 底栏选中「工作圈」时回调：列表为空则自动刷新（兜底全黑） */
+    fun onTabSelected() {
+        if (view == null) return
+        // 已经在列表页时再点「工作圈」= 从发表页 / 他人主页退回（微信同款手势心智）
+        if (page != MomentPage.LIST) {
+            page = MomentPage.LIST
+            backCallback.isEnabled = false
+        }
+        syncToolbar()
+        if (loading || items.isNotEmpty()) return
+        load(reset = true)
+    }
+
+    private fun load(reset: Boolean) {
+        if (loading) return
+        if (!reset && ended) return
+        loading = true
+        if (reset) {
+            ended = false
+            fromFeedId = null
+            refreshing = true
+        }
+        viewLifecycleOwner.lifecycleScope.launch {
+            try {
+                val page = withContext(Dispatchers.IO) {
+                    val ids = MomentsApi.getTimeLine(if (reset) null else fromFeedId)
+                    val feeds = MomentsApi.getFeeds(ids)
+                    val userIds = feeds.flatMap { f ->
+                        listOfNotNull(f.user_id) +
+                            (f.likes?.mapNotNull { it.user_id } ?: emptyList()) +
+                            (f.comments?.mapNotNull { it.user_id } ?: emptyList())
+                    }
+                    UserInfoCache.resolve(userIds)
+                    feeds
+                }
+                val newItems = page.map { MomentItem(it) }
+                items = if (reset) newItems else items + newItems
+                if (page.size < MomentsApi.PAGE_SIZE) ended = true
+                fromFeedId = page.lastOrNull()?.feed_id ?: fromFeedId
+                emptyText = if (items.isEmpty()) AppContext.instance.getString(R.string.moments_empty) else null
+            } catch (e: ApiException) {
+                Diagnostics.record(AppContext.instance, AppContext.instance.getString(R.string.moments_tag_load), e)
+                handleLoadError(AppContext.instance.getString(R.string.moments_load_failed, e.message.orEmpty()))
+            } catch (e: Exception) {
+                Diagnostics.record(AppContext.instance, AppContext.instance.getString(R.string.moments_tag_load), e)
+                handleLoadError(AppContext.instance.getString(R.string.moments_network_error))
+            }
+            loading = false
+            refreshing = false
+        }
+    }
+
+    private fun handleLoadError(message: String) {
+        if (items.isEmpty()) emptyText = message else toast(message)
+    }
+
+    /**
+     * 点赞 / 取消点赞。
+     *
+     * 2026-10-25 用户反馈「点赞后再点应该取消点赞，而不是又点一次赞」：
+     * 之前是「先请求、成功后才改本地状态」，请求期间（或请求失败、或服务端返回的
+     * 点赞列表里 user_id 对不上）本地 `likedByMe` 一直还是 false，于是第二次点击
+     * 又走了一遍「点赞」。现在改成**先乐观改本地状态再请求**，失败回滚，
+     * 这样第二次点击一定是取消。
+     */
+    private fun toggleLike(item: MomentItem) {
+        val feedId = item.feed.feed_id ?: return
+        val liked = item.likedByMe
+        val meId = Session.userId.ifBlank { "local_me" }
+        fun markLiked(on: Boolean) {
+            if (on) {
+                item.likes.add(
+                    LikeEntry(
+                        like_id = "local_${System.currentTimeMillis()}",
+                        feed_id = feedId,
+                        user_id = meId,
+                        create_dt = System.currentTimeMillis(),
+                    )
+                )
+            } else {
+                item.likes.removeAll { it.user_id == meId || (it.like_id ?: "").startsWith("local_") }
+            }
+            bumpLists()
+        }
+        // 乐观更新：手指抬起来 UI 立刻变
+        markLiked(!liked)
+        viewLifecycleOwner.lifecycleScope.launch {
+            try {
+                withContext(Dispatchers.IO) {
+                    if (liked) MomentsApi.cancelLike(feedId) else MomentsApi.like(feedId)
+                }
+            } catch (e: Exception) {
+                markLiked(liked)   // 请求失败：把乐观更新回滚回去
+                toast(AppContext.instance.getString(R.string.moments_action_failed, e.message.orEmpty()))
+            }
+        }
+    }
+
+    private fun publish(text: String) {
+        if (publishing) return
+        val images = pickedImages.toList()
+        if (text.isEmpty() && images.isEmpty()) {
+            toast(AppContext.instance.getString(R.string.moments_publish_empty))
+            return
+        }
+        if (text.length > 2000) {
+            toast(AppContext.instance.getString(R.string.moments_publish_too_long))
+            return
+        }
+        publishing = true
+        syncToolbar()
+        viewLifecycleOwner.lifecycleScope.launch {
+            try {
+                val appContext = AppContext.instance
+                withContext(Dispatchers.IO) {
+                    val media = images.map { MomentImageUploader.upload(appContext, it) }
+                    check(MomentsApi.publishFeed(text, media) != null) {
+                        AppContext.instance.getString(R.string.moments_server_no_id)
+                    }
+                }
+                pickedImages.clear()
+                publishText = ""
+                toast(AppContext.instance.getString(R.string.moments_publish_done))
+                closePublish()
+                load(reset = true)
+            } catch (e: Exception) {
+                Diagnostics.record(AppContext.instance, AppContext.instance.getString(R.string.moments_tag_publish), e)
+                toast(AppContext.instance.getString(R.string.moments_publish_failed, e.message.orEmpty()))
+            } finally {
+                publishing = false
+                syncToolbar()
+            }
+        }
+    }
+
+    private fun postComment(item: MomentItem, replyToUserId: String?, text: String) {
+        val feedId = item.feed.feed_id ?: return
+        viewLifecycleOwner.lifecycleScope.launch {
+            try {
+                val fresh = withContext(Dispatchers.IO) {
+                    MomentsApi.postComment(feedId, text, replyToUserId)
+                    runCatching { MomentsApi.getFeed(feedId) }.getOrNull()
+                }
+                if (fresh != null) {
+                    item.comments.clear()
+                    item.comments.addAll(fresh.comments.orEmpty())
+                    item.likes.clear()
+                    item.likes.addAll(fresh.likes.orEmpty())
+                } else {
+                    item.comments.add(MomentsApi.localComment(feedId, text))
+                }
+                bumpLists()
+                toast(AppContext.instance.getString(R.string.moments_sent))
+            } catch (e: Exception) {
+                toast(AppContext.instance.getString(R.string.moments_send_failed, e.message.orEmpty()))
+            }
+        }
+    }
+
+    private fun deleteComment(item: MomentItem, comment: CommentEntry) {
+        val feedId = item.feed.feed_id ?: return
+        val commentId = comment.comment_id ?: return
+        viewLifecycleOwner.lifecycleScope.launch {
+            try {
+                withContext(Dispatchers.IO) { MomentsApi.deleteComment(feedId, commentId) }
+                item.comments.removeIf { it.comment_id == commentId }
+                bumpLists()
+                toast(AppContext.instance.getString(R.string.moments_deleted))
+            } catch (e: Exception) {
+                toast(AppContext.instance.getString(R.string.moments_delete_failed, e.message.orEmpty()))
+            }
+        }
+    }
+
+    /** 删除自己发布的动态：服务端成功后才从列表里摘掉，失败给出提示 */
+    private fun deletePost(item: MomentItem) {
+        val feedId = item.feed.feed_id ?: return
+        viewLifecycleOwner.lifecycleScope.launch {
+            try {
+                withContext(Dispatchers.IO) { MomentsApi.deleteFeed(feedId) }
+                // 公共时间线与他人主页可能是同一条动态，两套列表一起摘掉
+                items = items.filterNot { it.feed.feed_id == feedId }
+                profileItems = profileItems.filterNot { it.feed.feed_id == feedId }
+                bumpLists()
+                toast(AppContext.instance.getString(R.string.moments_deleted))
+            } catch (e: Exception) {
+                toast(AppContext.instance.getString(R.string.moments_delete_failed, e.message.orEmpty()))
+            }
+        }
+    }
+
+    /**
+     * 点赞/评论会直接改 MomentItem 里的可变列表，Compose 看不到变化，
+     * 统一在这里把「公共流」和「他人主页」「我的相册」三份列表都推一个新实例。
+     */
+    private fun bumpLists() {
+        revision++
+        items = items.toList()
+        profileRevision++
+        profileItems = profileItems.toList()
+    }
+
+    /**
+     * 提示。Fragment 已经 detach（切走了 tab / 页面已销毁）时 `context` 是 null，
+     * 这时退到 Application context —— 2026-10-26 第六轮崩溃
+     * `IllegalStateException: … not attached to a context` 就是这里和 Diagnostic 一路 requireContext() 打的。
+     */
+    private fun toast(msg: String) {
+        val ctx = context ?: AppContext.instance
+        Toast.makeText(ctx, msg, Toast.LENGTH_SHORT).show()
+    }
+}
+
+/** 工作圈这一栈的页面（枚举顺序 = 层级深度，用来定推入/返回方向） */
+internal enum class MomentPage { LIST, PUBLISH, PROFILE }
+
+/** 一条动态最多 9 张图 */
+private const val MAX_MOMENT_IMAGES = 9

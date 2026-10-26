@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Miuix 语义色：与 top.yukonga.miuix.kmp.theme.lightColorScheme() 对齐（2026-10-24 换肤） -->
+<resources>
+    <color name="page_bg">#F7F7F7</color>
+    <color name="card_bg">#FFFFFF</color>
+    <color name="card_bg_pressed">#F2F3F5</color>
+    <color name="text_primary">#000000</color>
+    <color name="text_secondary">#99000000</color>
+    <color name="text_tertiary">#66000000</color>
+    <color name="divider">#14000000</color>
+
+    <color name="primary">#3482FF</color>
+    <color name="on_primary">#FFFFFFFF</color>
+    <color name="primary_container">#EAF2FF</color>
+    <color name="on_primary_container">#3482FF</color>
+    <color name="secondary_container">#F0F0F0</color>
+    <color name="on_secondary_container">#A9A9A9</color>
+    <color name="gray">#9E9E9E</color>
+    <color name="week_pill_bg">#EAF2FF</color>
+    <color name="week_pill_text">#3482FF</color>
+    <color name="like_red">#E94634</color>
+    <color name="icon_muted">#8C93B0</color>
+    <color name="link">#3482FF</color>
+    <color name="moment_interact">#F0F0F0</color>
+    <color name="nav_checked">#3482FF</color>
+    <!-- 应用图标 -->
+    <color name="ic_launcher_background">#084168</color>
+</resources>
