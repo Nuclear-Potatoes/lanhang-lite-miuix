@@ -1,12 +1,12 @@
-name: Build APK
+name: Build Release APK
 
 on:
   push:
-    branches: [ main ]
-  workflow_dispatch:   # 允许在 Actions 页面手动触发
+    tags: [ 'v*' ]        # 推送 v 开头的 tag 时触发（推荐）
+  workflow_dispatch:       # 也支持手动触发
 
 jobs:
-  build:
+  build-release:
     runs-on: ubuntu-latest
 
     steps:
@@ -19,18 +19,27 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      # 本项目未附带 Gradle Wrapper，需用 setup-gradle 提供 Gradle 环境
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.13'
 
-      # 如果 local.properties 缺失，可以在此生成（CI 环境通常已有 SDK）
-      - name: Build Debug APK
-        run: gradle assembleDebug
+      # 从 Secrets 还原 Keystore，并生成 keystore.properties
+      - name: Decode Keystore and create signing config
+        run: |
+          echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 --decode > ${{ github.workspace }}/release-key.jks
+          cat > ${{ github.workspace }}/keystore.properties <<EOF
+          storeFile=${{ github.workspace }}/release-key.jks
+          storePassword=${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          keyAlias=${{ secrets.ANDROID_KEY_ALIAS }}
+          keyPassword=${{ secrets.ANDROID_KEY_PASSWORD }}
+          EOF
 
-      - name: Upload APK
+      - name: Build Release APK
+        run: gradle assembleRelease
+
+      - name: Upload Release APK
         uses: actions/upload-artifact@v4
         with:
-          name: app-debug
-          path: app/build/outputs/apk/debug/app-debug.apk
+          name: app-release
+          path: app/build/outputs/apk/release/app-release.apk
