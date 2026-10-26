@@ -23,10 +23,9 @@ jobs:
           distribution: 'temurin'
           java-version: '21'
 
+      # 修改点：去掉了强制指定的 9.5 版本，让 setup-gradle 自动读取并使用项目的 gradlew
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: '9.5'
 
       - name: Configure GitHub Packages credentials
         run: |
@@ -36,7 +35,6 @@ jobs:
           gpr.key=${{ secrets.GITHUB_TOKEN }}
           EOF
 
-      # 修改点：去掉 if 判断，在 run 脚本内部进行判断
       - name: Decode Keystore and create signing config
         env:
           KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
@@ -55,8 +53,9 @@ jobs:
           fi
         shell: bash
 
+      # 修改点：使用 ./gradlew 执行构建，它会自动使用项目自带的 Gradle 版本
       - name: Build Release APK
-        run: gradle assembleRelease
+        run: ./gradlew assembleRelease
 
       - name: Upload APK to Artifacts
         uses: actions/upload-artifact@v4
