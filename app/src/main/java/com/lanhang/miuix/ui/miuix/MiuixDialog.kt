@@ -277,6 +277,38 @@ private fun DialogCardBody(spec: MiuixDialogSpec, dismiss: () -> Unit) {
  * SavedStateRegistryOwner）装到 ComposeView 上，跟 `DisposeOnDetachedFromWindow` 配合，
  * 对话框关掉时组合照样被丢弃，不会泄漏。
  */
+/**
+ * 前台 Activity 的登记处（2026-10-27 新增）。
+ *
+ * 为什么需要：所有对话框都是「系统 Dialog 窗口 + 内部 Compose」，而 `Dialog(context)` 的窗口
+ * token 来自 context 所属的 Activity。只要调用方传了 `AppContext.instance`（Application），
+ * token 就是 null，`dialog.show()` 立刻抛
+ * `WindowManager$BadTokenException: Unable to add window -- token null is not valid`。
+ * 用户实测：「设置 → 关于 → 诊断与日志」点了必崩。
+ *
+ * 这里由 [App] 注册的 ActivityLifecycleCallbacks 维护「当前 resumed 的 Activity」，
+ * 对话框工厂在调用方给错 context 时用它兜底 —— 单点兜底，任何页面以后再传错也不会崩。
+ * 用弱引用，避免泄漏已销毁的 Activity。
+ */
+object DialogHost {
+    @Volatile
+    private var ref: java.lang.ref.WeakReference<ComponentActivity>? = null
+
+    fun onResumed(activity: ComponentActivity) {
+        ref = java.lang.ref.WeakReference(activity)
+    }
+
+    fun onPaused(activity: ComponentActivity) {
+        if (ref?.get() === activity) ref = null
+    }
+
+    fun current(): ComponentActivity? = ref?.get()
+}
+
+/** 对话框宿主：优先从传入 context 里找 Activity，找不到就用 [DialogHost] 登记的前台 Activity */
+private fun resolveDialogHost(context: Context): ComponentActivity? =
+    context.findComponentActivity() ?: DialogHost.current()
+
 private fun Context.findComponentActivity(): ComponentActivity? {
     var c: Context? = this
     while (c is ContextWrapper) {
@@ -361,14 +393,16 @@ fun showMiuixInput(
     dismissText: String,
     onConfirm: (String) -> Unit,
 ) {
-    val dialog = Dialog(context)
+    // 宿主必须是 Activity（拿不到就用 DialogHost 登记的前台 Activity，见文件头部说明）
+    val host = resolveDialogHost(context)
+    val dialog = Dialog(host ?: context)
     dialog.requestWindowFeature(Window.FEATURE_NO_TITLE)
     var text = ""
     val view = ComposeView(context).apply {
         setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnDetachedFromWindow)
-        installViewTreeOwners(context)
+        installViewTreeOwners(host ?: context)
         setContent {
-            LanhangMiuixTheme(darkTheme = context.isNightMode()) {
+            LanhangMiuixTheme(darkTheme = (host ?: context).isNightMode()) {
                 var visible by remember { mutableStateOf(false) }
                 val dimHolder = remember { floatArrayOf(0f) }
                 var dimAnim by remember { mutableStateOf<android.animation.ValueAnimator?>(null) }
@@ -534,18 +568,25 @@ fun showMiuixInput(
             ViewGroup.LayoutParams.MATCH_PARENT,
         )
     }
-    dialog.show()
+    // 没有 Activity 宿主时绝不 show()：宁可这一个弹窗不出现，也不能让整个应用崩掉
+    if (host != null) {
+        dialog.show()
+    } else {
+        android.util.Log.e("MiuixDialog", "no activity host, skip show")
+    }
 }
 
 /** 弹出 Miuix 风格对话框；返回 Dialog 便于调用方自行 dismiss */
 fun showMiuixDialog(context: Context, spec: MiuixDialogSpec): Dialog {
-    val dialog = Dialog(context)
+    // 宿主必须是 Activity（拿不到就用 DialogHost 登记的前台 Activity，见文件头部说明）
+    val host = resolveDialogHost(context)
+    val dialog = Dialog(host ?: context)
     dialog.requestWindowFeature(Window.FEATURE_NO_TITLE)
     val view = ComposeView(context).apply {
         setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnDetachedFromWindow)
-        installViewTreeOwners(context)
+        installViewTreeOwners(host ?: context)
         setContent {
-            LanhangMiuixTheme(darkTheme = context.isNightMode()) {
+            LanhangMiuixTheme(darkTheme = (host ?: context).isNightMode()) {
                 // 2026-10-25 用户反馈「对话框动画非常生硬」：之前卡片是「啪」一下出现。
                 // 现在照 Miuix 面板的观感做：卡片从下方 1/6 高度弹上来 + 缩放 0.94→1 + 渐显，
                 // 遮罩同时 0 →0.42 渐深；退场反向并延后真正 dismiss，避免闪断。
@@ -658,7 +699,12 @@ fun showMiuixDialog(context: Context, spec: MiuixDialogSpec): Dialog {
             win.attributes = win.attributes.also { it.y = bottomOffset }
         }
     }
-    dialog.show()
+    // 没有 Activity 宿主时绝不 show()：宁可这一个弹窗不出现，也不能让整个应用崩掉
+    if (host != null) {
+        dialog.show()
+    } else {
+        android.util.Log.e("MiuixDialog", "no activity host, skip show")
+    }
     return dialog
 }
 
@@ -735,14 +781,16 @@ fun showMiuixProgress(
     cancelText: String,
     onCancel: () -> Unit,
 ): MiuixProgressDialog {
-    val dialog = Dialog(context)
+    // 宿主必须是 Activity（拿不到就用 DialogHost 登记的前台 Activity，见文件头部说明）
+    val host = resolveDialogHost(context)
+    val dialog = Dialog(host ?: context)
     dialog.requestWindowFeature(Window.FEATURE_NO_TITLE)
     val textState = androidx.compose.runtime.mutableStateOf(initialText)
     val view = ComposeView(context).apply {
         setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnDetachedFromWindow)
-        installViewTreeOwners(context)
+        installViewTreeOwners(host ?: context)
         setContent {
-            LanhangMiuixTheme(darkTheme = context.isNightMode()) {
+            LanhangMiuixTheme(darkTheme = (host ?: context).isNightMode()) {
                 Card(modifier = Modifier.fillMaxWidth(), cornerRadius = 26.dp) {
                     Column(Modifier.fillMaxWidth()) {
                         Column(
@@ -813,7 +861,12 @@ fun showMiuixProgress(
             win.attributes = win.attributes.also { it.y = bottomOffset }
         }
     }
-    dialog.show()
+    // 没有 Activity 宿主时绝不 show()：宁可这一个弹窗不出现，也不能让整个应用崩掉
+    if (host != null) {
+        dialog.show()
+    } else {
+        android.util.Log.e("MiuixDialog", "no activity host, skip show")
+    }
     return MiuixProgressDialog(dialog, textState)
 }
 

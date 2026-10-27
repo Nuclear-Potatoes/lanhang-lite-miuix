@@ -640,25 +640,27 @@ private fun MomentCard(
                                         )
                                         if (replyTo != null) {
                                             // 2026-10-25 用户要求：「回复」两个字保持次要灰，
-                                            // 只有**姓名**用蓝色（可点击进个人主页的那两个名字）
+                                            // 只有**姓名**用蓝色（可点击进个人主页的那两个名字）。
+                                            // 2026-10-27 第二十轮用户反馈：「A 回复 B」里点前面的 A
+                                            // 能进主页、点后面的 B 不行——B 之前是画在一段
+                                            // AnnotatedString 里的死文本。现在拆成两段，B 自己
+                                            // 带点击区域，轻点就进那个人的主页。
                                             Text(
-                                                text = buildAnnotatedString {
-                                                    withStyle(
-                                                        SpanStyle(
-                                                            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                                                        )
-                                                    ) { append(" $replyInline ") }
-                                                    withStyle(
-                                                        SpanStyle(
-                                                            color = MiuixTheme.colorScheme.primary,
-                                                            fontWeight = FontWeight.Medium,
-                                                        )
-                                                    ) { append(UserInfoCache.nameOf(replyTo)) }
-                                                },
+                                                text = " $replyInline ",
                                                 style = MiuixTheme.textStyles.footnote1,
                                                 color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                                                 maxLines = 1,
+                                            )
+                                            Text(
+                                                text = UserInfoCache.nameOf(replyTo),
+                                                style = MiuixTheme.textStyles.footnote1,
+                                                color = MiuixTheme.colorScheme.primary,
+                                                fontWeight = FontWeight.Medium,
+                                                maxLines = 1,
                                                 overflow = TextOverflow.Ellipsis,
+                                                modifier = Modifier
+                                                    .clip(RoundedCornerShape(50))
+                                                    .clickable { onOpenProfile(replyTo) },
                                             )
                                         }
                                     }

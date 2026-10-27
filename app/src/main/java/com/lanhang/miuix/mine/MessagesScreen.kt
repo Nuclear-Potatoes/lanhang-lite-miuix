@@ -1,5 +1,6 @@
 package com.lanhang.miuix.mine
 
+import com.lanhang.miuix.ui.miuix.pressableRow
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -262,7 +263,7 @@ private fun MessageRow(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .clickable { onOpen() }
+                .pressableRow(onClick = { onOpen() }, corner = 16.dp)
                 .padding(horizontal = 14.dp, vertical = 11.dp),
         ) {
             LanhangAvatar(

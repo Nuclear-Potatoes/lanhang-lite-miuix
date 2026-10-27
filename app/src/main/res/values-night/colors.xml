@@ -9,7 +9,13 @@
     <color name="text_tertiary">#66FFFFFF</color>
     <color name="divider">#1FFFFFFF</color>
 
-    <color name="link">#3482FF</color>
+    <!-- 2026-10-27 第二十一轮：之前漏了 primary / gray / like_red，
+         values-night 缺项会回退到浅色那套（#3482FF 副标题下只剩 5.2:1，看着发闷） -->
+    <color name="primary">#4C8DFF</color>
+    <color name="on_primary">#FFFFFFFF</color>
+    <color name="gray">#8E8E93</color>
+    <color name="like_red">#F2564A</color>
+    <color name="link">#6FA8FF</color>
     <color name="moment_interact">#2D2D2D</color>
     <color name="primary_container">#103D58</color>
     <color name="on_primary_container">#C7E9FA</color>

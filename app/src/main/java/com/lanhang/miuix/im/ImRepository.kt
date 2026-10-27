@@ -435,16 +435,14 @@ object ImRepository {
                         }
                         .filter { it.peerId.isNotBlank() }
                         .sortedByDescending { it.time }
-                    // 第十二轮「幽灵私信」：最后一条是不可解析消息、正文拿不出来的会话整条丢掉，
-                    // 并把它的未读清掉（否则徽标一直挂着，下次拉取又回来）
-                    val (ghosts, real) = mapped.partition { it.preview.isBlank() }
-                    ghosts.forEach { g ->
-                        dropGhost(
-                            if (g.isGroup) Conversation.ConversationType.GROUP
-                            else Conversation.ConversationType.PRIVATE,
-                            g.peerId,
-                        )
-                    }
+                    // 第十二轮「幽灵私信」：最后一条是不可解析消息、正文拿不出来的**单聊**整条丢掉，
+                    // 并把它的未读清掉（否则徽标一直挂着，下次拉取又回来）。
+                    // 第十五轮（用户反馈「私信栏里没有群聊了」）：**群聊绝不能按幽灵处理**——
+                    // 群里常见未知/插件类消息（预览为空），刚加入的群更是 latestMessage 为 null、
+                    // 预览也为空；以前它们被一起丢掉，于是群会话从列表里彻底消失。现在群聊一律保留，
+                    // 正文为空时给一句占位（见 previewText）。
+                    val (ghosts, real) = mapped.partition { it.preview.isBlank() && !it.isGroup }
+                    ghosts.forEach { g -> dropGhost(Conversation.ConversationType.PRIVATE, g.peerId) }
                     conversations = real
                     loadingConversations = false
                     scope.launch { runCatching { ImCache.saveConversations(real) } }

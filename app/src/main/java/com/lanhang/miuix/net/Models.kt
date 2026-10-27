@@ -85,8 +85,18 @@ data class StaffBrief(
     val portrait_url: String? = null,
     val depart_name: String? = null,
     val duty_name: String? = null,
-    val company_id: String? = null
-)
+    val company_id: String? = null,
+    /**
+     * 学号 / 工号（服务端 `staff_no`）。
+     *
+     * 第二十轮（2026-10-27）用户要求通讯录里显示学号：`/staffs/batch` 会把它带回来。
+     * 学生是 `260106336@stu.nchu.edu.cn` 这种形式，个别接口给纯学号，见 [studentNo]。
+     */
+    @SerializedName("staff_no") val staffNo: String? = null
+) {
+    /** 界面上的学号：去掉 `@stu.nchu.edu.cn` 这种后缀，取不到就 null（界面自动省掉这一行） */
+    val studentNo: String? get() = staffNo?.substringBefore('@')?.takeIf { it.isNotBlank() }
+}
 
 data class StaffBatchResult(val data: List<StaffBrief>? = null, val timestamp: Long? = null)
 

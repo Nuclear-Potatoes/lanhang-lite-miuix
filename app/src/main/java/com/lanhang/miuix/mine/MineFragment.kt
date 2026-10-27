@@ -47,6 +47,9 @@ import com.lanhang.miuix.moments.MomentFeedSource
 import com.lanhang.miuix.moments.MomentItem
 import com.lanhang.miuix.moments.UserInfoCache
 import com.lanhang.miuix.im.ImRepository
+import com.lanhang.miuix.profile.ProfileStore
+import com.lanhang.miuix.profile.ProfileStackState
+import com.lanhang.miuix.profile.profileTitle
 import com.lanhang.miuix.net.MomentsApi
 import com.lanhang.miuix.net.RceApi
 import com.lanhang.miuix.net.cleanOrgName
@@ -99,6 +102,18 @@ class MineFragment : Fragment() {
     private val contactsUi = ContactsUiState()
 
     /**
+     * 个人主页栈（2026-10-27 第二十一轮）。
+     *
+     * 通讯录 / 消息 / 私信 / 相册里点进来的「他人主页」全部走这一份实现
+     * （`profile/ProfileHost.kt`）：A → B 可以一直往下压，返回正好弹回 A，
+     * 转场、标题、数据缓存都与工作圈完全同一套。
+     */
+    private val profileStack = ProfileStackState()
+
+    /** 主页数据（资料 + 动态分页 + 点赞评论），按 uid 缓存 */
+    private lateinit var profileStore: ProfileStore
+
+    /**
      * 页面栈里的一层：页面 + 这一层自带的目标。
      *
      * [peerId]/[title]：`IM_CHAT` 层看的是谁（单聊=对方 userId，群聊=groupId；title 是顶栏标题）
@@ -127,9 +142,6 @@ class MineFragment : Fragment() {
     /** 我发过的动态分页游标 */
     private var selfFromFeedId: String? = null
 
-    /** 别人主页的分页游标（通讯录 → 查看个人主页） */
-    private var otherFromFeedId: String? = null
-
     private var pendingExport: ScheduleExporter.ExportPayload? = null
     private var exportJob: Job? = null
     private val createIcsDocument = registerForActivityResult(
@@ -152,6 +164,14 @@ class MineFragment : Fragment() {
     private val backCallback = object : OnBackPressedCallback(false) {
         override fun handleOnBackPressed() {
             goBack()
+        }
+    }
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        // 主页里的点赞/评论改的是同一批 MomentItem，顺手把相册那一页的 revision 提一下
+        profileStore = ProfileStore(lifecycleScope) {
+            uiState = uiState.copy(selfRevision = uiState.selfRevision + 1)
         }
     }
 
@@ -197,12 +217,16 @@ class MineFragment : Fragment() {
                         // rect = 缩略图在窗口里的位置，预览页据此做「从缩略图放大 / 缩回原位」
                         ImagePreviewActivity.start(requireContext(), urls, index, rect)
                     },
-                    onRefreshOther = { loadOther(reset = true) },
-                    onLoadMoreOther = { loadOther(reset = false) },
-                    onLikeOther = { otherLike(it) },
-                    onPostCommentOther = { item, replyTo, text -> otherComment(item, replyTo, text) },
-                    onDeleteCommentOther = { item, comment -> otherDeleteComment(item, comment) },
-                    onDeletePostOther = { item -> otherDeletePost(item) },
+                    profileStack = profileStack,
+                    profileStore = profileStore,
+                    onProfileTitle = { title ->
+                        // 主页退出动画期间它还在组合里，标题只在「当前确实是主页」时才写，
+                        // 否则会把刚进去的聊天页顶栏又改回「X 的个人主页」
+                        if (stack.last().page == MinePage.PROFILE_OTHER) {
+                            (activity as? MainActivity)?.showToolbarSub(title, onBack = { goBack() })
+                        }
+                    },
+                    onMessageOther = { id, name -> openImChat(id, name) },
                 )
             }
         }
@@ -228,6 +252,9 @@ class MineFragment : Fragment() {
                 )
             }
             stack[0] = MineEntry(MinePage.ROOT)
+            savedInstanceState?.getStringArray(KEY_PROFILE_STACK)
+                ?.takeIf { it.isNotEmpty() }
+                ?.let { profileStack.restore(it.toList()) }
             backCallback.isEnabled = stack.size > 1
             // 恢复后让当前层的数据跟着栈顶走（否则页面渲染的是别的会话 / 别的人）
             applyEntry(stack.last(), resetData = false)
@@ -282,6 +309,10 @@ class MineFragment : Fragment() {
         outState.putStringArray(KEY_STACK_PEER, stack.map { it.peerId }.toTypedArray())
         outState.putStringArray(KEY_STACK_TITLE, stack.map { it.title }.toTypedArray())
         outState.putStringArray(KEY_STACK_OTHER, stack.map { it.otherId }.toTypedArray())
+        outState.putStringArray(
+            KEY_PROFILE_STACK,
+            profileStack.snapshot().toTypedArray(),
+        )
     }
 
     /** 与 MainActivity 对齐 Toolbar 状态（目录态 = 标题+无返回；二级页 = 返回箭头+子页标题）。 */
@@ -303,17 +334,17 @@ class MineFragment : Fragment() {
             val title = uiState.imPeerName.takeIf { it.isNotBlank() } ?: getString(R.string.mine_im)
             act.showToolbarSub(title, onBack = { goBack() })
         } else if (page == MinePage.PROFILE_OTHER) {
-            // 别人的主页显示那个人的名字
-            val title = (uiState.otherStaff?.name ?: UserInfoCache.get(uiState.otherUserId)?.name)
-                ?.takeIf { it.isNotBlank() } ?: getString(R.string.mine_profile)
-            act.showToolbarSub(title, onBack = { goBack() })
+            // 与他人主页同一份标题：姓名回来之前显示「个人主页」，回来之后是「X 的个人主页」
+            val uid = profileStack.current.orEmpty()
+            val name = profileStore.peek(uid)?.name ?: UserInfoCache.get(uid)?.name
+            act.showToolbarSub(profileTitle(requireContext(), name), onBack = { goBack() })
         } else if (page == MinePage.CONTACTS) {
             // 通讯录是深层目录：左上角「首页」一步回「我的」根页，返回箭头只退一级目录
             // （用户 2026-10-26 要求）
             act.showToolbarSub(
                 getString(MinePage.titleRes(page)),
-                // 返回箭头 = 退一级目录；已经在通讯录根层才退「我的」页栈
-                onBack = { if (!contactsUi.popOneLevel()) goBack() },
+                // 返回箭头 = 先退出搜索、再退一级目录；已经在通讯录根层才退「我的」页栈
+                onBack = { if (!contactsUi.backOnce()) goBack() },
                 onHome = { goRoot() },
             )
         } else {
@@ -354,22 +385,9 @@ class MineFragment : Fragment() {
                 }
             }
             MinePage.PROFILE_OTHER -> {
-                if (uiState.otherUserId == entry.otherId) return
-                uiState = if (resetData) {
-                    uiState.copy(
-                        otherUserId = entry.otherId,
-                        otherStaff = null,
-                        otherItems = emptyList(),
-                        otherLoading = false,
-                        otherRefreshing = false,
-                        otherEnded = false,
-                        otherRevision = uiState.otherRevision + 1,
-                    )
-                } else {
-                    uiState.copy(otherUserId = entry.otherId)
-                }
-                otherFromFeedId = null
-                if (resetData) loadOther(reset = true)
+                // 主页栈自己记着「这一层是谁」，这里只在栈空时按页面栈里的目标还原
+                // （进程恢复、或从聊天页退回主页时）
+                if (profileStack.isEmpty) profileStack.restore(listOf(entry.otherId))
             }
             else -> Unit
         }
@@ -377,7 +395,18 @@ class MineFragment : Fragment() {
 
     /** 退一层（物理返回键与顶栏返回箭头共用） */
     private fun goBack() {
+        // 他人主页是「栈中栈」：A → B → …，先按主页栈退一层，退到没人了才退页面
+        if (stack.last().page == MinePage.PROFILE_OTHER && profileStack.size > 1) {
+            profileStack.pop()
+            stack[stack.lastIndex] = MineEntry(
+                MinePage.PROFILE_OTHER,
+                otherId = profileStack.current.orEmpty(),
+            )
+            syncToolbar()
+            return
+        }
         if (stack.size <= 1) return
+        if (stack.last().page == MinePage.PROFILE_OTHER) profileStack.clear()
         stack.removeAt(stack.lastIndex)
         uiState = uiState.copy(forward = false)
         backCallback.isEnabled = stack.size > 1
@@ -462,38 +491,25 @@ class MineFragment : Fragment() {
      */
     fun openOtherProfile(userId: String) {
         if (userId.isBlank() || view == null) return
-        val entry = MineEntry(MinePage.PROFILE_OTHER, otherId = userId)
-        if (stack.last().page == MinePage.PROFILE_OTHER) {
-            // 已经在主页层：只换人，不压栈（同一层的栈信息一起换，返回才不会串号）
-            stack[stack.lastIndex] = entry
-            otherFromFeedId = null
-            uiState = uiState.copy(
-                otherUserId = userId,
-                otherStaff = null,
-                otherItems = emptyList(),
-                otherLoading = false,
-                otherRefreshing = false,
-                otherEnded = false,
-                otherRevision = uiState.otherRevision + 1,
-            )
-            render()
-            syncToolbar()
-            loadOther(reset = true)
-        } else {
-            // 先清数据再压栈：推入动画期间不会先闪一下上一个人的内容
-            otherFromFeedId = null
-            uiState = uiState.copy(
-                otherUserId = userId,
-                otherStaff = null,
-                otherItems = emptyList(),
-                otherLoading = false,
-                otherRefreshing = false,
-                otherEnded = false,
-                otherRevision = uiState.otherRevision + 1,
-            )
-            open(entry)
-            loadOther(reset = true)
+        // 自己 → 「我的主页」（相册 / 消息里点到自己的头像时走这条）
+        if (userId == Session.userId) {
+            if (stack.last().page == MinePage.PROFILE_OTHER) profileStack.clear()
+            if (stack.last().page == MinePage.PROFILE) return
+            open(MinePage.PROFILE)
+            return
         }
+        if (stack.last().page == MinePage.PROFILE_OTHER) {
+            // 已经在主页层：往主页栈里压一层 → 自带推入转场，返回正好弹回上一个人
+            profileStack.push(userId)
+            stack[stack.lastIndex] = MineEntry(
+                MinePage.PROFILE_OTHER,
+                otherId = profileStack.current.orEmpty(),
+            )
+            syncToolbar()
+            return
+        }
+        profileStack.reset(userId)
+        open(MineEntry(MinePage.PROFILE_OTHER, otherId = userId))
     }
 
     /** 进入某个二级页时按需拉数据 */
@@ -504,9 +520,7 @@ class MineFragment : Fragment() {
                 ensureStaff()
                 if (uiState.selfItems.isEmpty() && !uiState.selfLoading) loadSelf(reset = true)
             }
-            MinePage.PROFILE_OTHER -> if (uiState.otherItems.isEmpty() && !uiState.otherLoading) {
-                loadOther(reset = true)
-            }
+            MinePage.PROFILE_OTHER -> Unit   // 主页数据由 ProfileStackHost 自己 ensure
             else -> ensureStaff()
         }
     }
@@ -687,115 +701,6 @@ class MineFragment : Fragment() {
         }
     }
 
-    // ============================================================ 别人的个人主页（通讯录进入）
-
-    /**
-     * 拉某个人的资料 + 他的动态（协议同工作圈：`GET /timeline/{user_id}` + `POST /feed/batch`）。
-     * 和 [loadSelf] 一样分页，区别只是 userId 换成对方、结果放在 `other*` 这组字段里。
-     */
-    private fun loadOther(reset: Boolean) {
-        val uid = uiState.otherUserId
-        if (uid.isBlank() || uiState.otherLoading) return
-        if (!reset && uiState.otherEnded) return
-        uiState = uiState.copy(
-            otherLoading = true,
-            otherRefreshing = reset && uiState.otherItems.isNotEmpty(),
-        )
-        viewLifecycleOwner.lifecycleScope.launch {
-            try {
-                val staff = uiState.otherStaff ?: withContext(Dispatchers.IO) { RceApi.getStaff(uid) }
-                // 姓名解析走同一条 staffs/batch 缓存（顶栏标题也要用）
-                runCatching { UserInfoCache.resolve(listOf(uid)) }
-                val from = if (reset) null else otherFromFeedId
-                val fetched = MomentFeedSource.load(uid, from, MomentsApi.PAGE_SIZE)
-                if (fetched.isNotEmpty()) {
-                    otherFromFeedId = fetched.last().feed.feed_id ?: otherFromFeedId
-                }
-                uiState = uiState.copy(
-                    otherStaff = staff,
-                    otherItems = if (reset) fetched else uiState.otherItems + fetched,
-                    otherLoading = false,
-                    otherRefreshing = false,
-                    otherEnded = fetched.size < MomentsApi.PAGE_SIZE,
-                    otherRevision = uiState.otherRevision + 1,
-                )
-                syncToolbar()
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                uiState = uiState.copy(otherLoading = false, otherRefreshing = false)
-                toast(e.message)
-            }
-        }
-    }
-
-    private fun otherLike(item: MomentItem) {
-        viewLifecycleOwner.lifecycleScope.launch {
-            try {
-                val liked = MomentActions.toggleLike(item)
-                if (liked) {
-                    item.likes.add(LikeEntry(user_id = Session.userId, feed_id = item.feed.feed_id))
-                } else {
-                    item.likes.removeAll { it.user_id == Session.userId }
-                }
-                uiState = uiState.copy(otherRevision = uiState.otherRevision + 1)
-            } catch (e: Exception) {
-                toast(e.message)
-            }
-        }
-    }
-
-    private fun otherComment(item: MomentItem, replyTo: String?, text: String) {
-        viewLifecycleOwner.lifecycleScope.launch {
-            try {
-                MomentActions.comment(item, replyTo, text)
-                reloadOtherFeed(item)
-            } catch (e: Exception) {
-                toast(e.message)
-            }
-        }
-    }
-
-    private fun otherDeleteComment(item: MomentItem, comment: CommentEntry) {
-        viewLifecycleOwner.lifecycleScope.launch {
-            try {
-                MomentActions.deleteComment(item, comment)
-                reloadOtherFeed(item)
-            } catch (e: Exception) {
-                toast(e.message)
-            }
-        }
-    }
-
-    /** 别人的动态只有作者能删，这里仅在接口允许时兜底（失败会 toast 出后端原因） */
-    private fun otherDeletePost(item: MomentItem) {
-        viewLifecycleOwner.lifecycleScope.launch {
-            try {
-                MomentActions.deleteFeed(item)
-                uiState = uiState.copy(
-                    otherItems = uiState.otherItems.filter { it !== item },
-                    otherRevision = uiState.otherRevision + 1,
-                )
-            } catch (e: Exception) {
-                toast(e.message)
-            }
-        }
-    }
-
-    private fun reloadOtherFeed(item: MomentItem) {
-        val feedId = item.feed.feed_id ?: return
-        viewLifecycleOwner.lifecycleScope.launch {
-            val fresh = runCatching {
-                withContext(Dispatchers.IO) { MomentsApi.getFeed(feedId) }
-            }.getOrNull() ?: return@launch
-            item.comments.clear()
-            fresh.comments?.let { item.comments.addAll(it) }
-            item.likes.clear()
-            fresh.likes?.let { item.likes.addAll(it) }
-            uiState = uiState.copy(otherRevision = uiState.otherRevision + 1)
-        }
-    }
-
     /**
      * 院系名的三档取值：depart_name → extra.org → 上次缓存的。
      * 学校的 extra.org 有时是纯数字组织编码（形如 2601063），那种不往界面上放。
@@ -819,7 +724,7 @@ class MineFragment : Fragment() {
         val labels = themeOptions.map { getString(it.second) }
         val checked = themeOptions.indexOfFirst { it.first == Session.themeMode }.coerceAtLeast(0)
         showMiuixPicker(
-            context = AppContext.instance,
+            requireActivity(),
             title = getString(R.string.settings_theme_title),
             items = labels,
             selectedIndex = checked,
@@ -852,7 +757,7 @@ class MineFragment : Fragment() {
         val labels = AppLanguage.options.map { getString(AppLanguage.labelRes(it)) }
         val checked = AppLanguage.options.indexOf(Session.language).coerceAtLeast(0)
         showMiuixPicker(
-            context = AppContext.instance,
+            requireActivity(),
             title = getString(R.string.settings_language),
             items = labels,
             selectedIndex = checked,
@@ -885,7 +790,7 @@ class MineFragment : Fragment() {
         val missing = missingWeeks(data, plan)
         if (missing > 0) {
             showMiuixConfirm(
-                context = AppContext.instance,
+                requireActivity(),
                 title = getString(R.string.schedule_export_title),
                 message = getString(R.string.schedule_export_sync_needed, missing),
                 confirmText = getString(R.string.schedule_export_start_sync),
@@ -964,7 +869,7 @@ class MineFragment : Fragment() {
             getString(R.string.schedule_export_share)
         )
         showMiuixDialog(
-            AppContext.instance,
+            requireActivity(),
             MiuixDialogSpec(
                 title = getString(R.string.schedule_export_title),
                 summary = getString(
@@ -993,7 +898,7 @@ class MineFragment : Fragment() {
     }
 
     private fun createExportProgress(): MiuixProgressDialog = showMiuixProgress(
-        context = AppContext.instance,
+        requireActivity(),
         title = getString(R.string.schedule_export_title),
         initialText = getString(R.string.schedule_export_preparing),
         cancelText = getString(R.string.schedule_export_cancel),
@@ -1055,7 +960,7 @@ class MineFragment : Fragment() {
     /** 退出登录（原顶栏「更多」菜单项，2026-10-24 用户要求删掉三点菜单后移到这里） */
     private fun confirmLogout() {
         showMiuixConfirm(
-            context = AppContext.instance,
+            requireActivity(),
             title = getString(R.string.action_logout),
             message = getString(R.string.settings_logout_confirm),
             confirmText = getString(R.string.action_logout),
@@ -1067,7 +972,7 @@ class MineFragment : Fragment() {
     private fun showDiagnostics() {
         val report = Diagnostics.report(AppContext.instance)
         showMiuixDialog(
-            AppContext.instance,
+            requireActivity(),
             MiuixDialogSpec(
                 title = getString(R.string.settings_diagnostics),
                 summary = report,
@@ -1094,5 +999,7 @@ class MineFragment : Fragment() {
 private const val KEY_STACK_PEER = "mine_page_stack_peer"
 private const val KEY_STACK_TITLE = "mine_page_stack_title"
 private const val KEY_STACK_OTHER = "mine_page_stack_other"
+    /** 个人主页栈（A → B → …）随页面栈一起存 */
+    private const val KEY_PROFILE_STACK = "mine_profile_stack"
     }
 }

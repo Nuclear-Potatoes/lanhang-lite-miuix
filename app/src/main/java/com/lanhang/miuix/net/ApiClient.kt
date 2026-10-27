@@ -117,6 +117,19 @@ object ApiClient {
             .mapValues { (_, list) -> list.joinToString("; ") { "${it.name}=${it.value}" } }
     }
 
+    /** 按名字/域名（子串）匹配批量删 cookie（图书馆座位系统的 lib-zw 会话、校园网门户会话用它清）。
+     *  2026-10-27 移植图书馆座位预约时新增：上游同名方法，语义一致。 */
+    fun clearCookiesMatching(match: String) {
+        val it = cookies.entries.iterator()
+        while (it.hasNext()) {
+            val e = it.next()
+            if (e.key.contains(match)) {
+                it.remove()
+                cookieSp?.edit()?.remove(e.key)?.apply()
+            }
+        }
+    }
+
     fun clearCookies() {
         cookies.clear()
         cookieSp?.edit()?.clear()?.apply()

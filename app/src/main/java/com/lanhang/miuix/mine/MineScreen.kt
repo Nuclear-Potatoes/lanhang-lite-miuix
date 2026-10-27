@@ -1,5 +1,7 @@
 package com.lanhang.miuix.mine
 
+import com.lanhang.miuix.ui.miuix.pressableRow
+import com.lanhang.miuix.ui.miuix.accentColor
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -42,6 +44,10 @@ import com.lanhang.miuix.moments.CommentEntry
 import com.lanhang.miuix.moments.MomentItem
 import com.lanhang.miuix.moments.MomentsScreen
 import com.lanhang.miuix.net.StaffInfo
+import com.lanhang.miuix.profile.ProfileStackHost
+import com.lanhang.miuix.profile.ProfileStackState
+import com.lanhang.miuix.profile.ProfileStore
+import com.lanhang.miuix.session.Session
 import com.lanhang.miuix.ui.miuix.LanhangAvatar
 import com.lanhang.miuix.ui.miuix.LanhangIcons
 import com.lanhang.miuix.ui.miuix.MiuiNavStack
@@ -212,13 +218,13 @@ fun MineScreen(
     onDeleteComment: (MomentItem, CommentEntry) -> Unit,
     onDeletePost: (MomentItem) -> Unit,
     onImage: (List<String>, Int, android.graphics.Rect?) -> Unit,
-    // 别人的个人主页（通讯录进来）自己的取数与互动
-    onRefreshOther: () -> Unit,
-    onLoadMoreOther: () -> Unit,
-    onLikeOther: (MomentItem) -> Unit,
-    onPostCommentOther: (MomentItem, String?, String) -> Unit,
-    onDeleteCommentOther: (MomentItem, CommentEntry) -> Unit,
-    onDeletePostOther: (MomentItem) -> Unit,
+    // 别人的个人主页：整块交给共享实现（profile/ProfileHost.kt，与工作圈同一份代码）
+    profileStack: ProfileStackState,
+    profileStore: ProfileStore,
+    /** 主页顶栏标题（「X 的个人主页」）→ 由 Fragment 去改 Toolbar */
+    onProfileTitle: (String) -> Unit,
+    /** 主页上的「发私信」→ 和这个人聊 */
+    onMessageOther: (String, String) -> Unit,
 ) {
     // 通讯录的下钻栈由 [MineFragment] 持有（2026-10-26 第二轮：顶栏返回键要能逐级退回，
     // 所以状态必须放得比本 Composable 更高一层）
@@ -269,8 +275,12 @@ fun MineScreen(
                     onDeletePost = onDeletePost,
                     onImage = onImage,
                     onOpenPublish = {},
-                    // 相册里是我自己的动态：点头像/姓名回「我的主页」
-                    onOpenProfile = { onOpenProfile() },
+                    // 相册里虽然都是我发的动态，但评论/点赞的人可能是别人：
+                    // 点谁的头像就进谁的主页（自己 → 「我的主页」，别人 → 他人主页）
+                    onOpenProfile = { id ->
+                        if (id.isBlank() || id == Session.userId) onOpenProfile()
+                        else onOpenOtherProfile(id)
+                    },
                     showFab = false,
                     listState = pageLists.of(MinePage.ALBUM),
                 )
@@ -294,6 +304,9 @@ fun MineScreen(
                     onDeleteComment = onDeleteComment,
                     onDeletePost = onDeletePost,
                     onImage = onImage,
+                    onOpenProfile = { id ->
+                        if (id.isNotBlank() && id != Session.userId) onOpenOtherProfile(id)
+                    },
                     listState = pageLists.of(MinePage.PROFILE),
                 )
             }
@@ -316,28 +329,17 @@ fun MineScreen(
                 )
             }
 
-            // 别人的个人主页：通讯录点「查看个人主页」进来，返回退到通讯录那一级目录
+            // 别人的个人主页：通讯录 / 消息 / 私信 / 相册 点进来都是这一份实现
+            // （与工作圈相同：profile/ProfileHost.kt）
             MinePage.PROFILE_OTHER -> Box(pageModifier) {
-                UserProfilePage(
-                    staff = state.otherStaff,
-                    userId = state.otherUserId,
-                    isSelf = false,
-                    items = state.otherItems,
-                    loading = state.otherLoading,
-                    refreshing = state.otherRefreshing,
-                    ended = state.otherEnded,
-                    revision = state.otherRevision,
-                    emptyText = stringResource(R.string.profile_empty_other),
-                    onRefresh = onRefreshOther,
-                    onLoadMore = onLoadMoreOther,
-                    onLike = onLikeOther,
-                    onPostComment = onPostCommentOther,
-                    onDeleteComment = onDeleteCommentOther,
-                    onDeletePost = onDeletePostOther,
-                    onImage = onImage,
+                ProfileStackHost(
+                    stack = profileStack,
+                    store = profileStore,
+                    onTitle = onProfileTitle,
                     onOpenProfile = onOpenOtherProfile,
-                    onMessage = { onOpenImChat(state.otherUserId, state.otherStaff?.name.orEmpty()) },
-                    listState = pageLists.of(MinePage.PROFILE_OTHER),
+                    onMessage = onMessageOther,
+                    onImage = onImage,
+                    emptyText = stringResource(R.string.profile_empty_other),
                 )
             }
 
@@ -454,7 +456,7 @@ private fun androidx.compose.foundation.lazy.LazyListScope.mineRootItems(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clickable { onOpenProfile() }
+                    .pressableRow(onClick = { onOpenProfile() }, corner = 16.dp)
                     .padding(horizontal = 16.dp, vertical = 18.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
@@ -504,7 +506,7 @@ private fun androidx.compose.foundation.lazy.LazyListScope.mineRootItems(
         Card(modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)) {
             MineRow(
                 icon = MiuixIcons.Notes,
-                tint = Color(0xFF3B7DD8),
+                tint = accentColor(Color(0xFF3B7DD8)),
                 title = stringResource(R.string.tab_grades),
                 summary = stringResource(R.string.mine_grades_summary),
                 onClick = onOpenGrades,
@@ -516,7 +518,7 @@ private fun androidx.compose.foundation.lazy.LazyListScope.mineRootItems(
         Card(modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)) {
             MineRow(
                 icon = LanhangIcons.Contacts,
-                tint = Color(0xFF3F8CE8),
+                tint = accentColor(Color(0xFF3F8CE8)),
                 title = stringResource(R.string.mine_contacts),
                 summary = stringResource(R.string.mine_contacts_summary),
                 onClick = onOpenContacts,
@@ -524,7 +526,7 @@ private fun androidx.compose.foundation.lazy.LazyListScope.mineRootItems(
             HorizontalDivider(modifier = Modifier.padding(start = 62.dp, end = 16.dp))
             MineRow(
                 icon = LanhangIcons.Message,
-                tint = Color(0xFFE2564F),
+                tint = accentColor(Color(0xFFE2564F)),
                 title = stringResource(R.string.mine_messages),
                 summary = stringResource(R.string.mine_messages_summary),
                 badge = state.unreadCount,
@@ -533,7 +535,7 @@ private fun androidx.compose.foundation.lazy.LazyListScope.mineRootItems(
             HorizontalDivider(modifier = Modifier.padding(start = 62.dp, end = 16.dp))
             MineRow(
                 icon = LanhangIcons.Bolt,
-                tint = Color(0xFF3E9C63),
+                tint = accentColor(Color(0xFF3E9C63)),
                 title = stringResource(R.string.mine_im),
                 summary = stringResource(R.string.mine_im_summary),
                 onClick = onOpenIm,
@@ -545,7 +547,7 @@ private fun androidx.compose.foundation.lazy.LazyListScope.mineRootItems(
         Card(modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)) {
             MineRow(
                 icon = MiuixIcons.Scan,
-                tint = Color(0xFF8A63D2),
+                tint = accentColor(Color(0xFF8A63D2)),
                 title = stringResource(R.string.mine_idcard),
                 summary = stringResource(R.string.mine_idcard_summary),
                 onClick = onOpenIdCard,
@@ -553,7 +555,7 @@ private fun androidx.compose.foundation.lazy.LazyListScope.mineRootItems(
             HorizontalDivider(modifier = Modifier.padding(start = 62.dp, end = 16.dp))
             MineRow(
                 icon = MiuixIcons.Album,
-                tint = Color(0xFFE8894A),
+                tint = accentColor(Color(0xFFE8894A)),
                 title = stringResource(R.string.mine_album),
                 summary = stringResource(R.string.mine_album_summary),
                 onClick = onOpenAlbum,
@@ -565,7 +567,7 @@ private fun androidx.compose.foundation.lazy.LazyListScope.mineRootItems(
         Card(modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)) {
             MineRow(
                 icon = MiuixIcons.Settings,
-                tint = Color(0xFF6E7B8B),
+                tint = accentColor(Color(0xFF6E7B8B)),
                 title = stringResource(R.string.mine_settings),
                 summary = null,
                 onClick = onOpenSettings,
@@ -573,7 +575,7 @@ private fun androidx.compose.foundation.lazy.LazyListScope.mineRootItems(
             HorizontalDivider(modifier = Modifier.padding(start = 62.dp, end = 16.dp))
             MineRow(
                 icon = MiuixIcons.Info,
-                tint = Color(0xFF2FA39A),
+                tint = accentColor(Color(0xFF2FA39A)),
                 title = stringResource(R.string.mine_about),
                 summary = stringResource(R.string.settings_about_version, state.version),
                 onClick = onOpenAbout,
@@ -607,7 +609,7 @@ private fun MineRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable { onClick() }
+            .pressableRow(onClick = onClick, corner = 16.dp)
             .padding(horizontal = 16.dp, vertical = 13.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {

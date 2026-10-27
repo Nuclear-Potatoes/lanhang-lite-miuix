@@ -1,5 +1,6 @@
 package com.lanhang.miuix.mine
 
+import com.lanhang.miuix.ui.miuix.pressableRow
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -42,10 +43,13 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import com.lanhang.miuix.R
+import com.lanhang.miuix.moments.UserInfoCache
 import com.lanhang.miuix.net.ContactsRepository
 import com.lanhang.miuix.net.Department
 import com.lanhang.miuix.net.OrgEntry
 import com.lanhang.miuix.net.RceApi
+import com.lanhang.miuix.net.StaffInfo
+import com.lanhang.miuix.net.StaffSearchHit
 import com.lanhang.miuix.ui.miuix.LanhangAvatar
 import com.lanhang.miuix.ui.miuix.LanhangIcons
 import com.lanhang.miuix.ui.miuix.MiuiNavStack
@@ -103,6 +107,12 @@ class ContactsUiState {
     /** 下钻栈：空 = 根层（教职工 / 学生 …） */
     val path = mutableStateListOf<Department>()
 
+    /** 搜索命中的「人」（`POST /staffs/search`：学号 / 姓名都能查） */
+    var staffHits by mutableStateOf<List<StaffSearchHit>>(emptyList())
+
+    /** 人员搜索在飞：只在真的没结果时才显示「没有找到」 */
+    var staffSearching by mutableStateOf(false)
+
     /**
      * 退一级目录（顶栏返回箭头 / 系统返回键都走这里）。
      * 已经在通讯录根层时返回 false，让调用方去退「我的」页栈。
@@ -111,6 +121,23 @@ class ContactsUiState {
         if (path.isEmpty()) return false
         path.removeAt(path.lastIndex)
         return true
+    }
+
+    /**
+     * 返回一步：**先退出搜索**，再退一级目录。
+     *
+     * 第二十轮（2026-10-27）用户反馈：在通讯录里搜索、输入了内容之后点返回，
+     * 会一路退回「我的」页——因为搜索态没被当成一层。现在搜索态是一层：
+     * 返回先把关键词清空、留在刚才那一页通讯录，再按一次才退目录。
+     */
+    fun backOnce(): Boolean {
+        if (query.isNotBlank()) {
+            query = ""
+            staffHits = emptyList()
+            staffSearching = false
+            return true
+        }
+        return popOneLevel()
     }
 }
 
@@ -154,8 +181,9 @@ fun ContactsScreen(
 
     // 系统返回手势/返回键：在下钻层里先退到上一级目录，别直接退到「我的」根页面
     // （用户 2026-10-26 反馈：点进几层子目录后一划返回就回到「我的」了）
-    BackHandler(enabled = state.path.isNotEmpty() && state.query.isBlank()) {
-        if (state.path.isNotEmpty()) state.path.removeAt(state.path.size - 1)
+    // 搜索态也算「一层」：输入了关键词后按返回先退回原来那一页通讯录（用户第二十轮反馈）
+    BackHandler(enabled = state.query.isNotBlank() || state.path.isNotEmpty()) {
+        state.backOnce()
     }
 
     val tree = state.tree
@@ -176,6 +204,24 @@ fun ContactsScreen(
             .filter { it.name.contains(q, ignoreCase = true) || it.fullName.contains(q, ignoreCase = true) }
             .sortedBy { it.memberCount }
             .take(80)
+    }
+
+    // 人员搜索：官方 FriendTask 的 /staffs/search（学号或姓名都能命中）。
+    // 260ms 防抖——连着敲字只打最后一次；结果回来时关键词已经变了就丢掉这一批。
+    LaunchedEffect(query) {
+        val q = query.trim()
+        if (q.isEmpty()) {
+            state.staffHits = emptyList()
+            state.staffSearching = false
+            return@LaunchedEffect
+        }
+        state.staffSearching = true
+        delay(260)
+        val result = runCatching { withContext(Dispatchers.IO) { RceApi.searchContacts(q) } }
+        if (state.query.trim() == q) {
+            state.staffHits = result.getOrDefault(emptyList())
+            state.staffSearching = false
+        }
     }
 
     Column(modifier = modifier.fillMaxSize()) {
@@ -206,12 +252,54 @@ fun ContactsScreen(
                 ) {}
 
                 query.isNotBlank() -> LazyColumn(modifier = Modifier.fillMaxSize()) {
-                    if (hits.isEmpty()) {
+                    val staffHits = state.staffHits
+                    if (staffHits.isEmpty() && hits.isEmpty() && !state.staffSearching) {
                         item("empty") {
                             ContactsStateBox(
                                 message = stringResourceSafe(R.string.contacts_no_match),
                                 action = null,
                             ) {}
+                        }
+                    }
+                    if (staffHits.isNotEmpty()) {
+                        item("staffTitle") {
+                            SmallTitle(stringResourceSafe(R.string.contacts_search_people))
+                        }
+                        items(staffHits, key = { "p-" + it.id }) { hit ->
+                            // 按手机号搜到的人学号是异步补的，读一下资料版本号让这行跟着重绘
+                            val infoRevision = UserInfoCache.revision
+                            val studentNo = remember(hit.id, infoRevision, hit.staffNo) {
+                                hit.studentNo ?: UserInfoCache.studentNoOf(hit.id)
+                            }
+                            ContactRow(
+                                title = hit.name.ifBlank { "--" },
+                                // 第二十轮第 3 条：学号 · 身份 · 手机号（取不到的项自动省掉）
+                                subtitle = listOfNotNull(
+                                    studentNo?.let {
+                                        stringResourceSafe(R.string.contacts_student_no_value, it)
+                                    },
+                                    hit.dutyName.takeIf { it.isNotBlank() },
+                                    hit.mobile.takeIf { it.isNotBlank() },
+                                ).joinToString("  ·  ").takeIf { it.isNotBlank() },
+                                badge = null,
+                                leading = {
+                                    LanhangAvatar(
+                                        url = hit.portraitUrl.takeIf { it.isNotBlank() },
+                                        name = hit.name,
+                                        size = 40.dp,
+                                        // 头像 = 进这个人的个人主页（用户第二十轮第 4 条）
+                                        modifier = Modifier
+                                            .clip(CircleShape)
+                                            .clickable { onOpenProfile(hit.id) },
+                                    )
+                                },
+                                showChevron = false,
+                            ) { onOpenProfile(hit.id) }
+                        }
+                    }
+                    if (hits.isNotEmpty()) {
+                        item("deptHitTitle") {
+                            SmallTitle(stringResourceSafe(R.string.contacts_search_depts))
                         }
                     }
                     items(hits, key = { it.id }) { dept ->
@@ -277,6 +365,7 @@ fun ContactsScreen(
                             listState = listStates.of(levelKey),
                             onOpenDept = { path.add(it) },
                             onOpenMember = { detail = it },
+                            onOpenProfile = onOpenProfile,
                         )
                     }
                 }
@@ -308,6 +397,7 @@ private fun DeptContent(
     listState: LazyListState,
     onOpenDept: (Department) -> Unit,
     onOpenMember: (OrgEntry) -> Unit,
+    onOpenProfile: (String) -> Unit,
 ) {
     // 第十二轮：有缓存就直接有内容，避免切层时先闪一帧「正在加载」
     var entries by remember(dept.id) { mutableStateOf(BranchLevelCache.get(dept.id)) }
@@ -360,6 +450,13 @@ private fun DeptContent(
 
     val departments = remember(entries) { entries.orEmpty().filter { it.isDepartment } }
     val members = remember(entries) { entries.orEmpty().filterNot { it.isDepartment } }
+
+    // 学号不在部门成员接口里（`/departments/{id}/branches` 只给姓名/身份/手机号），
+    // 所以每翻一页就用一次 `/staffs/batch` 把这些人的资料补齐；结果进 UserInfoCache，
+    // 行里读 `UserInfoCache.revision` 就会跟着重绘（用户第二十轮第 3 条）。
+    LaunchedEffect(members.map { it.id }) {
+        if (members.isNotEmpty()) UserInfoCache.resolve(members.map { it.id })
+    }
 
     LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
         // 2026-10-26 第二轮：删掉这行里的「返回上一级」胶囊（用户要求），
@@ -428,9 +525,18 @@ private fun DeptContent(
                 if (members.isNotEmpty()) {
                     item("memberTitle") { SmallTitle(stringResourceSafe(R.string.contacts_member_section)) }
                     items(members, key = { "m-" + it.id }) { entry ->
+                        // 读一下资料版本号：学号是 `/staffs/batch` 异步补回来的，版本一变这行重绘
+                        val infoRevision = UserInfoCache.revision
+                        val studentNo = remember(entry.id, infoRevision) {
+                            UserInfoCache.studentNoOf(entry.id)
+                        }
                         ContactRow(
                             title = entry.name.ifBlank { "--" },
+                            // 第二十轮第 3 条：学号 · 身份 · 手机号（取不到的项自动省掉）
                             subtitle = listOfNotNull(
+                                studentNo?.let {
+                                    stringResourceSafe(R.string.contacts_student_no_value, it)
+                                },
                                 entry.dutyName.takeIf { it.isNotBlank() },
                                 entry.mobile.takeIf { it.isNotBlank() },
                             ).joinToString("  ·  ").takeIf { it.isNotBlank() },
@@ -440,6 +546,10 @@ private fun DeptContent(
                                     url = entry.portraitUrl.takeIf { it.isNotBlank() },
                                     name = entry.name,
                                     size = 40.dp,
+                                    // 头像 = 直接进这个人主页（第二十轮第 4 条）
+                                    modifier = Modifier
+                                        .clip(CircleShape)
+                                        .clickable { onOpenProfile(entry.id) },
                                 )
                             },
                             showChevron = false,
@@ -499,7 +609,7 @@ private fun ContactRow(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .clickable { onClick() }
+                .pressableRow(onClick = onClick, corner = 16.dp)
                 .padding(horizontal = 14.dp, vertical = 11.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -572,14 +682,36 @@ private fun MemberDialog(
     onDismiss: () -> Unit,
     onOpenProfile: () -> Unit,
 ) {
+    // 学号不在部门成员接口里，打开卡片时用 `/staffs/{id}` 补一次（一次只查一个人，
+    // 不拖慢列表）；顺带把手机号也补上——成员接口偶尔给空。
+    var staff by remember(member.id) { mutableStateOf<StaffInfo?>(null) }
+    LaunchedEffect(member.id) {
+        staff = withContext(Dispatchers.IO) {
+            runCatching { RceApi.getStaff(member.id) }.getOrNull()
+        }
+    }
+    val infoRevision = UserInfoCache.revision
+    val studentNo = remember(staff, infoRevision, member.id) {
+        staff?.staffNo?.substringBefore('@')?.takeIf { it.isNotBlank() }
+            ?: UserInfoCache.studentNoOf(member.id)
+    }
+    val mobile = member.mobile.ifBlank { staff?.mobile.orEmpty() }
+    // 身份（学生 / 教师 …）部门成员接口自带，`/staffs/{id}` 里没有这个字段
+    val duty = member.dutyName
+
     Dialog(onDismissRequest = onDismiss) {
         Card(modifier = Modifier.fillMaxWidth()) {
             Column(modifier = Modifier.padding(horizontal = 18.dp, vertical = 18.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     LanhangAvatar(
-                        url = member.portraitUrl.takeIf { it.isNotBlank() },
+                        url = member.portraitUrl.takeIf { it.isNotBlank() }
+                            ?: staff?.portraitUrl?.takeIf { it.isNotBlank() },
                         name = member.name,
                         size = 56.dp,
+                        // 头像就是这个人的入口：点了直接进主页（第二十轮第 4 条）
+                        modifier = Modifier
+                            .clip(CircleShape)
+                            .clickable { onOpenProfile() },
                     )
                     Spacer(Modifier.width(14.dp))
                     Column(modifier = Modifier.weight(1f)) {
@@ -591,7 +723,7 @@ private fun MemberDialog(
                             overflow = TextOverflow.Ellipsis,
                         )
                         val sub = listOfNotNull(
-                            member.dutyName.takeIf { it.isNotBlank() },
+                            duty.takeIf { it.isNotBlank() },
                             department?.takeIf { it.isNotBlank() },
                         ).joinToString(" · ")
                         if (sub.isNotBlank()) {
@@ -607,26 +739,21 @@ private fun MemberDialog(
                     }
                 }
 
-                if (member.mobile.isNotBlank()) {
+                // 第二十轮第 3 条：学号 · 身份 · 手机号，取不到的项不出这一行
+                val rows = listOfNotNull(
+                    studentNo?.let { stringResourceSafe(R.string.contacts_student_no) to it },
+                    duty.takeIf { it.isNotBlank() }
+                        ?.let { stringResourceSafe(R.string.contacts_identity) to it },
+                    mobile.takeIf { it.isNotBlank() }
+                        ?.let { stringResourceSafe(R.string.contacts_phone) to it },
+                )
+                if (rows.isNotEmpty()) {
                     HorizontalDivider(modifier = Modifier.padding(top = 14.dp))
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 12.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text(
-                            text = stringResourceSafe(R.string.contacts_phone),
-                            style = MiuixTheme.textStyles.footnote1,
-                            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                        )
-                        Spacer(Modifier.weight(1f))
-                        Text(
-                            text = member.mobile,
-                            style = MiuixTheme.textStyles.body2,
-                            color = MiuixTheme.colorScheme.onSurface,
-                            textAlign = TextAlign.End,
-                        )
+                    rows.forEachIndexed { index, row ->
+                        if (index > 0) {
+                            HorizontalDivider(color = MiuixTheme.colorScheme.dividerLine)
+                        }
+                        MemberInfoRow(label = row.first, value = row.second)
                     }
                 }
 
@@ -660,6 +787,30 @@ private fun MemberDialog(
                 }
             }
         }
+    }
+}
+
+/** 成员卡里的一行「标签 …… 值」（学号 / 身份 / 手机号） */
+@Composable
+private fun MemberInfoRow(label: String, value: String) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 11.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = label,
+            style = MiuixTheme.textStyles.footnote1,
+            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+        )
+        Spacer(Modifier.weight(1f))
+        Text(
+            text = value,
+            style = MiuixTheme.textStyles.body2,
+            color = MiuixTheme.colorScheme.onSurface,
+            textAlign = TextAlign.End,
+        )
     }
 }
 

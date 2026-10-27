@@ -253,6 +253,7 @@ private fun TopBar(
                     Icon(
                         imageVector = LanhangIcons.Home,
                         contentDescription = stringResource(R.string.common_home),
+                        tint = MiuixTheme.colorScheme.onBackground,
                     )
                 }
             }
@@ -261,6 +262,7 @@ private fun TopBar(
                     Icon(
                         imageVector = MiuixIcons.Back,
                         contentDescription = stringResource(R.string.common_back),
+                        tint = MiuixTheme.colorScheme.onBackground,
                     )
                 }
             }

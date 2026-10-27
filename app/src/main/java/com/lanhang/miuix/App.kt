@@ -1,6 +1,7 @@
-package com.lanhang.miuix
+﻿package com.lanhang.miuix
 
 import android.app.Application
+import android.app.Application.ActivityLifecycleCallbacks
 import com.lanhang.miuix.grades.GradesRepository
 import com.lanhang.miuix.net.ApiClient
 import com.lanhang.miuix.net.MiniappApi
@@ -28,9 +29,27 @@ class App : Application() {
         // 语言必须在任何 Activity 创建前 prime（见 LocaleHelper：不用系统的 per-app locale）
         AppLanguage.apply(Session.language)
         applyTheme()
+        // 校园网密码的 Keystore 存储（第十六轮）
+        com.lanhang.miuix.campusnet.CampusNetStore.init(this)
         AppContext.init(this)
         ScheduleRepository.init(this)
         GradesRepository.init(this)
+        // 对话框宿主跟踪：任何地方误传 Application context 时也能挂到前台 Activity 上
+        registerActivityLifecycleCallbacks(object : ActivityLifecycleCallbacks {
+            override fun onActivityResumed(activity: android.app.Activity) {
+                (activity as? androidx.activity.ComponentActivity)?.let { com.lanhang.miuix.ui.miuix.DialogHost.onResumed(it) }
+            }
+
+            override fun onActivityPaused(activity: android.app.Activity) {
+                (activity as? androidx.activity.ComponentActivity)?.let { com.lanhang.miuix.ui.miuix.DialogHost.onPaused(it) }
+            }
+
+            override fun onActivityCreated(activity: android.app.Activity, savedInstanceState: android.os.Bundle?) {}
+            override fun onActivityStarted(activity: android.app.Activity) {}
+            override fun onActivityStopped(activity: android.app.Activity) {}
+            override fun onActivitySaveInstanceState(activity: android.app.Activity, outState: android.os.Bundle) {}
+            override fun onActivityDestroyed(activity: android.app.Activity) {}
+        })
     }
 
     /**

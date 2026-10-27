@@ -3,6 +3,8 @@ package com.lanhang.miuix.schedule
 import android.content.Context
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
+import com.lanhang.miuix.R
+import androidx.core.content.ContextCompat
 import com.google.android.material.R as MaterialR
 
 /**
@@ -122,27 +124,51 @@ class ScheduleStyle(
         }
 
         fun fromTheme(context: Context): ScheduleStyle {
-            val onBackground = themeColor(context, MaterialR.attr.colorOnSurface, DARK_TEXT)
-            val variant = themeColor(context, MaterialR.attr.colorOnSurfaceVariant, onBackground)
             val night = isNight(context)
+            // 2026-10-27 第二十一轮：语义色一律读我们自己的资源（values / values-night 各一套）。
+            // 原来读 Material 属性 + 写死 DARK_TEXT 兜底，只要宿主主题没定义那几个属性，
+            // 深色下拿到就是近黑 —— 课表标题、页码、按钮全部消失在黑底里。
+            val onBackground = res(context, R.color.text_primary)
+            val variant = res(context, R.color.text_secondary)
+            val accent = accentOf(context, night)
             return ScheduleStyle(
                 onBackground = onBackground,
                 onBackgroundVariant = variant,
-                outline = themeColor(context, MaterialR.attr.colorOutline, variant),
+                outline = res(context, R.color.divider),
                 divider = withAlpha(onBackground, if (night) 0.16f else 0.10f),
-                cardFill = themeColor(context, MaterialR.attr.colorSurfaceContainerLow, onBackground),
-                chipFill = themeColor(context, MaterialR.attr.colorSurfaceContainer, onBackground),
-                accent = themeColor(context, MaterialR.attr.colorPrimary, FALLBACK_PRIMARY),
-                // 2026-10-25 用户要求：当天必须「蓝色文字 + 蓝色底」强调。
-                // 原来用 secondaryContainer / onSecondaryContainer，在 Miuix 主题里是灰色，
-                // 看起来像「禁用」而不是「今天」。现在由主色派生：淡蓝底 + 主色文字。
-                accentFill = withAlpha(
-                    themeColor(context, MaterialR.attr.colorPrimary, FALLBACK_PRIMARY),
-                    if (night) 0.24f else 0.14f,
-                ),
-                onAccentFill = themeColor(context, MaterialR.attr.colorPrimary, FALLBACK_PRIMARY),
+                cardFill = res(context, R.color.card_bg),
+                chipFill = res(context, R.color.card_bg_pressed),
+                accent = accent,
+                // 用户 2026-10-25：当天必须「蓝色文字 + 蓝色底」。
+                // 2026-10-27 补：深色下 26% 半透明铺在纯黑上等于一块近黑，看不出「今天」，
+                // 所以深色改成同色相的**实心深蓝** + 提亮的同色文字。
+                accentFill = if (night) solidAccent(accent) else withAlpha(accent, 0.14f),
+                onAccentFill = if (night) lift(accent, 0.55f) else accent,
             )
         }
+
+        /** 强调色：跟随主题主色，深色模式往白里提一档（HyperOS 深色标准） */
+        private fun accentOf(context: Context, night: Boolean): Int {
+            val raw = themeColor(context, MaterialR.attr.colorPrimary, FALLBACK_PRIMARY)
+            return if (night) lift(raw, 0.42f) else raw
+        }
+
+        /** 朝白插值（色相不变、明度上去） */
+        private fun lift(color: Int, amount: Float): Int {
+            val r = Color.red(color) + ((255 - Color.red(color)) * amount).toInt()
+            val g = Color.green(color) + ((255 - Color.green(color)) * amount).toInt()
+            val b = Color.blue(color) + ((255 - Color.blue(color)) * amount).toInt()
+            return Color.rgb(r, g, b)
+        }
+
+        /** 同色相的实心深底：深色模式下「今天」那格必须是一块看得见的蓝 */
+        private fun solidAccent(accent: Int): Int {
+            val hsv = FloatArray(3)
+            Color.colorToHSV(accent, hsv)
+            return androidx.core.graphics.ColorUtils.HSLToColor(floatArrayOf(hsv[0], 0.58f, 0.34f))
+        }
+
+        private fun res(context: Context, id: Int): Int = ContextCompat.getColor(context, id)
 
         private fun themeColor(context: Context, attr: Int, fallback: Int): Int {
             val typed = context.obtainStyledAttributes(intArrayOf(attr))

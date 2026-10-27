@@ -1,5 +1,6 @@
 package com.lanhang.miuix.im
 
+import com.lanhang.miuix.ui.miuix.pressableRow
 import android.Manifest
 import android.content.pm.PackageManager
 import android.net.Uri
@@ -307,7 +308,7 @@ private fun ConversationRow(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .clickable(onClick = onClick)
+                .pressableRow(onClick = onClick, corner = 16.dp)
                 .padding(horizontal = 14.dp, vertical = 11.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -395,8 +396,16 @@ private fun ConversationRow(
 }
 
 /** 会话列表那一行的小字：群聊要带「谁说的」，否则一屏消息不知道谁发的 */
+@Composable
 private fun previewText(conversation: ImConversation): String {
-    val body = conversation.preview.ifBlank { "[其他消息]" }
+    // 群聊：没有任何消息 / 最后一条解不出来时也要有一句人话（2026-10-27 修「私信里没有群聊」）
+    val body = conversation.preview.ifBlank {
+        if (conversation.isGroup) {
+            androidx.compose.ui.res.stringResource(R.string.im_preview_empty_group)
+        } else {
+            androidx.compose.ui.res.stringResource(R.string.im_preview_unsupported)
+        }
+    }
     if (!conversation.isGroup) return body
     val sender = conversation.previewSenderId
     if (sender.isBlank()) return body

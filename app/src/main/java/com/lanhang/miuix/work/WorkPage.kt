@@ -1,5 +1,6 @@
 package com.lanhang.miuix.work
 
+import com.lanhang.miuix.ui.miuix.pressableRow
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
@@ -42,6 +43,7 @@ import com.lanhang.miuix.R
 import com.lanhang.miuix.net.WorkApp
 import com.lanhang.miuix.ui.OaWebViewActivity
 import com.lanhang.miuix.ui.miuix.LanhangIcons
+import com.lanhang.miuix.ui.miuix.SchoolIcons
 import com.lanhang.miuix.ui.miuix.rememberStickyListState
 import com.lanhang.miuix.ui.miuix.markStickyListLanded
 import com.lanhang.miuix.ui.miuix.stickyListLanded
@@ -188,12 +190,26 @@ private val HIDDEN_SECTIONS = listOf("系统应用")
 /** 无论如何都不展示的应用名（无效功能，点开是空的） */
 private val HIDDEN_APPS = listOf("通知服务")
 
-private val COMMON_FEATURE_KEYS = listOf(
-    listOf("查用电"),
-    listOf("缴电费"),
-    listOf("一键认证", "校园网"),
-    listOf("座位预约", "图书馆"),
-    listOf("智慧教务"),
+/**
+ * 「常用功能」的槽位定义（顺序即展示顺序）。
+ *
+ * 2026-10-27 第十六轮：用户要求把原项目的校园网一键认证搬进常用功能、并命名为「校园网登录」，
+ * 同时用原生页替换掉原来那个 H5 的「座位预约」。所以槽位分成两种：
+ *  - [CommonSlot.Server]：从服务端 `/apps/all` 目录里按关键词挑（挑不到就不显示，不造假功能）；
+ *  - [CommonSlot.Native]：App 自己实现的原生页（[WorkRoute]），永远在。
+ */
+private sealed interface CommonSlot {
+    data class Server(val keys: List<String>) : CommonSlot
+    data class Native(val id: String) : CommonSlot
+}
+
+private val COMMON_SLOTS = listOf(
+    CommonSlot.Server(listOf("查用电")),
+    CommonSlot.Server(listOf("缴电费")),
+    CommonSlot.Native(NATIVE_CAMPUS_NET_ID),
+    // 座位预约：服务端那个应用只用来占位（名字、图标照旧），点开走原生页
+    CommonSlot.Server(listOf(SEAT_APP_MARK, "图书馆")),
+    CommonSlot.Server(listOf("智慧教务")),
 )
 
 /**
@@ -214,6 +230,8 @@ fun WorkPage(
     staffNo: String = "",
     userType: Int? = null,
     modifier: Modifier = Modifier,
+    /** 打开 App 自己的原生功能页（校园网登录 / 图书馆座位预约），由 [WorkFragment] 的页面栈承载 */
+    onOpenNative: (WorkRoute) -> Unit = {},
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -252,8 +270,24 @@ fun WorkPage(
 
     // 顶部「常用功能」：从目录里按关键词挑出用户点名的五个（挑不到的就不显示，不造假功能）
     val allApps = usable.flatMap { it.second }
-    val common = COMMON_FEATURE_KEYS.mapNotNull { keys ->
-        allApps.firstOrNull { app -> keys.any { app.displayName.contains(it, true) } }
+    val nativeApps = remember {
+        mapOf(
+            NATIVE_CAMPUS_NET_ID to WorkApp(
+                id = NATIVE_CAMPUS_NET_ID,
+                name = context.getString(R.string.work_campus_net_title),
+                description = context.getString(R.string.work_campus_net_title),
+                // 没有 openUrl = 不会走 OA WebView，点开由 openApp 分派到原生页
+                homePageUrl = "",
+            ),
+        )
+    }
+    val common = COMMON_SLOTS.mapNotNull { slot ->
+        when (slot) {
+            is CommonSlot.Native -> nativeApps[slot.id]
+            is CommonSlot.Server -> allApps.firstOrNull { app ->
+                slot.keys.any { app.displayName.contains(it, true) }
+            }
+        }
     }
     val commonKeys = common.map { it.key() }.toSet()
     // 撞上常用功能的条目不重复出现在下面的分类里（分类因此变空就整块不画）
@@ -289,21 +323,29 @@ fun WorkPage(
     val total = sectionsBelow.sumOf { it.second.size }
     val shown = visible.sumOf { it.second.size }
     val openApp: (WorkApp) -> Unit = { app ->
-        if (!app.openUrl.isNullOrBlank() && busyApp == null) {
-            busyApp = app.id
-            scope.launch {
-                val launch = runCatching { WorkRepository.prepare(app) }.getOrNull()
-                busyApp = null
-                if (launch != null && launch.url.isNotBlank()) {
-                    OaWebViewActivity.open(
-                        context,
-                        launch.url,
-                        launch.token,
-                        app.displayName,
-                        launch.cookie,
-                    )
-                }
-            }
+        val openUrl = app.openUrl
+        if (app.id == NATIVE_CAMPUS_NET_ID) {
+            // 校园网登录：App 自己的原生页（密码存 Keystore，点一次就认证）
+            onOpenNative(WorkRoute.CAMPUS_NET)
+        } else if (app.displayName.contains(SEAT_APP_MARK)) {
+            // 座位预约：接管服务端那个 H5 入口，换成原生选座页
+            onOpenNative(WorkRoute.LIBRARY_SEAT)
+        } else if (!openUrl.isNullOrBlank()) {
+            // 2026-10-27 第十八轮（用户：「学生邮箱、校园网账号设置打开后无响应，原界面卡死，
+            // 而且其他应用也打不开」）：
+            // 以前这里先跑一遍网关预检（OkHttp 20s connect + 30s read），期间 `busyApp` 把**所有**
+            // 应用一起锁死，界面上又没有任何反馈 —— 点下去就是「卡死」。
+            // 现在立刻开页，把落地地址的预检搬进 OaWebViewActivity，在它自己的加载态里异步做，
+            // 且不再有任何「同时只能开一个」的全局锁。
+            OaWebViewActivity.open(
+                context = context,
+                url = openUrl,
+                appToken = null,
+                title = app.displayName,
+                cookie = null,
+                preflightUrl = openUrl,
+                appId = app.id,
+            )
         }
     }
 
@@ -377,19 +419,19 @@ fun WorkPage(
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clickable {
-                                scope.launch {
-                                    val launch = runCatching { WorkRepository.preparePortal(portal) }
-                                        .getOrNull()
-                                    OaWebViewActivity.open(
-                                        context,
-                                        launch?.url?.takeIf { it.isNotBlank() } ?: portal,
-                                        launch?.token,
-                                        context.getString(R.string.work_portal_section),
-                                        launch?.cookie,
-                                    )
-                                }
-                            }
+                            // 第十九轮：整行可点要裁成卡片圆角，不然按压是一个直角方块
+                            .pressableRow(onClick = {
+                                // 同 openApp：预检搬进 WebView 页，点下去立刻有反馈
+                                OaWebViewActivity.open(
+                                    context = context,
+                                    url = portal,
+                                    appToken = null,
+                                    title = context.getString(R.string.work_portal_title),
+                                    cookie = null,
+                                    preflightUrl = portal,
+                                    appId = null,
+                                )
+                            })
                             .padding(horizontal = 16.dp, vertical = 14.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
@@ -516,7 +558,8 @@ private fun WorkCommonCard(
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .clip(RoundedCornerShape(12.dp))
+                        // 第十九轮：圆角对齐卡片（16dp），按压高亮才跟卡片边缘一致
+                        .clip(RoundedCornerShape(16.dp))
                         .clickable { onOpen(app) }
                         .alpha(if (busyApp == app.id) 0.45f else 1f)
                         .padding(horizontal = 16.dp, vertical = 9.dp),
@@ -530,7 +573,7 @@ private fun WorkCommonCard(
                     )
                     Spacer(Modifier.width(12.dp))
                     Text(
-                        text = app.displayName.ifBlank { "--" },
+                        text = app.label(),
                         style = MiuixTheme.textStyles.body1,
                         color = MiuixTheme.colorScheme.onSurface,
                         maxLines = 1,
@@ -635,7 +678,7 @@ private fun AppTile(
         AppGlyph(app = app, hue = hue, glyphId = glyphId)
         Spacer(Modifier.height(6.dp))
         Text(
-            text = app.displayName.ifBlank { "--" },
+            text = app.label(),
             style = MiuixTheme.textStyles.footnote2,
             fontSize = TILE_LABEL_SIZE,
             lineHeight = TILE_LABEL_LINE,
@@ -706,6 +749,18 @@ private fun hueOf(app: WorkApp, hueSlots: Map<String, Int>): Float {
 }
 
 /** 去重 / 取色相用的稳定键：有 id 用 id，没有就退回名称 */
+/**
+ * 展示给用户的名称。
+ *
+ * 第十九轮用户要求「工作里所有功能的名字和点进去之后顶栏的内容一致」：
+ * 座位预约已经被我们换成了原生页，顶栏写的是「图书馆座位预约」，
+ * 所以这里也按同一个 string 显示，避免出现「名字叫座位预约、进去叫别的」。
+ */
+@Composable
+private fun WorkApp.label(): String =
+    if (displayName.contains(SEAT_APP_MARK)) stringResource(R.string.library_seat_title)
+    else displayName.ifBlank { "--" }
+
 private fun WorkApp.key(): String = id.orEmpty().ifBlank { displayName }
 
 private fun String.hitsAny(vararg words: String): Boolean =
@@ -720,11 +775,47 @@ private fun String.hitsAny(vararg words: String): Boolean =
  * 池子要比服务端目录的应用数（50 个）大，才能保证「整页不出现重复图标」（用户第九轮第 1 条）。
  */
 private val GLYPH_POOL: Map<String, ImageVector> = linkedMapOf(
-    // —— 有语义规则的（见 [WorkApp.glyphId]）——
+    // —— 照学校原图标重画的那一套（见 SchoolIcons，第二十轮）——
+    "teach" to SchoolIcons.Teach,
+    "calendar" to SchoolIcons.Calendar,
+    "chart" to SchoolIcons.Chart,
+    "clipboard" to SchoolIcons.Clipboard,
+    "bolt" to SchoolIcons.Bolt,
+    "boltYuan" to SchoolIcons.BoltYuan,
+    "card" to SchoolIcons.Card,
+    "wallet" to SchoolIcons.Wallet,
+    "handYuan" to SchoolIcons.HandYuan,
+    "wifi" to SchoolIcons.Wifi,
+    "globe" to SchoolIcons.Globe,
+    "nodes" to SchoolIcons.Nodes,
+    "gauge" to SchoolIcons.Gauge,
+    "monitor" to SchoolIcons.Monitor,
+    "megaphone" to SchoolIcons.Megaphone,
+    "seat" to SchoolIcons.Seat,
+    "book2" to SchoolIcons.Book,
+    "group" to SchoolIcons.Group,
+    "stadium" to SchoolIcons.Stadium,
+    "shield" to SchoolIcons.Shield,
+    "door" to SchoolIcons.Door,
+    "faceGate" to SchoolIcons.FaceGate,
+    "faceCamera" to SchoolIcons.FaceCamera,
+    "flask" to SchoolIcons.Flask,
+    "personX" to SchoolIcons.PersonX,
+    "personCheck" to SchoolIcons.PersonCheck,
+    "flag" to SchoolIcons.Flag,
+    "cap" to SchoolIcons.Cap,
+    "mail2" to SchoolIcons.Mail,
+    "student" to SchoolIcons.StudentAffairs,
+    "news" to SchoolIcons.News,
+    "wrench" to SchoolIcons.Wrench,
+    "mailbox" to SchoolIcons.Mailbox,
+    "sliders" to SchoolIcons.Sliders,
+    "bulb" to SchoolIcons.Bulb,
+    "tv" to SchoolIcons.Tv,
+    // —— Miuix 自带（备用 / 无对应原图标的应用）——
     "grid" to MiuixIcons.GridView,
     "weeks" to MiuixIcons.Weeks,
     "notes" to MiuixIcons.Notes,
-    "bolt" to LanhangIcons.Bolt,
     "lock" to MiuixIcons.Lock,
     "email" to MiuixIcons.Email,
     "book" to MiuixIcons.ContactsBook,
@@ -814,6 +905,42 @@ private val GLYPH_POOL: Map<String, ImageVector> = linkedMapOf(
  * 表里列到的 id 都没空位了，才落到备用池。
  */
 private val GLYPH_ALTERNATIVES: Map<String, List<String>> = mapOf(
+    "teach" to listOf("teach", "grid", "weeks"),
+    "calendar" to listOf("calendar", "weeks", "clock"),
+    "chart" to listOf("chart", "notes", "report"),
+    "clipboard" to listOf("clipboard", "file", "tasks"),
+    "bolt" to listOf("bolt", "boltYuan", "theme"),
+    "boltYuan" to listOf("boltYuan", "wallet", "card"),
+    "card" to listOf("card", "bankcards", "wallet"),
+    "wallet" to listOf("wallet", "card", "bankcards"),
+    "handYuan" to listOf("handYuan", "wallet", "card"),
+    "wifi" to listOf("wifi", "link", "globe"),
+    "globe" to listOf("globe", "link", "wifi"),
+    "nodes" to listOf("nodes", "layers", "mindMap"),
+    "gauge" to listOf("gauge", "stopwatch", "timer"),
+    "monitor" to listOf("monitor", "file", "list"),
+    "megaphone" to listOf("megaphone", "promotions", "messages"),
+    "seat" to listOf("seat", "book2", "group"),
+    "book2" to listOf("book2", "book", "notes"),
+    "group" to listOf("group", "contacts", "community"),
+    "stadium" to listOf("stadium", "alarm", "layers"),
+    "shield" to listOf("shield", "ok", "lock"),
+    "door" to listOf("door", "lock", "block"),
+    "faceGate" to listOf("faceGate", "scan", "lock"),
+    "faceCamera" to listOf("faceCamera", "scan", "photos"),
+    "flask" to listOf("flask", "help", "tune"),
+    "personX" to listOf("personX", "block", "clear"),
+    "personCheck" to listOf("personCheck", "ok", "select"),
+    "flag" to listOf("flag", "promotions", "pin"),
+    "cap" to listOf("cap", "years", "notes"),
+    "mail2" to listOf("mail2", "email", "send"),
+    "student" to listOf("student", "contacts", "circle"),
+    "news" to listOf("news", "report", "file"),
+    "wrench" to listOf("wrench", "report", "tune"),
+    "mailbox" to listOf("mailbox", "messages", "reply"),
+    "sliders" to listOf("sliders", "tune", "settings"),
+    "bulb" to listOf("bulb", "help", "info"),
+    "tv" to listOf("tv", "play", "photos"),
     "grid" to listOf("grid", "list", "sidebar"),
     "weeks" to listOf("weeks", "list"),
     "notes" to listOf("notes", "notesFill", "tasks"),
@@ -852,43 +979,82 @@ private val GENERIC_DOC_IDS = listOf(
 private val GLYPH_IDS: List<String> = GLYPH_POOL.keys.toList()
 
 /** 名称 → 图标 id；返回 null 表示没什么语义可挖，交给备用池 */
+/**
+ * 名称 → 图标 id。
+ *
+ * 2026-10-27 第二十轮用户要求：「工作的图标重绘依据是学校的原图标，依照学校的原图标进行重绘，
+ * 主要优化线条流畅度，基本样式保留」——所以规则不再按「大致语义」抓 Miuix 图标，而是逐个对上
+ * 学校办事大厅里那枚图标的形状（见 [SchoolIcons]）。顺序从具体到宽泛，
+ * 免得「研究生休学审批」被「研究生」抢去学士帽、「研究生临时困难补助」被抢成学位服。
+ */
 private fun WorkApp.glyphId(): String? {
     val n = displayName
     return when {
-        n.hitsAny("网上办事", "办事大厅", "一站式") -> "grid"
-        n.hitsAny("课表", "课程", "选课", "教务") -> "weeks"
-        n.hitsAny("成绩", "绩点", "分数") -> "notes"
-        n.hitsAny("用电", "电费", "电量", "水电", "缴费") -> "bolt"
-        n.hitsAny("门禁", "通行", "闸机") -> "lock"
-        n.hitsAny("邮箱", "邮件") -> "email"
-        n.hitsAny("图书馆", "借阅", "研讨", "座位", "书香") -> "book"
-        n.hitsAny("报修", "维修", "故障") -> "report"
-        n.hitsAny("预约", "场馆", "场地", "体育") -> "alarm"
-        n.hitsAny("信箱", "留言", "反馈", "意见") -> "messages"
-        n.hitsAny("新闻", "稿件", "宣传", "公告", "活动") -> "promotions"
-        n.hitsAny("奖学金", "资助", "财务", "报销", "出差", "补助", "一卡通") -> "bankcards"
-        n.hitsAny("学工", "辅导员", "班主任") -> "contacts"
-        n.hitsAny("助手", "航小导", "咨询", "AI") -> "community"
-        n.hitsAny("视频", "直播", "录播") -> "play"
-        n.hitsAny("打印", "档案", "证书") -> "folder"
-        n.hitsAny("安全", "平安", "应急") -> "ok"
-        n.hitsAny("算力", "高性能", "平台", "托管", "机房") -> "layers"
-        n.hitsAny("校历", "日历", "日程") -> "clock"
-        n.hitsAny("校园网", "网络", "上网", "认证", "IP", "测速", "wifi") -> "link"
-        n.hitsAny("账号", "用户", "个人", "身份") -> "circle"
-        n.hitsAny("通知", "服务", "系统") -> "info"
-        n.hitsAny("审批", "申请", "申报", "报审", "报备", "备案", "流程",
-                  "请假", "销假", "复学", "休学", "证明") -> "file"
+        n.hitsAny("办事大厅", "一站式") -> "grid"
+        // —— 教学 ——
+        n.hitsAny("教务") -> "teach"
+        n.hitsAny("课表", "课程", "选课") -> "calendar"
+        n.hitsAny("成绩", "绩点", "分数") -> "chart"
+        n.hitsAny("质量", "评教", "评价") -> "clipboard"
+        // —— 用电 / 缴费 ——
+        n.hitsAny("缴电费", "缴费", "充值") -> "boltYuan"
+        n.hitsAny("用电", "电量", "水电") -> "bolt"
+        n.hitsAny("一卡通", "校园卡", "银行卡") -> "card"
+        n.hitsAny("财务", "报销", "经费") -> "wallet"
+        n.hitsAny("补助", "资助", "困难", "贷款", "勤工") -> "handYuan"
+        n.hitsAny("奖学金", "创新创业", "申报奖") -> "cap"
+        // —— 门户 / 身份 ——
+        n.hitsAny("邮箱", "邮件") -> "mail2"
+        n.hitsAny("学工", "辅导员", "航小导", "AI", "助手") -> "student"
+        n.hitsAny("门禁照片", "照片更新", "人脸采集") -> "faceCamera"
+        n.hitsAny("宿舍门禁", "人脸门禁") -> "faceGate"
+        n.hitsAny("门禁", "闸机", "通行", "进出", "校门") -> "door"
+        n.hitsAny("休学", "停学", "离职") -> "personX"
+        n.hitsAny("复学", "重新入学") -> "personCheck"
+        // —— 场馆 / 生活 ——
+        n.hitsAny("图书馆", "借阅", "书香", "学术资源") -> "book2"
+        n.hitsAny("座位") -> "seat"
+        n.hitsAny("研讨室") -> "group"
+        n.hitsAny("场馆", "体育", "场地", "操场") -> "stadium"
+        // —— 网络 / 信息化 ——
+        n.hitsAny("测速") -> "gauge"
+        n.hitsAny("显示我的IP", "IP地址") -> "monitor"
+        n.hitsAny("校园网", "一键认证", "上网认证", "wifi", "WiFi") -> "wifi"
+        n.hitsAny("账号", "密码", "上网") -> "globe"
+        n.hitsAny("算力", "高性能", "集群", "托管") -> "nodes"
+        n.hitsAny("实验") -> "flask"
+        n.hitsAny("仪器", "机房", "设备") -> "sliders"
+        n.hitsAny("文档库", "知识", "资料") -> "bulb"
+        // —— 服务 / 报修 / 通知 ——
+        n.hitsAny("报修", "维修", "故障") -> "wrench"
+        n.hitsAny("信箱", "意见", "留言", "反馈") -> "mailbox"
+        n.hitsAny("摊点", "活动", "布置", "宣传品") -> "flag"
+        n.hitsAny("新闻", "稿件", "要闻", "公告", "宣传部") -> "news"
+        n.hitsAny("直播", "视频", "录播", "电视") -> "tv"
+        n.hitsAny("通知", "服务") -> "megaphone"
+        n.hitsAny("安全", "应急", "平安", "一键通") -> "shield"
+        // —— 审批类兜底：一只夹板 + 勾 ——
+        n.hitsAny("申请", "审批", "申报", "报审", "报备", "备案", "流程", "出差",
+                  "请假", "销假", "证明", "许可", "证书") -> "clipboard"
         else -> null
     }
 }
 
 /**
- * 给这一页的每个应用分配一个**互不重复**的图标 id（用户第九轮第 1 条：「工具一页图标不要重复」）。
+ * 学校原图标那套 id：语义相同时允许复用。
  *
- * 规则：先按名称关键词要一个语义图标；如果那个 id 已经被前面的应用占了，就从备用池里
- * 拿第一个**还没用过**的 id。整页应用数 < 池子大小（50 < 90），所以不会真的撞完。
+ * 第二十轮改了图标来源之后，「新闻稿件报审」和「南航要闻」本来就是同一个意思，
+ * 硬塞两个不同图标反而更乱；而 Miuix 备用池（音符/时钟这种）依然保持全页不重复，
+ * 免得又回到第九轮那种「一堆随机图标」的观感。色相按顺序错开，一对同义图标也不会糊在一起。
  */
+private val SCHOOL_GLYPH_IDS: Set<String> = setOf(
+    "teach", "calendar", "chart", "clipboard", "bolt", "boltYuan", "card", "wallet",
+    "handYuan", "wifi", "globe", "nodes", "gauge", "monitor", "megaphone", "seat",
+    "book2", "group", "stadium", "shield", "door", "faceGate", "faceCamera", "flask",
+    "personX", "personCheck", "flag", "cap", "mail2", "student", "news", "wrench",
+    "mailbox", "sliders", "bulb", "tv",
+)
+
 private fun assignGlyphIds(apps: List<WorkApp>): Map<String, String> {
     val used = HashSet<String>()
     val out = LinkedHashMap<String, String>()
@@ -898,7 +1064,10 @@ private fun assignGlyphIds(apps: List<WorkApp>): Map<String, String> {
         val preferred = app.glyphId()
         // 先试首选，再试它的同义替代，最后才从备用池里拿一个没人用的
         val semantic = GLYPH_ALTERNATIVES[preferred].orEmpty().ifEmpty { listOfNotNull(preferred) }
-        val chosen = semantic.firstOrNull { used.add(it) }
+        val chosen = semantic.firstOrNull { id ->
+            if (id in SCHOOL_GLYPH_IDS) return@firstOrNull true
+            used.add(id)
+        }
             ?: GENERIC_DOC_IDS.firstOrNull { used.add(it) }
             ?: GLYPH_IDS.firstOrNull { used.add(it) }
             ?: preferred

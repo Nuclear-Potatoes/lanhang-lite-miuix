@@ -6,6 +6,343 @@
 
 ---
 
+## 25. 推仓库与自动发版（2026-10-27，用户明确要求）
+
+用户原话：
+
+> 「帮我push到这个仓库 https://github.com/Nuclear-Potatoes/lanhang-lite-miuix ，并且用 action 推送 release，
+> 以后如果我说需要 push 的话就自动 push+release，如果我不说则不需要这么做」
+
+### 25.1 触发条件（常驻规则）
+
+* 用户**明确说「push」/「推上去」/「发版」** → 才执行「同步源码 → 提交 → 推送 → 打 tag → Actions 出 Release」；
+* 用户没说 → **只改代码、只构建、只安装验证，绝不联网推送**。
+
+### 25.2 推送怎么走（本机网络只有这条路通）
+
+GitHub 的 HTTPS 会 TLS 失败（本机代理 `127.0.0.1:7897` 对 github.com 不可用），**只有 SSH over 443 通**：
+
+```powershell
+# 本地克隆（已有）：D:\数据\Deepseek Harness工作区\lanhang-miuix\push\repo
+# origin = ssh://git@ssh.github.com:443/Nuclear-Potatoes/lanhang-lite-miuix.git
+& git -C $repo push origin main
+& git -C $repo tag v1.0.0
+& git -C $repo push origin v1.0.0     # 这一步触发 Actions 发版
+```
+
+`gh` CLI 在本机**没登录**（不能建仓库/改 Secrets），所以工作流只用 `secrets.GITHUB_TOKEN`
+（默认就有），不需要任何自定义 Secret。
+
+### 25.3 发版签名：`ci/debug.keystore` 随仓库提交
+
+`app/build.gradle.kts` 早已支持「四个 `-PlanhangRelease*` 属性齐全才用正式签名，否则回落 debug 签名」。
+CI 里传的就是仓库内的 `ci/debug.keystore`（= 本机 `~/.android/debug.keystore` 同一份），于是：
+
+* CI 产出的 APK 与本机 `assembleRelease` 的 APK **同签名** → 能覆盖安装、不丢登录态；
+* `.gitignore` 里加了 `!ci/debug.keystore` 例外；`*.jks` 仍然不入库。
+
+### 25.4 发版清单（顺序别乱）
+
+1. 改 `versionCode` / `versionName`（`app/build.gradle.kts`）与 `VERSION.md` 那一行（发行说明从这行摘）；
+2. 本地 `assembleRelease` + 装机验证（每一轮都必须）；
+3. `scratch/export_src.py` → `scratch/zip_src.py` 导出干净源码树（**必须带上 `.github/`、`ci/`、`gradlew*`、`gradle/wrapper/`**）；
+4. 同步到 `push/repo`（保留 `.git`）、提交、`push origin main`；
+5. `git tag vX.Y.Z` + `push origin vX.Y.Z` → Actions 自动出 Release；
+6. 用 `curl https://api.github.com/repos/Nuclear-Potatoes/lanhang-lite-miuix/actions/runs?per_page=1`（免登录可用）确认 run 成功、Release 有资产。
+
+---
+
+## 24. 第二十二轮反馈（2026-10-27）：个人主页收成**一份代码**（1.0.0 / versionCode 51）
+
+用户原话：
+
+> 「第一，从通讯录搜索A进入A主页，顶栏显示A的名字而非A的个人主页。第二，在A的个人主页点击蓝色姓名/头像
+> 进入B的个人主页时，缺少过渡动画，第三，进入B的个人主页后，点击返回会直接返回通讯录首页而非A的个人主页，
+> 顶栏显示也是B的名字而非B的个人主页。这应该说明通讯录中的个人主页实现和工作圈中的个人主页实现不一样。
+> 把所有个人主页的实现都统一成一份代码，即与工作圈的个人主页实现一致。第三，从我的-相册进入我发过的所有动态后，
+> 点击其他人的蓝色名字/头像会进入自己的个人主页。」
+
+### 24.1 病根：主页被写了两份，而且两份都不是「栈」
+
+| 入口 | 旧实现 | 症状 |
+| --- | --- | --- |
+| 工作圈 | `MomentsFragment` 里一份 `profileUid` **单槽位** | A 里点 B 只是换槽位，没有压栈 → 返回直接回列表 |
+| 我的（通讯录 / 消息 / 私信 / 相册） | `MineFragment` 里另一份 `otherUserId` 单槽位 | 同上；且顶栏标题写的是**姓名**，不是「X 的个人主页」 |
+| 我的 - 相册 | `MineScreen` 给 `MomentsScreen` 传了 `onOpenProfile = { onOpenProfile() }` | 把**自己**的开页回调当参数，忽略 uid → 点谁都是自己的主页 |
+
+「单槽位」是根因：主页只有「当前是谁」一个变量，压第二层时把第一层覆盖掉，返回自然回不到 A。
+
+### 24.2 新硬规则：个人主页只有 `profile/ProfileHost.kt`
+
+`app/src/main/java/com/lanhang/miuix/profile/ProfileHost.kt` 是**唯一**实现，四个部件：
+
+```kotlin
+ProfileStackState          // 主页栈：uids + forward 方向 + push/reset/pop/clear/snapshot/restore
+ProfileSlice / ProfileStore // 每个 uid 的资料 + 动态分页 + 乐观点赞评论（按 uid 缓存）
+ProfileStackHost(stack, store, onTitle, onOpenProfile, onMessage, onImage, emptyText)
+profileTitle(context, name) // 「X 的个人主页」/「个人主页」
+```
+
+宿主页面**只做三件事**，别再多写一份：
+
+```kotlin
+// 1. 开页：本页已在主页层 → push（自带推入转场），否则 reset 后再进 PROFILE_OTHER
+if (page == MinePage.PROFILE_OTHER) profileStack.push(uid) else profileStack.reset(uid)
+// 2. 返回：pop() 返回 true 说明还有上一层（回 A），false 才真的退页面
+if (!profileStack.pop()) { /* 退页 */ }
+// 3. 顶栏：ProfileStackHost 回调 onTitle() → showToolbarSub(profileTitle(...))，
+//    但**必须**先判断「当前页面还是不是主页」，否则退场动画期间它会把刚进去的聊天页顶栏改回去
+```
+
+* 标题统一 `R.string.profile_title_of`（「%s 的个人主页」），名字没回来先显示「个人主页」；
+* 转场统一 `MiuiNavStack(key = 当前 uid, forward = stack.forward)` —— **key 是 uid**，所以 A→B 是推入、B→A 是推出；
+* 相册 / 我的主页里的「点自己」→ 走「我的主页」（`MinePage.PROFILE`），点别人才进 `PROFILE_OTHER`；
+* `ProfileStore` 的点赞/评论是**乐观更新**（工作圈那套），失败回滚 + toast；宿主用 `onMutated` 回调把自己的 `revision++`。
+
+---
+
+## 23. 第十九轮反馈（2026-10-27）：按压高亮是个灰方块、图书馆座位预约改名
+
+用户原话：
+
+> 「第一，ui设计问题，比如在图书馆座位这一页，点击阅览室/开始时间等功能时，阴影没完全覆盖这一栏，而是呈现一个
+> 正方形，阴影范围不正确，排查修复应用中所有类似问题。第二，图书馆座位顶栏改为图书馆座位预约，在工作常用功能中
+> 的名字也一起改掉，保证工作中所有功能的名字和点击进入后顶栏的内容一致」
+
+### 23.1 硬规则：卡片里的「整行可点」必须用 `Modifier.pressableRow`
+
+裸 `Modifier.clickable { }` 的按压高亮（indication）是按**行自己那个矩形**画的：
+
+* 四个角是**直角**，而外面的 `Card` 是 16dp 圆角 —— 按下去屏幕上就浮起一个灰方块，跟卡片边缘对不上；
+* 卡片还带 `insideMargin` 时，高亮只覆盖**内容宽度**，左右各缩进一圈，看起来像「这一栏没被完全盖住」。
+
+所以第十九轮加了统一入口 `ui/miuix/PressableRow.kt`：
+
+```kotlin
+Row(
+    modifier = Modifier
+        .fillMaxWidth()
+        .pressableRow(onClick = onClick, corner = 16.dp)   // 先裁圆角，再挂 clickable
+        .padding(horizontal = 16.dp, vertical = 13.dp),   // 行内 padding 写在它后面
+) { … }
+```
+
+约定（照着抄就行）：
+
+1. **padding 在 `pressableRow` 之后**，高亮才会把 padding 一起盖住 = 整行；
+2. `corner` 跟**卡片圆角**一致（Miuix `Card` 是 16dp），圆角对不齐一眼就能看出来；
+3. 想让高亮贴到卡片左右边缘（MIUI 的整行压暗），就把这张卡的 `insideMargin` 横向设 0，宽度靠行内 padding 补回来 —— 图书馆座位的信息卡（阅览室/开始时间/时长）就是这么改的，文字 x 坐标和以前完全一致；
+4. **整卡可点**（`Card(modifier = … .clickable { }`)）同理：`clickable` 前面必须 `.clip(RoundedCornerShape(16.dp))`；
+5. `onClick = null` 表示这一行不可点，此时只裁剪、不挂点击。
+
+本轮按这条规则改过的位置：图书馆座位信息三行、校园网「自助服务」整卡、我的（资料卡 + 所有设置行）、
+通讯录联系人行、消息列表行、私信会话行、工作页「打开办事大厅」行；工作页常用功能行 / 应用宫格原本已裁过圆角，
+这次把 12dp 统一成 16dp。头像是圆/小图标（`clip(CircleShape)`、`clip(RoundedCornerShape(9.dp))`）的一律不用动。
+
+### 23.2 名称一致性：工作入口名 = 点进去的顶栏名
+
+* 座位页顶栏 `library_seat_title`：`图书馆座位` → **`图书馆座位预约`**（`values` / `values-en` 同步）。
+* 工作页常用功能里那条 OA 目录项服务端叫「座位预约」，和原生页顶栏对不上。现在 `WorkPage.kt` 里所有展示名都走
+  `WorkApp.label()`：命中 `SEAT_APP_MARK`（座位预约）时返回同一个 `R.string.library_seat_title`，两边永远一字不差。
+* 顺手修掉另一处不一致：「打开办事大厅」卡片点进去顶栏原来写「工作台」，现在用 `work_portal_title`，和卡片同名。
+
+工作页入口 ↔ 顶栏实测对照（第十九轮逐条点开核对）：
+
+| 常用功能入口 | 点进去的顶栏 |
+|---|---|
+| 查用电 / 缴电费 / 智慧教务（本科生） | 同名（`OaWebViewActivity.open(title = app.displayName)`） |
+| 校园网登录 | 校园网登录（`work_campus_net_title`） |
+| 图书馆座位预约 | 图书馆座位预约（`library_seat_title`） |
+| 打开办事大厅 | 打开办事大厅（`work_portal_title`） |
+| 最近使用里的 掌上学工 / 学生邮箱 / 宿舍门禁 / 校园一卡通 / 新闻稿件报审 | 同名（同上，走 `displayName`） |
+
+---
+
+## 22. 第十八轮反馈（2026-10-27）：学生邮箱白屏、我的预约转场方向、图书馆缺区域、页面留白
+
+用户原话：
+
+> 「首先，校园网测试正常。但工作页面中学生邮箱、校园网账号设置页面打开后无响应，直接在原界面卡死，且无法打开
+> 其他应用，排查所有工作应用，避免该问题。第二，图书馆座位功能中我的预约二级菜单过渡动画方向与其他的过渡动画
+> 不一致。第三，图书馆预约中缺少一块区域，没办法预约该区域的座位，图书馆一楼分为102自习室和1楼学习区，
+> 具体可以参考 http://lib-zw.lib.nchu.edu.cn/#!/Seat/Index/searchSeats?... （注意，需要将你的浏览器 ua 改为
+> 微信 UA 才能正常访问该链接），参考链接中的内容做图书馆座位预约这个功能。第四，工作页面、校园网登录、图书馆
+> 座位预约的界面布局不够美观，与屏幕两侧贴得太近，可以参考我的页面中与屏幕两侧的间距设计页面」
+
+### 22.1 硬规则：「onPageFinished」不等于「看得见」，白板必须用**正文高度**判定
+
+学生邮箱（`https://mail.stu.nchu.edu.cn/mail/`，Roundcube elastic 皮肤）打开后是**纯白**，用户以为又卡死。
+实测 WebView 里 DOM 是完整的：`innerText` 有「统一身份认证 / 账号密码登录 / 南昌航空大学学生邮箱」，
+`document.styleSheets.length=3`、`scripts.length=14`、viewport `417x747` —— 但
+**`document.body.getBoundingClientRect().height === 0`**，`elementFromPoint(200,400)` 只命中 `<html>`。
+元素都在、一个像素都不占，屏幕自然全白。curl 侧同一 URL 是 200 / 7721 字节，换 UA、去掉伪造请求头都一样，
+所以这不是服务端问题，是 **WebView 侧百分比高度被量成 0**。
+
+现在的做法（`ui/OaWebViewActivity.kt` 的 `BLANK_CHECK_JS` + `onPageFinished`）：
+
+1. 页面 finished 后量 `正文长度 | 正文高度`；
+2. 高度 ≤ 2px 就先注入 `html,body{height:auto!important;min-height:100%!important}` 再量一次 ——
+   学生邮箱就是靠这一条从纯白变成能看见登录框的；
+3. 补完还是 ≤ 2px 才判定白板，露出「页面可能是空白的 / 重新加载 / 用浏览器打开」。
+
+**别再拿 `innerText` 长度当唯一判据**：`bits=34` 的邮箱页原来会被判成「有内容」，于是既不给提示也不重试。
+
+### 22.2 硬规则：`AndroidView` 会盖住同一 Column 里排在它前面的 Compose 内容
+
+图书馆座位页的「区域」胶囊原来放在座位图那张 `Card` 里、`SeatMapHost`（`AndroidView`）之前，
+`uiautomator` 能 dump 到胶囊节点（`[197,966][713,1012]`），截图里却什么都看不到 —— 座位图那块真实 View
+把同列上方 Compose 画的像素盖掉了。所以**不要把 Compose 控件压在 `AndroidView` 前面指望它可见**：
+要么控件放到 `AndroidView` 之后，要么干脆挪到**另一张 Card**（现在「区域」是一张独立卡）。
+
+### 22.3 硬规则：图书馆一层的所有区域在 `allContent` 的 `com.CatCon` 里，`data` 只有「推荐的那一个」
+
+用户说「缺少一块区域」的根因：`/Seat/Index/searchSeats` 返回里 `data` 只带服务端推荐的一间，
+真正的区域列表在
+
+```
+allContent.children[i]                    // ui_type = com.CatCon
+  └── children（com.BlockList 对象，不是数组）
+        └── children[]                    // 每个区域一个 ht.Seat.RecommendSeatItem
+              ├── roomName
+              └── seatMap{ info{id,title,plan,width,height}, POIs[] }
+```
+
+`LibrarySeatApi.parseAreas()` 把每个区域都解析出来（`图书馆一楼` 实测两个：
+一楼自习区（位置上有插座）104 座 / 自习室（102）292 座），`data` 只作为老结构的兜底。
+区域切换后重新渲染 `SeatMapHost`，预约仍然只提交 `beginTime/duration/seats[0]/seatBookers[0]`，
+不需要 `space_id`，所以任何区域的座位号都能直接约。
+
+### 22.4 硬规则：二级页的转场方向靠 `WorkRoute.depth`，深度相同就判不出方向
+
+「我的预约」以前和「图书馆座位」同为 `depth = 1`，`MiuiNavStack` 拿不到「更深」的信号，
+于是进场方向与其它二级页不一致。现在 `LIBRARY_SEAT=1`、`LIBRARY_BOOKINGS=2`、`LIBRARY_SIGN_CODE=3`，
+推入时子页从右侧滑入、父页左移 24%，返回时完全镜像（用 `screenrecord` 抽帧验证：
+`f046` 父页左移、`f049` 子页从右侧进入）。
+
+### 22.5 硬规则：页面横向留白统一 12dp（与「我的」页一致）
+
+用户反馈「与屏幕两侧贴得太近」。工作页、校园网登录、图书馆座位三处的 `Card` 外框一律
+`padding(horizontal = 12.dp)`，实测卡片左右边缘都在 `x=35..1185`（1220 宽），和「我的」页完全一致。
+新增页面照抄这条，不要自己发明 16/20dp。
+
+### 22.6 一张卡里只有一颗按钮时，左边要补状态文案
+
+校园网登录页的「动作」卡原来只放一颗右对齐的「下线 / 立即认证」，左边空一大块。
+现在左边显示 `campus_net_status_online/offline`（已认证 / 未认证），右边才是按钮，行内
+`Spacer(Modifier.weight(1f))` 撑开。
+
+### 22.7 工作页各应用实测（第十八轮，`emulator-5554`，学号 260106336 会话）
+
+| 应用 | 实际打开 | 结果 |
+| --- | --- | --- |
+| 查用电 | `m.app.nchu.edu.cn/hq/RemainEle.aspx` | 正常（bits 154 / 高 475） |
+| 缴电费 | `ykt-wechat.../elecpay/queryelec.html` | 页面正常，服务端回「json参数不能为空」——该 H5 需要入口参数，非卡死 |
+| 校园网登录 | 原生页 | 正常，在线状态/IP/流量都在 |
+| 座位预约 | 原生页 | 正常，两个区域可切换 |
+| 智慧教务（本科生） | `h5.jwc.nchu.edu.cn/#/chooseTypeLogin` | 正常（登录页） |
+| 掌上学工 | `xgc-sys.xgc.nchu.edu.cn:8080/index_xs.html` | 正常（Hi，焦普田 + 各服务宫格） |
+| 校园一卡通 | `ykt-wechat.../wechat/home/index.html` | 正常 |
+| 学生邮箱 | `mail.stu.nchu.edu.cn/mail/` | **白屏已修**（见 22.1） |
+| 网络认证自助服务 | `passport.nchu.edu.cn`（统一身份认证） | 正常（有图有导航） |
+
+## 21. 第十六轮反馈（2026-10-27）：诊断崩溃、群聊消失、校园网登录与图书馆座位（原生页移植）
+
+用户原话：
+
+> 「第一，设置-关于-诊断与日志点击即崩溃。第二，私信栏中没有群聊功能了，修复这个问题。第三，原项目更新了一个
+> 校园网功能，能做到输入密码后自动登录，将这个功能添加到工作的常用功能中，命名为校园网登录，运行底层逻辑可以
+> 完全参考这个项目，但是 ui 界面应该严格遵守 miuix 设计规范，再移植这个项目中的图书馆座位预约功能，替换掉
+> 工作-常用功能中座位预约的功能，要求同上，逻辑可以参考原项目，但 ui 设计必须 miuix 化」
+
+### 21.1 硬规则：`Dialog` 必须挂在 **Activity** 上，`AppContext.instance` 只能做 Application 级的事
+
+「诊断与日志」点击即崩，崩溃栈是 `android.view.WindowManager$BadTokenException: Unable to open window --
+token null is not valid; is your activity running?`，抛在 `Dialog.show()`。根因：`MineFragment.showDiagnostics()`
+把 `AppContext.instance`（Application）当 Context 传给 `showMiuixDialog`，Application 没有 window token。
+同一类错在 `MineFragment` 里还有 6 处（主题/语言选择、导出、导出进度、退出登录确认）。
+
+- 现在两处都改了：**7 个调用点全部换成 `requireActivity()`**，并且 `ui/miuix/MiuixDialog.kt` 加了兜底
+  `object DialogHost`（`App.registerActivityLifecycleCallbacks` 里记住当前 resumed 的 `ComponentActivity`，
+  `resolveDialogHost(context)` = `context.findComponentActivity() ?: DialogHost.current()`），
+  宿主为空时 **不 show** 只打一行 `MiuixDialog` 日志 —— 宁可没弹窗，也不能把用户打崩。
+- 新代码写对话框：`showMiuixDialog/showMiuixConfirm/showMiuixPicker/showMiuixInput/showMiuixProgress`
+  的第一个参数一律是**当前 Activity**（`requireActivity()`、Compose 里的 `LocalContext.current` 也可以，
+  它来自 Activity）。
+
+### 21.2 硬规则：判断「幽灵会话」不能只看预览为空，群聊没有消息也是正常的
+
+「私信里没有群聊了」的根因在 `ImRepository.refreshConversations()`：
+`mapped.partition { it.preview.isBlank() }` 把**任何预览为空**的会话当成幽灵会话丢掉，
+而 `previewOf()` 对 `UnknownMessage` / `latestMessage == null`（新建的群、还没人说话）返回空串 ——
+于是群聊被整条删除（第十二轮清幽灵消息时留下的坑）。
+
+现在分区条件是 `preview.isBlank() && !it.isGroup`（只清「没有群属性又没有预览」的僵尸单聊），
+并且 `ImScreens.previewText()` 给群聊补了占位文案：空群显示 `im_preview_empty_group`（还没有消息），
+不支持的内容显示 `im_preview_unsupported`（[其他消息]）。
+
+### 21.3 「校园网登录」：逻辑整包移植，界面 100% Miuix，**不许自动重连**
+
+- 逻辑层（`campusnet/`，从原项目 `com.lanhang.lite.campusnet` 平移，包名换成本项目）：
+  `SrunCrypto`（深澜的 xEncode / base64 / HMAC-MD5）、`SrunApi`（`get_challenge` → `srun_portal` →
+  `rad_user_info` 三段 JSONP，含 callback 解析、AC 探测、域名回退）、`CampusNetAuth`（认证/下线的门面）、
+  `CampusNetStore`（学号/AC/域名/记住密码，密码用 **Android Keystore AES-GCM** 加密后存 SP，
+  解出来只在本机）。
+- 界面 `campusnet/CampusNetScreen.kt`：状态卡（已认证/未认证/无法连接 + IP/在线时长/流量 + 刷新）、
+  账号卡（学号 + 密码 + 记住密码 Switch + 加密说明）、动作卡（立即认证 / 下线，下线走 `showMiuixConfirm`）、
+  自助服务入口（照旧那张 H5，走 `OaWebViewActivity`）。**没有任何一条后台自动认证/自动重连代码**：
+  用户点按钮才发请求，这是「不许造假功能」的延伸。
+- 常用功能入口不是服务端应用：`work/WorkRoute.kt` 定义 `NATIVE_CAMPUS_NET_ID = "native:campus_net"`，
+  `WorkPage.COMMON_SLOTS` 里的 `CommonSlot.Native` 用字符串资源 `work_campus_net_title` 现造一个
+  `WorkApp`（`homePageUrl = ""`，永远不走 WebView），点击由 `openApp` 拦下来推原生页。
+
+### 21.4 「图书馆座位预约」：接管服务端那个 H5 入口，换成原生选座页
+
+- 逻辑层（`library/`）：`SeatModels.kt`（房间/规则/座位/预约/动作枚举）、`LibrarySeatApi.kt`
+  （洄图 SDUI 协议：`/Space/Category/list`、`/Seat/Index/searchSeats`、`/Seat/Index/booking`、
+  `/Seat/Index/myBookingList`、`/Seat/Index/mySignQRCode` 等，登录复用 `RcApi.getLdapToken` 换 `lib-zw` 会话）、
+  `SeatMapView.kt`（自绘座位图 + 双指缩放 + 拖动 + 平面图背景，**配色由外部注入 ARGB**，不读 Material 主题）。
+- 界面：`library/LibrarySeatScreen.kt`（房间/开始时间/时长三行选择器 → 座位图 → 预约确认）、
+  `library/SeatBookingsScreen.kt`（我的预约，按订单状态机给 签到/暂离/续座/签退/取消）、
+  `library/SeatSignCodeScreen.kt`（服务端画好的二维码，可刷新）。
+- 时段规则**不写死**：`SeatRules.startHours(nowHour, defaultBeginHour)` / `durationHours(startHour)`
+  都由服务端下发的开闭馆时间与 max_duration 算；没时段就老实说「今天已无可用时段」。
+- 服务端那个叫「座位预约」的 H5 应用**只用来占位**（名字、图标照旧）：`openApp` 里
+  `app.displayName.contains("座位预约")` → 推 `WorkRoute.LIBRARY_SEAT`，在 OA 分支之前拦掉。
+
+### 21.5 硬规则：工作 Tab 里的新页面**不许新开 Activity、不许自绘顶栏**
+
+`WorkFragment` 从「只挂一个 `WorkPage`」改成**自带页面栈**：`mutableStateListOf<WorkRoute>` +
+`MiuiNavStack(key = page, depthOf = { it.depth })`（转场仍是全应用唯一那份），
+顶栏仍只调 `showToolbarMain(工作)` / `showToolbarSub(title, onBack = { pop() })`，
+`BackHandler(enabled = stack.size > 1)` 管返回键（栈底交系统退出）。
+以后工作页再加原生功能，**照这个模式加一条 `WorkRoute` + 一个 `CommonSlot.Native`**，别另起炉灶。
+
+### 21.6 座位图在 Compose 里的两个坑（`AndroidView` + 自绘 View）
+
+1. **`AndroidView` 不会裁掉越界绘制**：座位图的 View 若把内容画得比自己的边界大（比如给格子设了 7dp 下限、
+   内容比视口宽），会直接画到卡片外面去 —— 实测图例「空闲/已占/已选」被座位盖住。
+   现在 `onMeasure` 在有高度约束时按「整张平面图都装得下」算基准格（`min(视口宽/列数, 视口高/行数)`，
+   **不设下限**），要看清细节就双指放大（缩放上限 4×）。
+2. **座号字号必须跟着格子走**：原来固定 `dp(8)`，一格两座（「95 94」）时会糊成「103102」。
+   现在 `textSize = min(8dp, 格子宽 × 0.46)`。
+
+### 21.7 本轮怎么验的
+
+模拟器（旧包 `com.lanhang.lite` 有登录态，临时把 `applicationId` 改回旧包名构建，验完改回 `com.lanhang.miuix`）：
+
+- 我的 → 关于 → 诊断与日志：Miuix 面板正常弹出（关闭 / 分享），`adb logcat -b crash -d` 全空 ✓
+- 我的 → 私信：群聊回来了（`2601063` 带「群聊」标签、预览「张敏佳：还没有消息」）✓
+- 工作 → 常用功能：查用电 / 缴电费 / **校园网登录** / **座位预约** / 智慧教务 —— 顺序与用户要求一致 ✓
+- 工作 → 校园网登录：状态卡真实拉到 `已认证 · IP 10.86.80.106 · 在线 244 小时 21 分 · 流量 54 GB` ✓
+- 工作 → 座位预约：真实房间「图书馆一楼」、08:00 / 1 小时、座位图 + 图例 + 空闲 81 座；
+  我的预约里能看到历史订单（系统签退结束 / 已签退）✓
+- 两次截图目录：`artifacts/screenshots/r17-campus*.png`、`r17-seat*.png`、`r17-bookings.png`、`r17-im.png`、`r17-diag.png`
+
+> 验证限制：模拟器连不到 `NCHU_Wireless`，「输入密码 → 自动登录」这条链路只能靠代码保证
+> （`SrunApi` 的三段式与上游一致，页面会把服务端的错误原文透出来）。
+
+---
+
 ## 20. 第十五轮反馈（2026-10-26）：工作页首次进入会「自己滚到最近使用」、顶栏异常收起
 
 用户原话：
@@ -1682,3 +2019,59 @@ adb shell run-as com.lanhang.miuix cat files/moments_last.json            # 工�
   聊天记录都已铺满，姓名/群名直接是「张敏佳」「2601063」（不再是「匿名」）③连开三轮会话页 + 群聊往返，
   `logcat -b crash` 为空 ④工作页「常用功能/最近使用/教学办公」标签改为卡片外 `body2` 次要色。
 - **红线不变**：只做「打开 → 截图 → 返回」，不点发送/发表/点赞，不 `joinGroup`。
+
+## 13. 2026-10-27 第九轮之后合并反馈（0.22.4 → 0.22.5 / versionCode 49 → 50）
+
+### 13.1 通讯录：搜索三通道 + 返回只退一级
+
+- **接口**：`RceApi.searchContacts(keyword)` 统一入口——`POST /staffs/search`
+  （`{"keywords":[...],"with_orgs":"0","type":1}`）同时命中**姓名**和**学号/工号**；
+  关键词是 11 位纯数字时再补 `POST /user/search/mobile`（只认手机号），两批按 `id` 去重合并。
+- **学号补齐**：`/user/search/mobile` 只回 `id/name/mobile`，没有 `staff_no`。
+  合并后把「缺学号」的 id 收成一批，一次 `POST /staffs/batch` 补回来（别一个人一个请求）。
+- **返回**：搜索框有内容时 `BackHandler` 先走 `ContactsUiState.backOnce()`——清关键词、留在通讯录原页；
+  `MineFragment` 的顶栏返回箭头同样先问 `backOnce()`，它是 false 才真的退出这一页。
+- **成员行/搜索命中行**：统一 `学号 · 身份 · 手机号`（`StaffSearchHit` 新增 `mobile` 字段），
+  取不到的项自动省掉；成员卡里也是这三行。
+
+### 13.2 课表自适应（短屏机器最左侧时间被切）
+
+- `ScheduleFragment` 全部改成按实测文字宽度排：`textPx("08:45", 8f)` 量出时间列，
+  `timeW` 夹在 26–52dp；周次列 `colW = (可用宽度 − timeW − 7×gapW − 1dp) / 7`；间隙 4/3/2dp 三档。
+- 时间格字号 13/12/11sp、行距 8/7.5/7sp、内边距 2/1/0dp 三级降档，`includeFontPadding = false`。
+- 实测 1080×1920@480（360dp）与 960×1600@480（320dp）下 `08:00/08:45 … 20:50/21:35` 全部完整可见，
+  节次列与周次列都不再互相挤。
+
+### 13.3 深色强调色（Miuix 深色那套发闷）
+
+- `ui/miuix/LanhangMiuix.kt` 里 `darkColorScheme(...)` 用**具名参数**覆盖（Miuix 的 `Colors` 没有 `copy()`，
+  49 个 `long` 位置参数走 `$default` 桥接）：`primary #4C8DFF`、`primaryVariant #5C9BFF`、
+  `primaryContainer #2A4E8F`、`onPrimaryContainer #D8E6FF`，`onPrimary` 仍保持白色（白字压在亮蓝底上 3.3:1，
+  15sp semibold 够看，比 MD3 那套「亮底 + 深字」在 Miuix 组件里更稳）。
+- 新增三个小工具：`Color.liftForDark(amount)`（朝白插值）、`isDarkTheme()`（按背景亮度判断，比
+  `isSystemInDarkTheme` 靠得住）、`accentColor(base)`（深色自动提亮）。
+- 落实处：我的页 8 个图标色（`MineScreen` 的 `MineRow`）、成绩分数色（`scoreColor(score, night)`）、
+  课表「今天」强调色（`ScheduleStyle.accentOf(context, night)`）；座位图的选中色本来就吃 `colorScheme.primary`，跟着变。
+
+### 13.4 工作页图标按学校原图标重绘
+
+- `ui/miuix/SchoolIcons.kt` 全部是 24×24 viewport、`strokeLineWidth 1.9f`、圆角端点的描边图标。
+  本轮重画：`Teach`（教案本 + 三条表单线，去掉竖分隔）、`BoltYuan`（放大闪电 + ¥）、`Wrench`（开口 C 形头 + 手柄）、
+  `Mailbox`（信封 + 立柱 + 底座）、`HandYuan`（¥ 硬币）、`News`（正文三行 + 右侧配图）、`Sliders`（机箱 + 滑杆）、
+  `Seat`（靠背 + 坐板 + 两条腿），新增 `Flask`（实验室安全，原图是显微镜，20dp 下烧瓶更清楚）与
+  `FaceCamera`（门禁照片更新 = 相机 + 镜头）。
+- `WorkPage.glyphId()` 规则微调：`门禁照片/照片更新/人脸采集 → faceCamera`、`宿舍门禁/人脸门禁 → faceGate`、
+  `实验 → flask`、`仪器/机房/设备 → sliders`、`摊点/活动/布置/宣传品 → flag`（这条挪到新闻前面，
+  免得「宣传品布置申请」被 `宣传` 抢走）；`出差/证书/申请/审批` 统一 `clipboard`（原来落到 `wallet`，和银行卡撞脸）。
+- **去重策略改了**：`SCHOOL_GLYPH_IDS` 里的学校图标**允许同义复用**（新闻稿件报审 vs 南航要闻、两个门禁申请），
+  色相按顺序错开；Miuix 备用图标仍然保持全页不重复——这样既不会出现「一堆随机图标」，也不会把同义应用硬拆成两个图标。
+
+### 13.5 验证与红线
+
+- `assembleRelease`（R8 开启）→ `pm install -r` → 逐项截图：通讯录按学号搜（`260106336` → 焦普田）、
+  按手机号搜（`17507095317` → 同一人且学号已补上）、搜索态按两次返回落回通讯录原页；
+  课表 360dp / 320dp 时间列完整；深色下我的页图标、课表「今天」、工作圈 FAB 都是提亮后的蓝；
+  工作页 50 个应用逐个看过图标辨识度。
+- 临时探针（`RceApi.probeRaw/probePost/probePostLocal`、`ContactsScreen` 里那段 `RceProbe` `LaunchedEffect`）
+  **本轮已全部删除**——发版前别留 dump 代码。
+- 红线不变：只做「打开 → 截图 → 返回」，不点发送/发表/点赞，不 `joinGroup`，不 `pm uninstall`。

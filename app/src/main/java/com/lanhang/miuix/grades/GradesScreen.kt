@@ -30,6 +30,8 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.lanhang.miuix.R
+import com.lanhang.miuix.ui.miuix.isDarkTheme
+import com.lanhang.miuix.ui.miuix.liftForDark
 import com.lanhang.miuix.ui.miuix.refreshTexts
 import com.lanhang.miuix.ui.miuix.showMiuixPicker
 import com.lanhang.miuix.ui.shell.ReportListScroll
@@ -347,17 +349,26 @@ private fun GradeRow(item: GradeItem) {
             text = item.score ?: "--",
             style = MiuixTheme.textStyles.title4,
             fontWeight = FontWeight.SemiBold,
-            color = item.scoreValue?.let { scoreColor(it) } ?: MiuixTheme.colorScheme.onBackgroundVariant,
+            color = item.scoreValue?.let { scoreColor(it, isDarkTheme()) }
+                ?: MiuixTheme.colorScheme.onBackgroundVariant,
         )
     }
 }
 
-/** 分数配色（语义色，不跟主题，保证一眼看出高低） */
-internal fun scoreColor(score: Int): Color = when {
-    score >= 90 -> Color(0xFF2E9E5B)
-    score >= 80 -> Color(0xFF3482FF)
-    score >= 60 -> Color(0xFFB26A00)
-    else -> Color(0xFFE94634)
+/**
+ * 分数配色（语义色，不跟主题走，保证一眼看出高低）。
+ *
+ * 2026-10-27 第二十轮：`night = true` 时统一提亮一档——深色卡片上原来的
+ * `#3482FF` / `#2E9E5B` 都偏暗，看不清是「良好」还是「及格」。
+ */
+internal fun scoreColor(score: Int, night: Boolean = false): Color {
+    val base = when {
+        score >= 90 -> Color(0xFF2E9E5B)
+        score >= 80 -> Color(0xFF3482FF)
+        score >= 60 -> Color(0xFFB26A00)
+        else -> Color(0xFFE94634)
+    }
+    return if (night) base.liftForDark() else base
 }
 
 private fun formatNum(v: Double): String =

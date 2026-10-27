@@ -41,6 +41,10 @@ import com.lanhang.miuix.net.RceApi
 import com.lanhang.miuix.net.cleanOrgName
 import com.lanhang.miuix.net.StaffBrief
 import com.lanhang.miuix.net.StaffInfo
+import com.lanhang.miuix.profile.ProfileStackHost
+import com.lanhang.miuix.profile.ProfileStackState
+import com.lanhang.miuix.profile.ProfileStore
+import com.lanhang.miuix.profile.profileTitle
 import com.lanhang.miuix.ui.miuix.MiuiNavStack
 import com.lanhang.miuix.ui.miuix.rememberStickyListState
 import com.lanhang.miuix.schedule.AppContext
@@ -78,15 +82,12 @@ class MomentsFragment : Fragment() {
     /** 当前页：列表 / 发表页 / 某个人的主页（都是本 Tab 内的二级页） */
     private var page by mutableStateOf(MomentPage.LIST)
 
-    // ---- 他人主页（0.8.0）----
-    private var profileUid: String? = null
-    private var profileStaff by mutableStateOf<StaffInfo?>(null)
-    private var profileItems by mutableStateOf<List<MomentItem>>(emptyList())
-    private var profileLoading by mutableStateOf(false)
-    private var profileRefreshing by mutableStateOf(false)
-    private var profileEnded by mutableStateOf(false)
-    private var profileRevision by mutableStateOf(0)
-    private var profileFromFeedId: String? = null
+    // ---- 他人主页：整块交给 profile/ProfileHost.kt（「我的」里也是同一份）----
+    /** 主页栈：A → B → … 任意层，返回正好弹回上一个人 */
+    private val profileStack = ProfileStackState()
+
+    /** 主页数据（资料 + 动态分页 + 点赞评论），按 uid 缓存 */
+    private lateinit var profileStore: ProfileStore
 
     /** 发表页正文 */
     private var publishText by mutableStateOf("")
@@ -236,32 +237,20 @@ class MomentsFragment : Fragment() {
                             )
                         }
 
-                        MomentPage.PROFILE -> UserProfilePage(
-                            staff = profileStaff,
-                            userId = profileUid.orEmpty(),
-                            isSelf = false,
-                            items = profileItems,
-                            loading = profileLoading,
-                            refreshing = profileRefreshing,
-                            ended = profileEnded,
-                            revision = profileRevision,
-                            emptyText = getString(R.string.profile_empty_other),
-                            onRefresh = { loadProfile(reset = true) },
-                            onLoadMore = { loadProfile(reset = false) },
-                            onLike = { toggleLike(it) },
-                            onPostComment = { item, replyTo, text -> postComment(item, replyTo, text) },
-                            onDeleteComment = { item, comment -> deleteComment(item, comment) },
-                            onDeletePost = { item -> deletePost(item) },
+                        MomentPage.PROFILE -> ProfileStackHost(
+                            stack = profileStack,
+                            store = profileStore,
+                            // 主页退场动画里它还在组合里，只在「当前是主页」时才改顶栏
+                            onTitle = { if (page == MomentPage.PROFILE) syncToolbar() },
+                            onOpenProfile = { openProfile(it) },
+                            onMessage = { uid, _ ->
+                                (activity as? com.lanhang.miuix.ui.MainActivity)
+                                    ?.openDirectChat(uid)
+                            },
                             onImage = { urls, index, rect ->
                                 ImagePreviewActivity.start(requireContext(), urls, index, rect)
                             },
-                            // 在别人的主页里再点别人的头像/名字 → 进那个人的主页（自己则忽略）
-                            onOpenProfile = { openProfile(it) },
-                            // 「发私信」→ 切到「我的」里的私信聊天页
-                            onMessage = {
-                                (activity as? com.lanhang.miuix.ui.MainActivity)
-                                    ?.openDirectChat(profileUid.orEmpty())
-                            },
+                            emptyText = getString(R.string.profile_empty_other),
                         )
 
                         else -> MomentsScreen(
@@ -293,6 +282,11 @@ class MomentsFragment : Fragment() {
         }
     }
 
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        profileStore = ProfileStore(lifecycleScope) { bumpLists() }
+    }
+
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         requireActivity().onBackPressedDispatcher.addCallback(viewLifecycleOwner, backCallback)
         // 视图重建（进程恢复/主题切换）后列表必为空，不能因 savedInstanceState 跳过加载
@@ -320,10 +314,12 @@ class MomentsFragment : Fragment() {
             )
 
             MomentPage.PROFILE -> act.showToolbarSub(
-                // 「xxx 的个人主页」；资料还没回来时退回通用的「个人主页」
-                profileStaff?.name?.takeIf { it.isNotBlank() }
-                    ?.let { getString(R.string.profile_title_of, it) }
-                    ?: getString(R.string.profile_title),
+                // 「X 的个人主页」；姓名还没回来时退回通用的「个人主页」
+                run {
+                    val uid = profileStack.current.orEmpty()
+                    val name = profileStore.peek(uid)?.name ?: UserInfoCache.get(uid)?.name
+                    profileTitle(requireContext(), name)
+                },
                 { closeProfile() },
             )
 
@@ -367,85 +363,40 @@ class MomentsFragment : Fragment() {
         syncToolbar()
     }
 
-    /** 点头像/姓名 → 这个人的主页（帖子列表按 /timeline/{user_id} 拉） */
+    /**
+     * 点头像/姓名 → 这个人的主页（帖子列表按 /timeline/{user_id} 拉）。
+     *
+     * 已经在主页层时**往主页栈里压一层**（A → B），返回会正好弹回 A
+     * —— 和「我的」里那份实现完全同一套（profile/ProfileHost.kt）。
+     */
     private fun openProfile(userId: String) {
         if (userId.isBlank() || userId == Session.userId) {
             // 自己：交给「我的」Tab（那边才有我的资料与相册）
             return
         }
-        profileUid = userId
-        profileStaff = null
-        profileItems = emptyList()
-        profileFromFeedId = null
-        profileEnded = false
-        profileRevision = 0
+        if (page == MomentPage.PROFILE) {
+            profileStack.push(userId)
+            syncToolbar()
+            return
+        }
+        profileStack.reset(userId)
         pageForward = true
         page = MomentPage.PROFILE
         backCallback.isEnabled = true
         syncToolbar()
-        // 先批量接口解析一遍（证件照就在这里面），头像立刻有；失败也不影响下面的请求
-        viewLifecycleOwner.lifecycleScope.launch {
-            withContext(Dispatchers.IO) { UserInfoCache.resolve(listOf(userId)) }
-            profileRevision++   // 让头部头像跟着刷新
-        }
-        loadProfileStaff(userId)
-        loadProfile(reset = true)
     }
 
+    /** 返回：主页栈里还有人（A 上面压了 B）就只弹一层，没人了才退回动态流 */
     private fun closeProfile() {
         if (page != MomentPage.PROFILE) return
+        if (profileStack.pop()) {
+            syncToolbar()
+            return
+        }
         pageForward = false
         page = MomentPage.LIST
         backCallback.isEnabled = false
         syncToolbar()
-    }
-
-    /** 他人资料：GET /staffs/{id}（官方 UserTask.STAFF_INFO） */
-    private fun loadProfileStaff(userId: String) {
-        viewLifecycleOwner.lifecycleScope.launch {
-            val staff = runCatching {
-                withContext(Dispatchers.IO) { RceApi.getStaff(userId) }
-            }.getOrNull()
-            if (staff != null && profileUid == userId) {
-                profileStaff = staff
-                UserInfoCache.put(
-                    StaffBrief(
-                        id = userId,
-                        name = staff.name,
-                        portrait_url = staff.portraitUrl,
-                        depart_name = staff.depart_name ?: staff.org.cleanOrgName(),
-                        duty_name = null,
-                        company_id = staff.company_id,
-                    )
-                )
-                syncToolbar()   // 顶栏标题用姓名
-            }
-        }
-    }
-
-    private fun loadProfile(reset: Boolean) {
-        val uid = profileUid ?: return
-        if (profileLoading) return
-        if (!reset && profileEnded) return
-        profileLoading = true
-        profileRefreshing = reset && profileItems.isNotEmpty()
-        viewLifecycleOwner.lifecycleScope.launch {
-            try {
-                val from = if (reset) null else profileFromFeedId
-                val fetched = MomentFeedSource.load(uid, from, MomentsApi.PAGE_SIZE)
-                val merged = if (reset) fetched else profileItems + fetched
-                if (fetched.isNotEmpty()) {
-                    profileFromFeedId = fetched.last().feed.feed_id ?: profileFromFeedId
-                }
-                profileItems = merged
-                profileEnded = fetched.size < MomentsApi.PAGE_SIZE
-            } catch (e: Exception) {
-                toast(getString(R.string.moments_load_failed, e.message.orEmpty()))
-            } finally {
-                profileLoading = false
-                profileRefreshing = false
-            }
-        }
     }
 
     /** 底栏选中「工作圈」时回调：列表为空则自动刷新（兜底全黑） */
@@ -628,9 +579,7 @@ class MomentsFragment : Fragment() {
         viewLifecycleOwner.lifecycleScope.launch {
             try {
                 withContext(Dispatchers.IO) { MomentsApi.deleteFeed(feedId) }
-                // 公共时间线与他人主页可能是同一条动态，两套列表一起摘掉
                 items = items.filterNot { it.feed.feed_id == feedId }
-                profileItems = profileItems.filterNot { it.feed.feed_id == feedId }
                 bumpLists()
                 toast(AppContext.instance.getString(R.string.moments_deleted))
             } catch (e: Exception) {
@@ -646,8 +595,6 @@ class MomentsFragment : Fragment() {
     private fun bumpLists() {
         revision++
         items = items.toList()
-        profileRevision++
-        profileItems = profileItems.toList()
     }
 
     /**

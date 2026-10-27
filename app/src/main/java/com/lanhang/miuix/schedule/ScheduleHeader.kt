@@ -22,6 +22,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.lanhang.miuix.R
+import com.lanhang.miuix.ui.miuix.isDarkTheme
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.Text
@@ -109,7 +110,14 @@ fun ScheduleHeader(
                 .clip(RoundedCornerShape(50))
                 // 强调方向：**本周**才是被强调的那个（蓝字 + 淡强调底）；
                 // 其他周退回普通文字色、不加底（用户 2026-10-24：原来正好反了）
-                .background(if (state.isCurrentWeek) accent.copy(alpha = 0.12f) else Color.Transparent)
+                // 2026-10-27：深色下 12% 的蓝铺在纯黑上几乎看不见，本周胶囊改成 32%
+                .background(
+                    if (state.isCurrentWeek) {
+                        accent.copy(alpha = if (isDarkTheme()) 0.32f else 0.12f)
+                    } else {
+                        Color.Transparent
+                    }
+                )
                 .clickable(onClick = onPickWeek)
                 .padding(horizontal = 10.dp, vertical = 3.dp),
         ) {

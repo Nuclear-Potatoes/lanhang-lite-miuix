@@ -178,6 +178,74 @@ object RceApi {
      * 通讯录：整棵组织架构树。
      * 官方 `OrganizationTask.DEPARTMENTS_TREE`，一次下发 1500+ 节点，客户端自己按 parent_id 拼树。
      */
+
+    /**
+     * `POST /staffs/search`：按学号 / 姓名找人（通讯录搜索用）。
+     *
+     * 请求体照抄官方 `FriendTask.searchFriendsWithStaffNo`（`type=1` 就是「按工号/学号」），
+     * 只是我们不带组织信息（`with_orgs=0`，省得响应膨胀）。失败返回空表——搜索框不该因为
+     * 一次网络抖动就弹错误提示。
+     */
+    suspend fun searchStaff(keyword: String): List<StaffSearchHit> {
+        val q = keyword.trim()
+        if (q.isEmpty()) return emptyList()
+        val body = com.google.gson.JsonObject().apply {
+            add("keywords", com.google.gson.JsonArray().apply { add(q) })
+            addProperty("with_orgs", "0")
+            addProperty("type", 1)
+        }
+        return runCatching {
+            post<List<StaffSearchHit>>("/staffs/search", ApiClient.gson.toJson(body))
+        }.getOrDefault(emptyList())
+    }
+
+    /**
+     * `POST /user/search/mobile`：按手机号找人（官方 `FriendTask.searchFriendsWithMobile`）。
+     * 请求体只有 `{"keywords":[...]}`，没有 type。
+     */
+    suspend fun searchStaffByMobile(mobile: String): List<StaffSearchHit> {
+        val q = mobile.trim()
+        if (q.isEmpty()) return emptyList()
+        val body = com.google.gson.JsonObject().apply {
+            add("keywords", com.google.gson.JsonArray().apply { add(q) })
+        }
+        return runCatching {
+            post<List<StaffSearchHit>>("/user/search/mobile", ApiClient.gson.toJson(body))
+        }.getOrDefault(emptyList())
+    }
+
+    /**
+     * 通讯录搜索的统一入口：姓名 / 学号 / 手机号都能查。
+     *
+     * - `/staffs/search`（`type=1`）实测同时命中**姓名**与**学号 / 工号**；
+     * - 关键词是 11 位手机号时，再补一次 `/user/search/mobile`——那个接口只认手机号，
+     *   两个结果按 id 去重、顺序保持「先精确人、后补充」。
+     */
+    suspend fun searchContacts(keyword: String): List<StaffSearchHit> {
+        val q = keyword.trim()
+        if (q.isEmpty()) return emptyList()
+        val byKeyword = searchStaff(q)
+        val digits = q.filter { it.isDigit() }
+        val merged = if (digits.length == 11 && digits == q) {
+            (byKeyword + searchStaffByMobile(q)).distinctBy { it.id }
+        } else {
+            byKeyword
+        }
+        if (merged.isEmpty()) return merged
+        // `/user/search/mobile` 只回 id/name/mobile，没有学号；缺学号的一批统一补一次
+        // `/staffs/batch`（一次请求搞定，别一个人一个人去查）。
+        val needNo = merged.filter { it.staffNo.isBlank() && it.id.isNotBlank() }.map { it.id }
+        if (needNo.isEmpty()) return merged
+        val briefs = runCatching { staffsBatch(needNo) }.getOrNull()?.data
+            ?.mapNotNull { b -> b.staffNo?.takeIf { it.isNotBlank() }?.let { b.id to it } }
+            ?.toMap()
+            .orEmpty()
+        if (briefs.isEmpty()) return merged
+        return merged.map { hit ->
+            if (hit.staffNo.isBlank()) hit.copy(staffNo = briefs[hit.id] ?: hit.staffNo) else hit
+        }
+    }
+
     fun departmentTree(): List<Department> =
         get<DepartmentTree>("/departments/tree").data
 

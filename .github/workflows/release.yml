@@ -1,0 +1,152 @@
+name: Release
+
+# 推 v* 标签自动出包发版；也可以在 Actions 页面手动 Run workflow。
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 发布标签（留空 = v + versionName）
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出源码
+        uses: actions/checkout@v4
+
+      - name: 安装 JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: 配置 Gradle（缓存依赖）
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: 读取版本号与标签
+        id: vars
+        run: |
+          set -euo pipefail
+          VERSION_NAME=$(sed -n 's/.*versionName = "\(.*\)".*/\1/p' app/build.gradle.kts | head -n1)
+          VERSION_CODE=$(sed -n 's/.*versionCode = \([0-9]*\).*/\1/p' app/build.gradle.kts | head -n1)
+          TAG="${{ inputs.tag }}"
+          if [ -z "$TAG" ]; then
+            if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+              TAG="${GITHUB_REF_NAME}"
+            else
+              TAG="v${VERSION_NAME}"
+            fi
+          fi
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "name=${VERSION_NAME}" >> "$GITHUB_OUTPUT"
+          echo "code=${VERSION_CODE}" >> "$GITHUB_OUTPUT"
+          echo "apk=lanhang-miuix-${VERSION_NAME}.apk" >> "$GITHUB_OUTPUT"
+          echo "版本 ${VERSION_NAME}（${VERSION_CODE}），标签 ${TAG}"
+
+      # 有 ANDROID_KEYSTORE_BASE64 等 Secrets 就用正式签名；没有就用仓库里的 ci/debug.keystore。
+      # 两者只要保持一致，历史安装包就能直接覆盖升级（不用卸载、不丢登录态）。
+      - name: 准备签名
+        id: sign
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ -n "${KEYSTORE_BASE64:-}" ]; then
+            STORE="${RUNNER_TEMP}/release.keystore"
+            printf '%s' "$KEYSTORE_BASE64" | base64 -d > "$STORE"
+            STORE_PASS="${KEYSTORE_PASSWORD:-android}"
+            ALIAS="${KEY_ALIAS:-androiddebugkey}"
+            KEY_PASS="${KEY_PASSWORD:-$STORE_PASS}"
+            echo "用仓库 Secrets 里的签名"
+          else
+            STORE="${GITHUB_WORKSPACE}/ci/debug.keystore"
+            STORE_PASS=android
+            ALIAS=androiddebugkey
+            KEY_PASS=android
+            echo "未配置 Secrets，用仓库内 ci/debug.keystore（与本地 debug 签名同一份）"
+          fi
+          {
+            echo "store=${STORE}"
+            echo "store_password=${STORE_PASS}"
+            echo "alias=${ALIAS}"
+            echo "key_password=${KEY_PASS}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: 构建 release APK
+        run: |
+          set -euo pipefail
+          chmod +x gradlew
+          ./gradlew assembleRelease --no-daemon --console=plain \
+            -PlanhangReleaseStoreFile="${{ steps.sign.outputs.store }}" \
+            -PlanhangReleaseStorePassword="${{ steps.sign.outputs.store_password }}" \
+            -PlanhangReleaseKeyAlias="${{ steps.sign.outputs.alias }}" \
+            -PlanhangReleaseKeyPassword="${{ steps.sign.outputs.key_password }}"
+
+      - name: 收集产物
+        run: |
+          set -euo pipefail
+          SRC=app/build/outputs/apk/release/app-release.apk
+          test -f "$SRC"
+          cp "$SRC" "${{ steps.vars.outputs.apk }}"
+          sha256sum "${{ steps.vars.outputs.apk }}" > SHA256SUMS.txt
+          ls -lh "${{ steps.vars.outputs.apk }}"
+          cat SHA256SUMS.txt
+
+      - name: 写发行说明
+        run: |
+          set -euo pipefail
+          ROW=$(grep -F "| ${{ steps.vars.outputs.name }} |" VERSION.md | head -n1 || true)
+          {
+            echo "## 蓝航 Lite · Miuix 改版 ${{ steps.vars.outputs.name }}"
+            echo
+            if [ -n "$ROW" ]; then
+              echo "### 本次更新"
+              echo
+              echo "$ROW" | awk -F'|' '{ gsub(/^ +| +$/, "", $4); print $4 }'
+              echo
+            fi
+            echo "### 包信息"
+            echo
+            echo "- versionName：\`${{ steps.vars.outputs.name }}\`"
+            echo "- versionCode：\`${{ steps.vars.outputs.code }}\`"
+            echo "- 构建提交：\`${GITHUB_SHA::7}\` @ $(date -u '+%Y-%m-%d %H:%M UTC')"
+            echo "- 文件：\`${{ steps.vars.outputs.apk }}\`（校验值见 SHA256SUMS.txt）"
+            echo
+            echo "### 安装"
+            echo
+            echo "与本项目历史版本同一签名，可直接覆盖安装，不需要卸载，登录态保留。"
+            echo
+            echo "> 仅供学习交流；接口来自公开抓包与静态分析，与南昌航空大学及官方「蓝航」App 无关。"
+          } > notes.md
+          cat notes.md
+
+      - name: 发布 Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.vars.outputs.tag }}"
+          APK="${{ steps.vars.outputs.apk }}"
+          TITLE="蓝航 Lite · Miuix 改版 ${{ steps.vars.outputs.name }}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$APK" SHA256SUMS.txt --clobber
+            gh release edit "$TAG" --title "$TITLE" --notes-file notes.md
+          else
+            gh release create "$TAG" "$APK" SHA256SUMS.txt \
+              --title "$TITLE" --notes-file notes.md --target "$GITHUB_SHA"
+          fi
+          gh release view "$TAG" --json url,assets --jq '.url, (.assets[].name)'

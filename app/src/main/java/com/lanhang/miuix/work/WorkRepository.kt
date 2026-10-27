@@ -79,6 +79,20 @@ object WorkRepository {
         WorkLaunch(preflight(start, token), token, cookieFor(start))
     }
 
+    /**
+     * 给 [com.lanhang.miuix.ui.OaWebViewActivity] 用的预检入口（2026-10-27 第十八轮）。
+     *
+     * 和 [prepare] 的区别只有一处：**调用方是 WebView 页**，所以这里不再承担「打开前的等待」——
+     * 页面已经起来了，加载态由页面自己画。超时压到 9s（见 [preflight]），最坏情况也只是
+     * 「等 9 秒后按原地址直开」，绝不会把用户按在卡死的界面上。
+     */
+    suspend fun prepareFor(openUrl: String, appId: String?): WorkLaunch = withContext(Dispatchers.IO) {
+        if (openUrl.isBlank()) return@withContext WorkLaunch("", null, null)
+        val token = appId?.takeIf { it.isNotBlank() }
+            ?.let { id -> runCatching { RceApi.getAppToken(id) }.getOrNull() }
+        WorkLaunch(preflight(openUrl, token), token, cookieFor(openUrl))
+    }
+
     /** 门户页（配置里的 features.work.url）同样先走一遍网关，拿 ldap token */
     suspend fun preparePortal(url: String): WorkLaunch = withContext(Dispatchers.IO) {
         if (url.isBlank()) return@withContext WorkLaunch("", null, null)
@@ -96,8 +110,13 @@ object WorkRepository {
             .header("DeviceID", Session.deviceId(AppContext.instance))
             .get()
         token?.takeIf { it.isNotBlank() }?.let { builder.header("Token", it) }
+        // 预检只是「替 WebView 走一遍网关、把 Cookie 收下」，它慢不该拖着用户等：
+        // 单独给一个 9s 的 callTimeout（默认 connect 20s + read 30s 太久了）。
+        val client = ApiClient.http.newBuilder()
+            .callTimeout(9, java.util.concurrent.TimeUnit.SECONDS)
+            .build()
         return runCatching {
-            ApiClient.http.newCall(builder.build()).execute().use { resp ->
+            client.newCall(builder.build()).execute().use { resp ->
                 val body = runCatching { resp.body?.string().orEmpty() }.getOrDefault("")
                 android.util.Log.i(
                     TAG,

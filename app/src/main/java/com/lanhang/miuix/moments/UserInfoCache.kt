@@ -166,6 +166,9 @@ object UserInfoCache {
     fun nameOf(id: String?): String = get(id)?.name?.takeIf { it.isNotBlank() }
         ?: AppContext.instance.getString(R.string.moments_anonymous)
 
+    /** 学号 / 工号（`/staffs/batch` 带回来的 `staff_no`）；没解析到就 null */
+    fun studentNoOf(id: String?): String? = get(id)?.studentNo
+
     suspend fun resolve(ids: Collection<String>) {
         preload()
         // 只请求「还没从批量接口拿过」的人；之前从 /staffs/{id} 塞进来的半条资料照样要补全

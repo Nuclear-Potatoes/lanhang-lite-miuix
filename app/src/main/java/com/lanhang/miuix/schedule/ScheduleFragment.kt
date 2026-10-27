@@ -779,12 +779,9 @@ class ScheduleFragment : Fragment() {
         // 宽度不再用「屏幕宽 - 常量」估算，直接量 contentGrid 的**内宽**。
         // 之前少减了面板左右 padding，colW 偏大 12dp，最后一列被父容器裁掉。
         val gapH = dp(3)
-        val gapW = dp(4)
-        val timeW = dp(44)
         val availW = contentGrid.let { it.width - it.paddingLeft - it.paddingRight }
             .takeIf { it > 0 }
-            ?: (resources.displayMetrics.widthPixels - dp(12))
-        val colW = ((availW - timeW - gapW * 8) / 7f).toInt().coerceAtLeast(dp(30))
+            ?: (resources.displayMetrics.widthPixels - dp(2 * 2 + 2 * 4))
         val bandH = dp(18)
         val headerRowH = dp(46)
         val panelPad = dp(22)   // 面板上下内边距 + 表头下方 2px 间隔的总预留
@@ -800,6 +797,33 @@ class ScheduleFragment : Fragment() {
         }
         val usable = availH - panelPad - headerRowH - bandH * 2 - gapH * 10
         val rowH = (usable / 11).coerceIn(dp(32), dp(56))
+
+        // ===== 宽度自适应（2026-10-27 第二十轮用户反馈：窄屏上「最左侧的时间被挡住」）=====
+        // 以前的写法是「时间列固定 44dp + 列宽夹到至少 30dp」，窄屏里两者一起把总宽顶出容器，
+        // 左边的节次时间就被裁掉。现在改成「先量字宽、再用剩下的宽度分 7 列」：
+        //   1. 间隙窄屏收窄（4dp → 3dp → 2dp）；
+        //   2. 时间列宽度 = 「08:45」在当前字号下的实际宽度 + 内边距（不再写死 44dp）；
+        //   3. 列宽永远等于「剩下的宽度 / 7」，不给下限，靠字号自适应保证可读。
+        val scaledDensity = resources.displayMetrics.scaledDensity
+        val measure = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG)
+        fun textPx(text: String, sizeSp: Float): Float {
+            measure.textSize = sizeSp * scaledDensity
+            return measure.measureText(text)
+        }
+        fun fontH(sizeSp: Float): Float {
+            measure.textSize = sizeSp * scaledDensity
+            val fm = measure.fontMetrics
+            return fm.descent - fm.ascent
+        }
+        val gapW = when {
+            availW < dp(300) -> dp(2)
+            availW < dp(340) -> dp(3)
+            else -> dp(4)
+        }
+        // 时间格最宽的那一行是「08:45」；窄屏字号会降到 7sp，所以按 8sp 量出来就够用
+        val timeW = (textPx("08:45", 8f) + dp(4)).toInt()
+            .coerceIn(dp(26), dp(52))
+        val colW = ((availW - timeW - gapW * 7 - dp(1)) / 7f).toInt().coerceAtLeast(dp(20))
         val breaksAfter = mapOf(
             4 to getString(R.string.schedule_break_noon),
             8 to getString(R.string.schedule_break_evening)
@@ -867,6 +891,27 @@ class ScheduleFragment : Fragment() {
             orientation = LinearLayout.VERTICAL
             layoutParams = LinearLayout.LayoutParams(timeW + gapW, LinearLayout.LayoutParams.WRAP_CONTENT)
         }
+        // 一格要塞「节次号 + 起 + 止」三行字。矮屏 rowH 只有 32dp，三行放不下就会被裁掉
+        // （用户反馈的「最左侧的时间被挡住」就是这个）。这里按实际字高挑一档能放下的组合：
+        // 三行 → 「节次号 + 起始时间」两行 → 只有节次号，永远不会裁字。
+        val numSizeCandidates = floatArrayOf(13f, 12f, 11f)
+        val timeSizeCandidates = floatArrayOf(8f, 7.5f, 7f)
+        var numSize = numSizeCandidates.last()
+        var timeSize = timeSizeCandidates.last()
+        var timeLines = 0
+        loop@ for (ls in intArrayOf(2, 1, 0)) {
+            for (ns in numSizeCandidates) {
+                for (ts in timeSizeCandidates) {
+                    val need = fontH(ns) + (if (ls > 0) ls * fontH(ts) else 0f) + dp(2)
+                    if (need <= rowH) {
+                        numSize = ns
+                        timeSize = ts
+                        timeLines = ls
+                        break@loop
+                    }
+                }
+            }
+        }
         for (p in 1..drawPeriods) {
             val cell = LinearLayout(ctx).apply {
                 orientation = LinearLayout.VERTICAL
@@ -875,21 +920,25 @@ class ScheduleFragment : Fragment() {
             }
             cell.addView(TextView(ctx).apply {
                 text = "$p"
-                textSize = if (rowH < dp(38)) 12f else 13f
+                textSize = numSize
                 setTypeface(null, android.graphics.Typeface.BOLD)
                 setTextColor(s.onBackground)
                 gravity = Gravity.CENTER
+                includeFontPadding = false
+                setSingleLine(true)
                 layoutParams = LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
                 )
             })
             val times = (periodTimes[p] ?: "").split("-")
-            for (t in times) {
+            times.take(timeLines).forEach { t ->
                 cell.addView(TextView(ctx).apply {
                     text = t
-                    textSize = if (rowH < dp(38)) 7f else 8f
+                    textSize = timeSize
                     setTextColor(s.onBackgroundVariant)
                     gravity = Gravity.CENTER
+                    includeFontPadding = false
+                    setSingleLine(true)
                     layoutParams = LinearLayout.LayoutParams(
                         LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
                     )
@@ -954,7 +1003,12 @@ class ScheduleFragment : Fragment() {
                 val blockColor = courseColor(ci.course.name ?: "?")
                 val blockText = style.onCourseTint(blockColor)
                 // 参考截图的观感：整块浅色胶囊 + 同色系深字，块内居中，不加色条
-                val nameSize = if (rowH < dp(40)) 8.5f else 9.5f
+                // 窄屏列宽只有 20~30dp，字号再按老值就会把课名挤成竖排；这里一并按列宽降档
+                val nameSize = when {
+                    colW < dp(30) -> 7.5f
+                    colW < dp(40) || rowH < dp(40) -> 8.5f
+                    else -> 9.5f
+                }
                 // 外层 FrameLayout：底色胶囊 + 内容 + 右下角色点（参照 NexioSchedule 课程块右下角的实心小圆）
                 val block = FrameLayout(ctx).apply {
                     background = s.rounded(density, 10f, style.courseFill(blockColor))
@@ -984,7 +1038,8 @@ class ScheduleFragment : Fragment() {
                     setTypeface(null, android.graphics.Typeface.BOLD)
                     setTextColor(blockText)
                     gravity = Gravity.CENTER
-                    maxLines = 8
+                    includeFontPadding = false
+                    maxLines = if (rowH < dp(40)) 4 else 8
                     layoutParams = LinearLayout.LayoutParams(
                         LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f
                     )
@@ -997,6 +1052,7 @@ class ScheduleFragment : Fragment() {
                         setTextColor(blockText)
                         alpha = 0.8f
                         gravity = Gravity.CENTER
+                        includeFontPadding = false
                         maxLines = 2
                         layoutParams = LinearLayout.LayoutParams(
                             LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT

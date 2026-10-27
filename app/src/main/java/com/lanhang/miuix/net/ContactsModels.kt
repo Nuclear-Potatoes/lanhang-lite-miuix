@@ -43,6 +43,33 @@ data class OrgEntry(
     val isDepartment: Boolean get() = type == 1
 }
 
+/**
+ * `POST /staffs/search` 命中的一个人。
+ *
+ * 官方客户端是 `cn.rongcloud.rce.lib.FriendTask#searchFriendsWithStaffNo`：
+ * 入参 `{"keywords":[...],"with_orgs":"0","type":1}`，服务端按**学号 / 工号**匹配，
+ * 实测（2026-10-27）按姓名也能命中同一个人。
+ */
+data class StaffSearchHit(
+    val id: String = "",
+    val name: String = "",
+    @SerializedName("portrait_url") val portraitUrl: String = "",
+    @SerializedName("staff_no") val staffNo: String = "",
+    val email: String = "",
+    @SerializedName("user_type") val userType: Int = 0,
+    @SerializedName("duty_name") val dutyName: String = "",
+    /**
+     * 手机号。
+     *
+     * `/staffs/search` 不带这个字段，只有 `/user/search/mobile` 会回——
+     * 所以「按手机号搜到的人」这里才有值（第二十轮第 1、2 条：学号 / 手机号都要能搜、都要显示）。
+     */
+    val mobile: String = "",
+) {
+    /** 去掉 `@stu.nchu.edu.cn` 这类后缀的学号 / 工号 */
+    val studentNo: String? get() = staffNo.substringBefore('@').takeIf { it.isNotBlank() }
+}
+
 /** `GET /departments/{id}/branches` 的 result（带分页信息） */
 data class DepartmentBranches(
     @SerializedName("total_count") val totalCount: Int = 0,

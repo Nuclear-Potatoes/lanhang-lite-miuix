@@ -22,6 +22,8 @@ local.properties
 *.jks
 *.keystore
 keystore.properties
+# CI 用的 debug 签名（与本地 debug key 同一份，见 ci/README.md）
+!ci/debug.keystore
 
 # 反编译产物（官方 APK 源码，不入库）
 decompiled/

@@ -1,12 +1,20 @@
 # 蓝航Lite · Miuix 改版（lanhang-lite-miuix）
 
 南昌航空大学「蓝航」App 的第三方轻量客户端，**Miuix（HyperOS 风格）视觉重构版**。
-包名 `com.lanhang.miuix`，当前版本 **0.22.0（versionCode 45）**。
+包名 `com.lanhang.miuix`，当前版本 **1.0.0（versionCode 51）**。
 
 > 本项目与南昌航空大学及官方「蓝航」App 无任何关系；接口协议来自公开抓包与静态分析，
 > 仅供学习交流，请勿用于任何商业用途。
 
 ---
+
+## 下载 / 安装
+
+最新安装包在 **[Releases](https://github.com/Nuclear-Potatoes/lanhang-lite-miuix/releases/latest)** 页，
+文件名 `lanhang-miuix-<版本号>.apk`，附 `SHA256SUMS.txt`。
+
+- 与本项目历史版本**同一签名**（debug key），可直接覆盖安装，不用卸载、登录态保留；
+- Release 由 GitHub Actions 自动构建（`.github/workflows/release.yml`），见 [发布](#发布github-actions)。
 
 ## 与上游的关系
 
@@ -40,9 +48,12 @@
 | compileSdk / targetSdk / minSdk | 37 / 35 / 26 |
 
 ```bash
-# 本仓库未附带 Gradle Wrapper：请用本机 Gradle，或先 `gradle wrapper`
-gradle assembleDebug
+# 仓库自带 Gradle Wrapper（8.14.3），不需要本机装 Gradle
+./gradlew assembleDebug          # Windows：gradlew.bat assembleDebug
 # 输出：app/build/outputs/apk/debug/app-debug.apk
+
+./gradlew assembleRelease        # 未配正式签名时自动回落到 ci/debug.keystore 同款 debug 签名
+# 输出：app/build/outputs/apk/release/app-release.apk（可直接安装）
 ```
 
 说明：
@@ -63,6 +74,21 @@ lanhangReleaseStorePassword=***
 lanhangReleaseKeyAlias=***
 lanhangReleaseKeyPassword=***
 ```
+
+## 发布（GitHub Actions）
+
+`.github/workflows/release.yml`：**推 tag 即出包发版**。
+
+```bash
+# 例：把 versionCode / versionName 改好之后
+git tag v1.0.0
+git push origin v1.0.0        # 触发 Actions → 构建 → 建 Release → 上传 APK
+```
+
+也可以在 Actions 页面手动 `Run workflow`（可指定标签，留空则用 `v + versionName`）。
+工作流做的事：JDK 17 → `./gradlew assembleRelease`（用 `ci/debug.keystore` 签名）→
+上传 `lanhang-miuix-<版本>.apk` + `SHA256SUMS.txt` → 发行说明自动摘 `VERSION.md` 里对应版本那一行。
+发布已存在时是 `--clobber` 覆盖资产 + 改写说明，重复跑不会炸。
 
 ## 项目结构（`app/src/main/java/com/lanhang/miuix/`）
 
