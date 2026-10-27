@@ -50,6 +50,15 @@ CI 里传的就是仓库内的 `ci/debug.keystore`（= 本机 `~/.android/debug.
 5. `git tag vX.Y.Z` + `push origin vX.Y.Z` → Actions 自动出 Release；
 6. 用 `curl https://api.github.com/repos/Nuclear-Potatoes/lanhang-lite-miuix/actions/runs?per_page=1`（免登录可用）确认 run 成功、Release 有资产。
 
+### 25.5 仓库现状（2026-10-27 首次打通后记录）
+
+* 仓库里原来的 `.github/workflows/blank.yml`（用户网页建的 "Build & Release APK"，依赖
+  `ANDROID_KEYSTORE_BASE64` 等未必存在的 Secrets、且用 JDK 21）已**删除**，只保留 `release.yml`；
+* `release.yml` 里签名是「有 Secrets 用 Secrets，没有就用 `ci/debug.keystore`」，两条路都验证过前者逻辑、后者实跑；
+* 已实测：tag `v1.0.0` → Actions 成功 → Release 页有 `lanhang-miuix-1.0.0.apk` + `SHA256SUMS.txt`；
+  把 CI 产物装到已装真机/模拟器上 **覆盖安装成功、没掉登录态**（签名指纹与本地一致）；
+* 发布页：`https://github.com/Nuclear-Potatoes/lanhang-lite-miuix/releases`。
+
 ---
 
 ## 24. 第二十二轮反馈（2026-10-27）：个人主页收成**一份代码**（1.0.0 / versionCode 51）
