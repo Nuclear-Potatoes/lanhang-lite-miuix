@@ -18,8 +18,8 @@
     <string name="settings_about_section">About</string>
 
     <!-- Widgets -->
-    <string name="widget_schedule_name">Whole week</string>
-    <string name="widget_schedule_description">Show the full week by weekday and period</string>
+    <string name="widget_schedule_name">Lanhang Lite · Week</string>
+    <string name="widget_schedule_description">Full week by weekday and period</string>
     <string name="widget_week_format">Week %1$d</string>
     <!-- Compact form used when the footer pill cannot fit "Week 4" in a 2×2 layout -->
     <string name="widget_week_compact">W%1$d</string>
@@ -28,8 +28,9 @@
     <string name="widget_empty_login">Open the app to sign in</string>
     <string name="widget_empty_hint">Tap here to open the schedule</string>
     <string name="widget_no_course_week">No classes this week</string>
-    <string name="widget_schedule_small_name">Today</string>
-    <string name="widget_schedule_small_description">Show today as class cards</string>
+    <string name="widget_schedule_small_name">Lanhang Lite · Today</string>
+    <string name="widget_schedule_small_description">Today as class cards</string>
+    <string name="widget_empty_action">Open Lanhang Lite</string>
     <string name="widget_today_empty">No classes today</string>
     <string name="widget_day_empty">No classes on this day</string>
     <string name="widget_today_done">Done for today</string>

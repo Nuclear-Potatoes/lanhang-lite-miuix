@@ -1,207 +1,25 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  「课表 · 小」2×2 的可缩放预览布局（API 31+ 选择器用 previewLayout 生成预览）。
+  「课表 · 今日课程」2×2 的选择器预览（API 31+ 用 previewLayout 生成预览）。
 
-  规范要点（developer.android.com/develop/ui/views/appwidgets/previews）：
-  - previewLayout 会被宿主按小部件默认尺寸缩放，因此**不能用固定 dp 偏移**画内容。
-    旧版用 layer-list 的 top/bottom inset 画色条：2×2 预览高度不足 152dp 时
-    inset 溢出，色条被裁成 0 高度 → 选择器里只剩一张纯白卡片。
-  - 结构要与真实渲染一致：头部「今天 · 周X + 日期」→ 最多 3 行课程（单行：课名 + 右侧状态）
-    → 底部「第 N 周」胶囊 + 「翻天」按钮；空间不足时按 weight 等比收缩，而不是整块消失。
-  - 课程行右侧：正在上的那节显示「剩 N 分」，其余显示教室 —— 与真实渲染一致。
-  - 只使用 RemoteViews 支持的控件（LinearLayout / TextView / ImageView）。
+  为什么这里改成一张静态图，而不是 RemoteViews 结构稿：
+  1. 宿主（Pixel Launcher / HyperOS）渲染预览时用的是**它自己的 Context**
+     去 inflate 这个布局；结构稿一旦有属性/资源在宿主主题下解析失败，
+     预览就退化成一块灰色占位块 —— 实测正是这个现象（2×2 一直显示灰块），
+     而 4×4 的 ImageView 版一直正常；
+  2. 预览本来就是一格静态示意图，不需要交互；
+  3. 图片由 scratch/r24_preview.py 按 ScheduleWidgetRenderer 的 light palette 生成，
+     与真实渲染同源同色，改配色时重新跑一次脚本即可。
+
+  真机上的 2×2 仍然由 widget_schedule_week.xml + Canvas 位图渲染（这里仅供预览）。
+
+  不再使用的预览占位资源（保留以免其它引用报错）：
+  widget_preview_card / widget_preview_row_a|b|c。
 -->
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<ImageView xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="@drawable/widget_preview_card"
-    android:orientation="vertical"
-    android:padding="9dp">
-
-    <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="24dp"
-        android:gravity="center_vertical"
-        android:orientation="horizontal">
-
-        <TextView
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:ellipsize="end"
-            android:maxLines="1"
-            android:text="@string/widget_preview_today_title"
-            android:textColor="#FF14232D"
-            android:textSize="15sp"
-            android:textStyle="bold" />
-
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:maxLines="1"
-            android:text="@string/widget_preview_today_date"
-            android:textColor="#FF5E7482"
-            android:textSize="14sp" />
-    </LinearLayout>
-
-    <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="0dp"
-        android:layout_marginTop="5dp"
-        android:layout_weight="1"
-        android:orientation="vertical">
-
-        <!-- 第 1 行：正在上课 → 右侧「剩 N 分」（卡片统一白字，与真实渲染一致） -->
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="0dp"
-            android:layout_weight="1"
-            android:background="@drawable/widget_preview_row_a"
-            android:gravity="center_vertical"
-            android:orientation="horizontal"
-            android:paddingStart="9dp"
-            android:paddingEnd="9dp">
-
-            <TextView
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:ellipsize="end"
-                android:maxLines="1"
-                android:text="@string/widget_preview_course_name_1"
-                android:textColor="#FFFFFFFF"
-                android:textSize="13sp"
-                android:textStyle="bold" />
-
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginStart="6dp"
-                android:maxLines="1"
-                android:text="@string/widget_preview_countdown"
-                android:textColor="#FFFFFFFF"
-                android:textSize="9sp"
-                android:textStyle="bold" />
-        </LinearLayout>
-
-        <!-- 第 2 行：未开始 → 右侧教室 -->
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="0dp"
-            android:layout_marginTop="4dp"
-            android:layout_weight="1"
-            android:background="@drawable/widget_preview_row_b"
-            android:gravity="center_vertical"
-            android:orientation="horizontal"
-            android:paddingStart="9dp"
-            android:paddingEnd="9dp">
-
-            <TextView
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:ellipsize="end"
-                android:maxLines="1"
-                android:text="@string/widget_preview_course_name_2"
-                android:textColor="#FFFFFFFF"
-                android:textSize="13sp"
-                android:textStyle="bold" />
-
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginStart="6dp"
-                android:maxLines="1"
-                android:text="@string/widget_preview_course_room_2"
-                android:textColor="#FFFFFFFF"
-                android:textSize="9sp"
-                android:textStyle="bold" />
-        </LinearLayout>
-
-        <!-- 第 3 行：未开始 → 右侧教室 -->
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="0dp"
-            android:layout_marginTop="4dp"
-            android:layout_weight="1"
-            android:background="@drawable/widget_preview_row_c"
-            android:gravity="center_vertical"
-            android:orientation="horizontal"
-            android:paddingStart="9dp"
-            android:paddingEnd="9dp">
-
-            <TextView
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:ellipsize="end"
-                android:maxLines="1"
-                android:text="@string/widget_preview_course_name_3"
-                android:textColor="#FFFFFFFF"
-                android:textSize="13sp"
-                android:textStyle="bold" />
-
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginStart="6dp"
-                android:maxLines="1"
-                android:text="@string/widget_preview_course_room_3"
-                android:textColor="#FFFFFFFF"
-                android:textSize="9sp"
-                android:textStyle="bold" />
-        </LinearLayout>
-    </LinearLayout>
-
-    <!-- 底部：左「第 N 周」胶囊 + 右「◀ ▶」（与真实布局一致，空格用 weight 撑开）。
-         预览即「今天」状态，所以**没有中间的 ⟳**：它只在翻到别的日期后才出现。 -->
-    <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="22dp"
-        android:gravity="center_vertical"
-        android:orientation="horizontal">
-
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="18dp"
-            android:background="@drawable/widget_pill_light"
-            android:gravity="center"
-            android:maxLines="1"
-            android:paddingStart="5dp"
-            android:paddingEnd="5dp"
-            android:text="@string/widget_preview_week"
-            android:textColor="#FF084168"
-            android:textSize="10sp"
-            android:textStyle="bold" />
-
-        <View
-            android:layout_width="0dp"
-            android:layout_height="1dp"
-            android:layout_weight="1" />
-
-        <ImageView
-            android:layout_width="24dp"
-            android:layout_height="18dp"
-            android:layout_marginEnd="4dp"
-            android:background="@drawable/widget_nav_button_light"
-            android:contentDescription="@string/widget_nav_prev"
-            android:paddingStart="6dp"
-            android:paddingTop="4dp"
-            android:paddingEnd="6dp"
-            android:paddingBottom="4dp"
-            android:scaleType="fitCenter"
-            android:src="@drawable/ic_widget_nav_left" />
-
-        <ImageView
-            android:layout_width="24dp"
-            android:layout_height="18dp"
-            android:background="@drawable/widget_nav_button_light"
-            android:contentDescription="@string/widget_nav_next"
-            android:paddingStart="6dp"
-            android:paddingTop="4dp"
-            android:paddingEnd="6dp"
-            android:paddingBottom="4dp"
-            android:scaleType="fitCenter"
-            android:src="@drawable/ic_widget_nav_right" />
-    </LinearLayout>
-</LinearLayout>
+    android:adjustViewBounds="false"
+    android:contentDescription="@string/widget_schedule_small_description"
+    android:scaleType="fitXY"
+    android:src="@drawable/widget_schedule_today_preview" />

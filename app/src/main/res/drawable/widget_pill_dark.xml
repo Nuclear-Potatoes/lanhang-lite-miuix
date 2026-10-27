@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- 底栏「第 N 周 / 明天 / +N 天」胶囊底（深色主题，色值 = palette.dark.today） -->
+<!-- 底栏胶囊底（深色）= Miuix 主色 10% 叠在深卡上 #1A3482FF -->
 <shape xmlns:android="http://schemas.android.com/apk/res/android"
     android:shape="rectangle">
-    <solid android:color="#FF123B52" />
     <corners android:radius="9dp" />
+    <solid android:color="#1A3482FF" />
 </shape>

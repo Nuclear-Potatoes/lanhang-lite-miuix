@@ -10,7 +10,7 @@
   所以凡是需要和点击区/图标对齐的东西，一律用布局 + drawable 实现；
   位图只负责标题 / 课程卡 / 空态文案（它们不需要和任何 View 对齐）。
 
-  结构（高 22dp，贴着位图 footer 区，左右各 9dp 内边距 = 位图的 outerPad）：
+  结构（高 22dp，贴着位图 footer 区，左右各 10dp 内边距 = 位图的 outerPad）：
   - 左：胶囊 TextView（18dp 高，圆角 9dp）。宽度被外层 weight=1 的容器约束，
     内容短就 wrap、长了就 ellipsize，**永远不会顶到右边的按钮**。
   - 右：◀ ⟳ ▶ 按钮组。当天只有 ◀ ▶；翻到别的日期后才插入中间 ⟳
@@ -38,11 +38,11 @@
         android:layout_width="match_parent"
         android:layout_height="22dp"
         android:layout_gravity="bottom"
-        android:layout_marginBottom="9dp"
+        android:layout_marginBottom="10dp"
         android:gravity="center_vertical"
         android:orientation="horizontal"
-        android:paddingStart="9dp"
-        android:paddingEnd="9dp">
+        android:paddingStart="10dp"
+        android:paddingEnd="10dp">
 
         <!-- 胶囊容器：weight=1 吃掉按钮组之外的全部宽度，把胶囊的测量上限锁在这里 -->
         <LinearLayout
@@ -63,7 +63,7 @@
                 android:maxLines="1"
                 android:paddingStart="5dp"
                 android:paddingEnd="5dp"
-                android:textColor="#FF084168"
+                android:textColor="#FF3482FF"
                 android:textSize="10sp"
                 android:textStyle="bold"
                 android:visibility="gone" />
@@ -79,7 +79,7 @@
                 android:maxLines="1"
                 android:paddingStart="5dp"
                 android:paddingEnd="5dp"
-                android:textColor="#FF8ED8F8"
+                android:textColor="#FF7FB2FF"
                 android:textSize="10sp"
                 android:textStyle="bold"
                 android:visibility="gone" />

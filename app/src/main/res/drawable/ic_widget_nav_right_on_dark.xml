@@ -1,11 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- 后一天：实心三角形（深色主题配色 #E6FFFFFF） -->
+<!-- 后一天：实心三角形（深色前景 60%，Miuix #99FFFFFF） -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="10dp"
     android:height="12dp"
     android:viewportWidth="10"
     android:viewportHeight="12">
     <path
-        android:fillColor="#E6FFFFFF"
+        android:fillColor="#99FFFFFF"
         android:pathData="M1,0 L1,12 L10,6 Z" />
 </vector>

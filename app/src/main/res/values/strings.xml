@@ -17,8 +17,8 @@
     <string name="settings_account_section">账号</string>
     <string name="settings_general_section">通用</string>
     <string name="settings_about_section">关于</string>
-    <string name="widget_schedule_name">全周网格</string>
-    <string name="widget_schedule_description">按星期和节次显示整周课程</string>
+    <string name="widget_schedule_name">蓝航Lite·周课表</string>
+    <string name="widget_schedule_description">按星期与节次显示整周课表</string>
     <string name="widget_week_format">第 %1$d 周</string>
     <!-- 底部胶囊在窄（2×2）宽度下放不下「第 4 周」时用的紧凑写法 -->
     <string name="widget_week_compact">第%1$d周</string>
@@ -27,8 +27,10 @@
     <string name="widget_empty_login">打开应用登录并同步</string>
     <string name="widget_empty_hint">点击此处打开课程表</string>
     <string name="widget_no_course_week">本周暂无课程</string>
-    <string name="widget_schedule_small_name">今日课程</string>
+    <string name="widget_schedule_small_name">蓝航Lite·今日课程</string>
     <string name="widget_schedule_small_description">以课程卡片显示今天的课程</string>
+    <!-- 空态里的行动胶囊（规范 3：无内容场景要给可点的去处） -->
+    <string name="widget_empty_action">打开蓝航Lite</string>
     <string name="widget_today_empty">今天没有课程</string>
     <string name="widget_day_empty">这天没有课程</string>
     <string name="widget_today_done">今天的课已上完</string>

@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- 底栏「第 N 周 / 明天 / +N 天」胶囊底（浅色主题，色值 = palette.light.today） -->
+<!-- 底栏胶囊底（浅色）= Miuix 主色容器 #EAF2FF，圆角 9dp（18dp 高 → 正圆角胶囊） -->
 <shape xmlns:android="http://schemas.android.com/apk/res/android"
     android:shape="rectangle">
-    <solid android:color="#FFD4E9F7" />
     <corners android:radius="9dp" />
+    <solid android:color="#EAF2FF" />
 </shape>

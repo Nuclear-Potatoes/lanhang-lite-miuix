@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- 浅色主题下「回到今天」按钮底：主色 #084168 取 18% 透明度，圆角 7dp -->
+<!-- 「回到今天」按钮底（浅色）= 主色 #3482FF 取 14% -->
 <shape xmlns:android="http://schemas.android.com/apk/res/android"
     android:shape="rectangle">
-    <corners android:radius="7dp" />
-    <solid android:color="#2E084168" />
+    <corners android:radius="9dp" />
+    <solid android:color="#243482FF" />
 </shape>

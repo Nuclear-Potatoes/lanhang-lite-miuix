@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- 深色主题下的翻天按钮底：半透明白，圆角 7dp（与浅色版同一套几何） -->
+<!-- 翻天按钮底（深色）= 前景 12%（#1FFFFFFF），几何与浅色版完全一致 -->
 <shape xmlns:android="http://schemas.android.com/apk/res/android"
     android:shape="rectangle">
-    <corners android:radius="7dp" />
-    <solid android:color="#33FFFFFF" />
+    <corners android:radius="9dp" />
+    <solid android:color="#1FFFFFFF" />
 </shape>

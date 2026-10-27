@@ -6,6 +6,73 @@
 
 ---
 
+## 26. 第二十三轮（2026-10-27）：桌面小组件按 HyperOS 规范重做（1.1.0 / versionCode 52）
+
+用户原话：
+
+> 「`https://dev.mi.com/xiaomihyperos/documentation/detail?pId=1664` 参照这个设计规范，
+> 重新设计桌面小组件，将小组件 miuix 化，push 到 github」
+
+### 26.1 改了什么
+
+`widget/ScheduleWidgetRenderer.kt`（两个小组件的唯一渲染层，全部重写）：
+
+* `Palette`（background / header / today / primary / onPrimary / onSurface / onSurfaceVariant / gridLine / isDark），
+  浅色 `card #FFFFFF` `header #F0F0F0` `accent #3482FF` `onSurfaceVariant #999999` `gridLine #0F000000`；
+  深色 `card #242424` `header #2D2D2D` `accent #4C8DFF` `onSurfaceVariant #8E8E93` `gridLine #1AFFFFFF`。
+  夜间判定：`Session.themeMode` 优先，未设置才看 `Configuration.UI_MODE_NIGHT_MASK`。
+* `courseHue(name)`（hashCode × 137.508 黄金角）→ `courseTint` / `courseInk`：
+  底色 = `blend(card, HSL(hue, .62, .52), 0.15 浅 / 0.26 深)`，墨色从同色相逐步压深直到
+  `calculateContrast ≥ 4.5`（`MIN_TINT_CONTRAST`）。
+* 新增 `fitText()`、`drawActionPill()`（空态里的「打开蓝航Lite」）、`drawEmpty()`。
+* 4×4：`drawTitle()`（「第 N 周」12dp **BOLD** + 右上日期区间 10.5dp 弱化）→ `drawHeaders()`（扁平表头，
+  仍只给今天一颗淡蓝胶囊）→ `drawTodayColumn()` → `drawGridLines()`（发丝线）
+  → `drawTimeColumn()` → `drawCourses()`（竖排课名，最多两列）。
+* 2×2：表头「今天 · 周X + 日期」，正在上的那节用 `primary + onPrimary`，其余用 `tint + ink`。
+
+### 26.2 硬规则（下次改小组件先看这四条）
+
+1. **颜色只能从 `Palette` 取**，不准在渲染代码里写重量级硬编码色值；要改配色只改 `Palette` 两套字典。
+2. **课程块不许再出现「饱和底 + 白字」**（旧版正是这个才显得不 Miuix）；墨色必须过
+   对比度检查，宁可底色更淡也不能让字看不清。
+3. **小组件预览图必须是静态图**。选择器渲染 `previewLayout` 用的是**宿主自己的 Context**，
+   结构稿一旦有不可解析的属性就退化成一块灰色占位块（本轮 2×2 一直显示灰块就是这个原因）。
+   现在两个 `*_info.xml` 的 `previewLayout` 都是一个 `ImageView`，指向
+   `drawable-nodpi/widget_schedule_preview.png` / `widget_schedule_today_preview.png`；图由
+   `scratch/r24_preview.py` 按 **light palette** 生成，**改了配色与布局就要重跑这个脚本**。
+4. **预览图 = 真实渲染的镜像**：竖排课名、今天列淡蓝底、今天表头胶囊、「第 N 周」胶囊 + ◀ ▶
+   都要画进去，否则选择器里看到的和放下后看到的不一样。
+
+### 26.3 命名与描述（规范硬要求）
+
+* 名称「应用·小部件」2–10 个汉字：`widget_schedule_name` = 「蓝航Lite·周课表」，
+  `widget_schedule_small_name` = 「蓝航Lite·今日课程」；描述 ≤ 22 字。
+* 不放应用图标（应用名已在名称里）；无数据/未登录要有文案（`drawEmpty`）；不允许内部滚动与输入框。
+
+### 26.4 本轮怎么验的（四个状态都截图）
+
+| 状态 | 截图 |
+|---|---|
+| 4×4 深色 | `artifacts/r24-dark-week2.png` |
+| 4×4 浅色 | `artifacts/r24-light-week.png` |
+| 2×2 浅色 | `artifacts/r24-light-2x2.png` |
+| 2×2 深色 | `artifacts/r24-dark-2x2c.png` |
+| 选择器预览（两个） | `artifacts/r24-pick-new.png` / `r24-pick-2x2.png` |
+
+* 倒计时是真数据（「剩 97 分」随时间变），今日列/今日表头都跟系统日期走（周二 10-27）。
+* 深色下配色对比度看得清（淡紫底 + 淡紫墨），能力内不再出现白字压饱和色块。
+
+### 26.5 模拟器上安装/拖拽小组件的坑
+
+* 模拟器里同时装着参照包 `com.lanhang.lite` 与本包 `com.lanhang.miuix`，**两个小组件名、图标一模一样**。
+  拖错一个就会以为「改了没生效」——只能靠小组件标题/描述文字判断归属。
+* 添加必须从选择器里拖：`input swipe x y x y 1200` 快长按会报「无法添加微件。」，
+  要用 `input draganddrop <预览图坐标> <落点> 2600`；拖完再 `tap` 一下固定。
+* 选择器里群组需先展开（行尾箭头 x≈1104），再向下滚才能看到 2×2 预览。
+* 切主题路径：我的 → 设置 → 外观 → 主题模式 → 亮色/暗色；切完小组件会跟着重绘（`updateAll`）。
+
+---
+
 ## 25. 推仓库与自动发版（2026-10-27，用户明确要求）
 
 用户原话：
