@@ -63,6 +63,20 @@ class MainActivity : AppCompatActivity() {
     /** 顶栏 / 底栏共享状态（Compose 状态，switchTab 与两个外壳组件共同读写） */
     val shell = ShellState()
 
+    /**
+     * 当前激活的 Tab（[ShellState.TAB_SCHEDULE] / [ShellState.TAB_WORK] / …）。
+     *
+     * 2026-10-28 第三十一轮（用户：「打开工作的图片预览→回桌面→用小组件进课表，顶栏就叠在一起」）：
+     * 各个页面在 `onResume` 里都会调一次 `syncToolbar()` 把自己的标题写进顶栏。从小组件跳进来时，
+     * 顺序是「MainActivity.onResume → applyPendingTab 把 Tab 切成课表」，而**别的 Fragment 也在
+     * 同一轮 onResume 里抢着写标题** —— 于是同一两帧里标题被写了三四次
+     * （课表 → 工作圈 → 课表 …）。顶栏标题用 AnimatedContent 做淡入淡出，连续换目标时
+     * 前后两段过渡会短暂共存，这就是「两个标题叠在一起」。
+     *
+     * 现在子页面写标题前先问一句 activeTab：不是自己的 Tab 一律不写，抢写在源头就没有了。
+     */
+    val activeTab: Int get() = shell.tab
+
     private var scheduleFragment: Fragment? = null
     private var workFragment: Fragment? = null
     private var momentsFragment: Fragment? = null
@@ -110,6 +124,7 @@ class MainActivity : AppCompatActivity() {
             restoring = false
         }
         handleWidgetIntent(intent)
+        applyPendingTab()
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
@@ -191,6 +206,11 @@ class MainActivity : AppCompatActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         handleWidgetIntent(intent)
+        // 2026-10-27 第二十七轮（用户：「我提前切到非课表 Tab，再回桌面点小组件进程序，
+        // 顶栏不会换成课表」）：onNewIntent 回调时窗口可能还停着（onRestart/onStart 之前），
+        // 这时候做 Fragment 事务 + 顶栏收放动画会半途卡住 —— 实测页面和底栏都已经是课表，
+        // 顶栏却还挂着「工作」。所以统一推迟到下一帧窗口可见时再切。
+        binding.root.post { applyPendingTab() }
     }
 
     /**
@@ -200,7 +220,9 @@ class MainActivity : AppCompatActivity() {
     private fun handleWidgetIntent(intent: android.content.Intent?) {
         if (intent == null) return
         if (intent.getBooleanExtra(EXTRA_OPEN_SCHEDULE, false)) {
-            switchTab(ShellState.TAB_SCHEDULE)
+            // 一次性：不摘掉这个 extra，主题切换 recreate 时会被再执行一遍
+            intent.removeExtra(EXTRA_OPEN_SCHEDULE)
+            pendingTab = ShellState.TAB_SCHEDULE
         }
         val peer = intent.getStringExtra(ImNotify.EXTRA_IM_PEER).orEmpty()
         if (peer.isNotBlank()) {
@@ -211,9 +233,32 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    /** 由外部 intent（桌面小部件）指定、还没执行的 Tab 切换；-1 = 没有 */
+    private var pendingTab = -1
+
+    /**
+     * 执行 [pendingTab]（桌面小部件点进来要落到课表）。
+     *
+     * 在三个时机都会试一次：`onCreate`（冷启动）、`onResume`（窗口马上要显示）、以及
+     * `onNewIntent` 里 post 的下一帧（App 在前台时不会再来一次 onResume）。
+     * 切的时候把 [restoring] 抬起一次 —— 从桌面跳进来算「重新进场」，不做左右滑动，
+     * 也不给卡半截动画留机会；切完再把顶栏标题按最终 Tab 对齐一次，杜绝「页面是课表、顶栏写着工作」。
+     */
+    private fun applyPendingTab() {
+        val tab = pendingTab
+        if (tab < 0) return
+        pendingTab = -1
+        val wasRestoring = restoring
+        restoring = true
+        switchTab(tab)
+        restoring = wasRestoring
+        applyTitle(shell.tab)
+    }
+
     /** 前台标记：App 在前台且正看着这个会话时不弹通知（见 ImNotify / ImRepository.notifyIncoming） */
     override fun onResume() {
         super.onResume()
+        applyPendingTab()
         ImNotify.appForeground = true
         ImNotify.ensureChannel(this)
     }
@@ -515,12 +560,17 @@ class MainActivity : AppCompatActivity() {
      *
      * 顶栏动画由 [com.lanhang.miuix.ui.shell.BarAnimation] 统一处理，这里不传任何动效参数。
      */
-    fun showToolbarMain(title: String) {
+    fun showToolbarMain(
+        title: String,
+        actionIcon: androidx.compose.ui.graphics.vector.ImageVector? = null,
+        onAction: (() -> Unit)? = null,
+    ) {
         shell.title = title
         shell.backAction = null
         shell.homeAction = null
         shell.actionText = null
-        shell.onAction = null
+        shell.actionIcon = actionIcon
+        shell.onAction = if (actionIcon == null) null else onAction
     }
 
     /**
@@ -543,6 +593,7 @@ class MainActivity : AppCompatActivity() {
         shell.backAction = onBack
         shell.homeAction = onHome
         shell.actionText = actionText
+        shell.actionIcon = null
         shell.onAction = if (actionText == null) null else onAction
     }
 

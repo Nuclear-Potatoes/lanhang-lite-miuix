@@ -34,6 +34,11 @@ class App : Application() {
         AppContext.init(this)
         ScheduleRepository.init(this)
         GradesRepository.init(this)
+        // 工作圈关键词过滤 + 上课提醒（第三十一轮）
+        com.lanhang.miuix.moments.MomentsFilterStore.init(this)
+        com.lanhang.miuix.schedule.ClassReminderStore.init(this)
+        // 每次冷启动对一次账：应用更新、改过时区、上次排定失败都靠这一步自愈
+        com.lanhang.miuix.schedule.ClassReminder.rearm(this)
         // 对话框宿主跟踪：任何地方误传 Application context 时也能挂到前台 Activity 上
         registerActivityLifecycleCallbacks(object : ActivityLifecycleCallbacks {
             override fun onActivityResumed(activity: android.app.Activity) {

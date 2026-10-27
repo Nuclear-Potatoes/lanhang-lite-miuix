@@ -75,6 +75,7 @@ private data class TopBarSpec(
     val hasBack: Boolean,
     val hasHome: Boolean,
     val actionText: String?,
+    val actionIcon: androidx.compose.ui.graphics.vector.ImageVector?,
 )
 
 /** 大标题栏高度（含副标题与上下留白） */
@@ -138,6 +139,7 @@ fun LanhangTopBar(state: ShellState, large: Boolean) {
         hasBack = state.backAction != null,
         hasHome = state.homeAction != null,
         actionText = state.actionText,
+        actionIcon = state.actionIcon,
     )
     // 目标：0 = 大标题形态，1 = 紧凑形态
     val target = if (large) 0f else 1f
@@ -286,8 +288,20 @@ private fun TopBar(
             AnimatedContent(
                 targetState = spec.title,
                 transitionSpec = {
-                    fadeIn(tween(BarAnimation.DURATION_MS, easing = BarAnimation.Easing)) togetherWith
-                        fadeOut(tween(BarAnimation.DURATION_MS, easing = BarAnimation.Easing))
+                    // 2026-10-28 第三十一轮（用户：「从桌面小组件进入后再点别的 tab，顶栏叠加到一起」）：
+                    // 原来是「同进同出」的交叉淡化 —— 旧标题还没淡完，新标题已经淡上来，
+                    // 两个标题在同一位置同时可见，观感就是「叠字 / 重影」。
+                    // 现在改成**先后**：旧标题用前半段淡出，新标题延后半段淡入，
+                    // 任何一帧都最多只有一个标题，叠加在原理上就不可能发生。
+                    fadeIn(
+                        tween(
+                            BarAnimation.DURATION_MS / 2,
+                            delayMillis = BarAnimation.DURATION_MS / 2,
+                            easing = BarAnimation.Easing,
+                        )
+                    ) togetherWith fadeOut(
+                        tween(BarAnimation.DURATION_MS / 2, easing = BarAnimation.Easing)
+                    )
                 },
                 label = "barTitle",
             ) { title ->
@@ -317,9 +331,10 @@ private fun TopBar(
                 }
             }
         }
-        // 右上角文字动作（如「发表」）
+        // 右上角动作：图标（工作圈的搜索）或文字（二级页的「发表」），二者互斥
+        val icon = spec.actionIcon
         val label = spec.actionText
-        if (label != null) {
+        if (icon != null || label != null) {
             Row(
                 modifier = Modifier
                     .align(Alignment.TopEnd)
@@ -327,7 +342,17 @@ private fun TopBar(
                     .padding(end = 6.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                TextButton(text = label, onClick = onAction)
+                if (icon != null) {
+                    IconButton(onClick = onAction) {
+                        Icon(
+                            imageVector = icon,
+                            contentDescription = stringResource(R.string.common_search),
+                            tint = MiuixTheme.colorScheme.onBackground,
+                        )
+                    }
+                } else if (label != null) {
+                    TextButton(text = label, onClick = onAction)
+                }
             }
         }
     }

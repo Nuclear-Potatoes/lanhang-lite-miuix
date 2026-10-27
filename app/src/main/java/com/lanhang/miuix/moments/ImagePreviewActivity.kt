@@ -15,10 +15,28 @@ import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.recyclerview.widget.RecyclerView
 import androidx.viewpager2.widget.ViewPager2
+import android.Manifest
+import android.content.ContentValues
+import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.os.Build
+import android.os.Environment
+import android.provider.MediaStore
+import android.widget.Toast
+import androidx.core.content.ContextCompat
+import androidx.core.graphics.drawable.toBitmap
+import androidx.lifecycle.lifecycleScope
+import coil.imageLoader
 import coil.load
+import coil.request.ImageRequest
+import coil.request.SuccessResult
 import com.lanhang.miuix.R
 import com.lanhang.miuix.databinding.ActivityImagePreviewBinding
+import com.lanhang.miuix.ui.miuix.showMiuixConfirm
 import com.lanhang.miuix.util.LocaleHelper
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlin.math.abs
 
 /**
@@ -357,6 +375,77 @@ class ImagePreviewActivity : AppCompatActivity() {
             }
         }
 
+    // ---------------- 长按保存到相册 ----------------
+
+    /** 长按图片：先问，再存（不静默往相册里塞东西） */
+    private fun askSaveImage(url: String) {
+        showMiuixConfirm(
+            this,
+            getString(R.string.moments_save_image_title),
+            getString(R.string.moments_save_image_summary),
+            getString(R.string.moments_save_image_confirm),
+            getString(R.string.common_cancel),
+        ) { saveImageToGallery(url) }
+    }
+
+    private fun saveImageToGallery(url: String) {
+        // API 29 起 MediaStore 不需要任何存储权限；28 及以下必须先有写外部存储权限
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q &&
+            ContextCompat.checkSelfPermission(
+                this, Manifest.permission.WRITE_EXTERNAL_STORAGE
+            ) != PackageManager.PERMISSION_GRANTED
+        ) {
+            Toast.makeText(this, R.string.moments_save_image_denied, Toast.LENGTH_SHORT).show()
+            return
+        }
+        lifecycleScope.launch {
+            val bitmap = withContext(Dispatchers.IO) {
+                runCatching {
+                    // 走 Coil 的缓存：屏幕上这张已经解码过，这里通常不产生新请求
+                    val request = ImageRequest.Builder(this@ImagePreviewActivity)
+                        .data(url)
+                        .build()
+                    (imageLoader.execute(request) as? SuccessResult)?.drawable?.toBitmap()
+                }.getOrNull()
+            }
+            val ok = withContext(Dispatchers.IO) { bitmap != null && writeToAlbum(bitmap) }
+            Toast.makeText(
+                this@ImagePreviewActivity,
+                if (ok) R.string.moments_save_image_done else R.string.moments_save_image_failed,
+                Toast.LENGTH_SHORT,
+            ).show()
+        }
+    }
+
+    /** 写进系统相册 `Pictures/蓝航Lite`；写失败返回 false（给用户一句「保存失败」而不是静默） */
+    private fun writeToAlbum(bitmap: Bitmap): Boolean = runCatching {
+        val name = "lanhang_" + System.currentTimeMillis() + ".jpg"
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val values = ContentValues().apply {
+                put(MediaStore.Images.Media.DISPLAY_NAME, name)
+                put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
+                put(
+                    MediaStore.Images.Media.RELATIVE_PATH,
+                    Environment.DIRECTORY_PICTURES + "/蓝航Lite",
+                )
+                put(MediaStore.Images.Media.IS_PENDING, 1)
+            }
+            val uri = contentResolver.insert(
+                MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values
+            ) ?: return false
+            val written = contentResolver.openOutputStream(uri)?.use { out ->
+                bitmap.compress(Bitmap.CompressFormat.JPEG, 95, out)
+            } ?: false
+            values.clear()
+            values.put(MediaStore.Images.Media.IS_PENDING, if (written) 0 else 1)
+            contentResolver.update(uri, values, null, null)
+            written
+        } else {
+            @Suppress("DEPRECATION")
+            MediaStore.Images.Media.insertImage(contentResolver, bitmap, name, null) != null
+        }
+    }.getOrDefault(false)
+
     private inner class PreviewAdapter(
         private val items: List<String>,
         private val onClose: () -> Unit
@@ -368,8 +457,11 @@ class ImagePreviewActivity : AppCompatActivity() {
                     ViewGroup.LayoutParams.MATCH_PARENT,
                     ViewGroup.LayoutParams.MATCH_PARENT
                 )
-                // 单击（图片显示区域之内或之外都算）→ 平滑关闭
-                onTap = onClose
+                // 单击（图片显示区域之内或之外都算）→ 平滑关闭。
+                // 第二十四轮：**放大状态下单击不关闭** —— 事件序列是 down/up/down/up，双击窗口只有
+                // ~300ms；如果第一次单击就把查看器关掉，手稍慢一点「再次双击缩小」就变成「退出查看器」。
+                // 放大细看时最怕这个，所以放大时单击什么都不做，缩回原比例后再单击才退出。
+                onTap = { if (!isZoomed) onClose() }
             }
             return VH(iv)
         }
@@ -377,9 +469,12 @@ class ImagePreviewActivity : AppCompatActivity() {
         override fun getItemCount(): Int = items.size
 
         override fun onBindViewHolder(holder: VH, position: Int) {
-            holder.iv.load(items[position]) {
+            val url = items[position]
+            holder.iv.load(url) {
                 crossfade(150)
             }
+            // 长按 → 「是否保存图片」（用户第二十四轮第 2 条）
+            holder.iv.onLongPress = { askSaveImage(url) }
         }
 
         inner class VH(val iv: ZoomImageView) : RecyclerView.ViewHolder(iv)

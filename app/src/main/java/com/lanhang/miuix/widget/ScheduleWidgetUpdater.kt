@@ -57,17 +57,21 @@ object ScheduleWidgetUpdater {
     private const val PREVIEW_PUSH_INTERVAL_MS = 12L * 60L * 60L * 1000L
     private const val PREVIEW_SMALL_DP = 154
     private const val PREVIEW_WEEK_DP = 320
+    /** 4×2 生成式预览：按 2:1 出（与桌面 4×2 的实际比例一致） */
+    private const val PREVIEW_WIDE_W_DP = 280
+    private const val PREVIEW_WIDE_H_DP = 140
 
     /** 底栏按「窄尺寸」处理：低于该宽度胶囊换无空格短文案（第8周 / 明天 / +1 天） */
     private const val NARROW_WIDTH_DP = 150
 
-    /** 全部已注册变体（组件 → isSmall）— 刷新广播/更新统一遍历 */
+    /** 全部已注册变体（组件 → 排版）— 刷新广播/更新统一遍历 */
     private val allVariants = listOf(
-        ScheduleWidgetProvider::class.java to false,
-        ScheduleWidgetSmallProvider::class.java to true
+        ScheduleWidgetProvider::class.java to WidgetVariant.WEEK,
+        ScheduleWidgetSmallProvider::class.java to WidgetVariant.TODAY,
+        ScheduleWidgetWideProvider::class.java to WidgetVariant.WIDE
     )
 
-    /** 已放置的小部件实例总数（两组件合计）— 午夜闹钟存活判定用 */
+    /** 已放置的小部件实例总数（三个变体合计）— 午夜闹钟存活判定用 */
     fun activeCount(context: Context): Int {
         val app = context.applicationContext
         val manager = AppWidgetManager.getInstance(app)
@@ -83,10 +87,10 @@ object ScheduleWidgetUpdater {
         val app = context.applicationContext
         val manager = AppWidgetManager.getInstance(app)
         val snapshot = runCatching { ScheduleWidgetData.load() }.getOrNull()
-        for ((cls, isSmall) in allVariants) {
+        for ((cls, variant) in allVariants) {
             val ids = manager.getAppWidgetIds(ComponentName(app, cls)) ?: continue
             for (id in ids) {
-                runCatching { updateWidget(app, manager, id, snapshot, isSmall) }
+                runCatching { updateWidget(app, manager, id, snapshot, variant) }
                     .onFailure { Log.e(TAG, "updateAll failed id=$id", it) }
             }
         }
@@ -199,26 +203,58 @@ object ScheduleWidgetUpdater {
         val now = System.currentTimeMillis()
         if (now - Session.widgetPreviewPushedAt < PREVIEW_PUSH_INTERVAL_MS) return
         var pushed = false
-        for ((cls, isSmall) in allVariants) {
+        for ((cls, variant) in allVariants) {
             val ok = runCatching {
-                val bitmap = if (isSmall) {
-                    ScheduleWidgetRenderer.renderToday(context, snapshot, PREVIEW_SMALL_DP, PREVIEW_SMALL_DP)
-                } else {
-                    ScheduleWidgetRenderer.render(context, snapshot, PREVIEW_WEEK_DP, PREVIEW_WEEK_DP)
-                }
-                val views = RemoteViews(context.packageName, R.layout.widget_schedule_week)
-                views.setImageViewBitmap(R.id.widget_bitmap, bitmap)
-                if (isSmall) {
-                    // 预览也要带胶囊 + ◀ ▶，否则选择器里看到的和真实放置后不一致
-                    // 预览即「今天」，所以不给中间的 ⟳（与真实放置初始状态一致）
-                    bindFooter(
-                        context, views, 0,
-                        visible = true,
-                        navigated = false,
-                        week = snapshot.week,
-                        target = LocalDate.now(),
-                        compact = false
-                    )
+                val views = when (variant) {
+                    WidgetVariant.WIDE -> {
+                        // 4×2 是纯位图（没有底栏），预览直接用真实布局 + 真实渲染
+                        // 预览也走 wideTarget：选择器里看到的和真正放上去的一样（课上完就是明天）
+                        val wide = ScheduleWidgetData.wideTarget()
+                        RemoteViews(context.packageName, R.layout.widget_schedule_wide).apply {
+                            setImageViewBitmap(
+                                R.id.widget_bitmap,
+                                ScheduleWidgetRenderer.renderWide(
+                                    context,
+                                    wide.snapshot ?: snapshot,
+                                    PREVIEW_WIDE_W_DP,
+                                    PREVIEW_WIDE_H_DP,
+                                    wide.date,
+                                    LocalDateTime.now(),
+                                    wide.tomorrow
+                                )
+                            )
+                        }
+                    }
+                    WidgetVariant.TODAY -> {
+                        RemoteViews(context.packageName, R.layout.widget_schedule_week).apply {
+                            setImageViewBitmap(
+                                R.id.widget_bitmap,
+                                ScheduleWidgetRenderer.renderToday(
+                                    context, snapshot, PREVIEW_SMALL_DP, PREVIEW_SMALL_DP
+                                )
+                            )
+                            // 预览也要带胶囊 + ◀ ▶，否则选择器里看到的和真实放置后不一致
+                            // 预览即「今天」，所以不给中间的 ⟳（与真实放置初始状态一致）
+                            bindFooter(
+                                context, this, 0,
+                                visible = true,
+                                navigated = false,
+                                week = snapshot.week,
+                                target = LocalDate.now(),
+                                compact = false
+                            )
+                        }
+                    }
+                    WidgetVariant.WEEK -> {
+                        RemoteViews(context.packageName, R.layout.widget_schedule_week).apply {
+                            setImageViewBitmap(
+                                R.id.widget_bitmap,
+                                ScheduleWidgetRenderer.render(
+                                    context, snapshot, PREVIEW_WEEK_DP, PREVIEW_WEEK_DP
+                                )
+                            )
+                        }
+                    }
                 }
                 manager.setWidgetPreview(
                     ComponentName(context, cls),
@@ -236,27 +272,51 @@ object ScheduleWidgetUpdater {
         runCatching {
             val manager = AppWidgetManager.getInstance(app)
             val snapshot = runCatching { ScheduleWidgetData.load() }.getOrNull()
-            updateWidget(app, manager, appWidgetId, snapshot, isSmallInstance(manager, appWidgetId))
+            updateWidget(app, manager, appWidgetId, snapshot, variantOf(manager, appWidgetId))
         }.onFailure { Log.e(TAG, "updateWidget failed id=$appWidgetId", it) }
         refreshTick(app)
     }
 
-    private fun isSmallInstance(manager: AppWidgetManager, appWidgetId: Int): Boolean =
-        runCatching {
-            manager.getAppWidgetInfo(appWidgetId)?.provider?.className ==
-                ScheduleWidgetSmallProvider::class.java.name
-        }.getOrDefault(false)
+    /** 这个实例属于哪个变体（按注册的 Provider 类名判断，判不出来就当整周课表） */
+    private fun variantOf(manager: AppWidgetManager, appWidgetId: Int): WidgetVariant {
+        val name = runCatching {
+            manager.getAppWidgetInfo(appWidgetId)?.provider?.className
+        }.getOrNull()
+        return allVariants.firstOrNull { (cls, _) -> cls.name == name }?.second
+            ?: WidgetVariant.WEEK
+    }
 
     private fun updateWidget(
         context: Context,
         manager: AppWidgetManager,
         appWidgetId: Int,
         snapshot: ScheduleWidgetData.WeekSnapshot?,
-        isSmall: Boolean
+        variant: WidgetVariant
     ) {
         val (wDp, hDp) = sizeDp(manager.getAppWidgetOptions(appWidgetId))
-        val views = RemoteViews(context.packageName, R.layout.widget_schedule_week)
-        if (isSmall) {
+        val layout = if (variant == WidgetVariant.WIDE) {
+            R.layout.widget_schedule_wide
+        } else {
+            R.layout.widget_schedule_week
+        }
+        val views = RemoteViews(context.packageName, layout)
+        if (variant == WidgetVariant.WIDE) {
+            // 4×2：纯位图，没有底栏与翻天（设计稿就是两行只读卡片）
+            // 2026-10-27 第二十六轮：今天的课上完就翻到明天（表头「明天 / 周三」，无倒计时）
+            val wide = ScheduleWidgetData.wideTarget()
+            views.setImageViewBitmap(
+                R.id.widget_bitmap,
+                ScheduleWidgetRenderer.renderWide(
+                    context,
+                    wide.snapshot ?: snapshot,
+                    wDp,
+                    hDp,
+                    wide.date,
+                    LocalDateTime.now(),
+                    wide.tomorrow
+                )
+            )
+        } else if (variant == WidgetVariant.TODAY) {
             // 每个实例自己记着「翻到哪一天」，所以快照要按目标日期单读（可能跨周）
             val targetDate = TodayNavStore.target(context, appWidgetId)
             val daySnapshot = runCatching { ScheduleWidgetData.load(targetDate) }

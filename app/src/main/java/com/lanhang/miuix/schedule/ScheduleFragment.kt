@@ -1114,36 +1114,17 @@ class ScheduleFragment : Fragment() {
 
     // ==================== 配色 ====================
 
-    // 黄金角色相分布：同课同色，不同课色相差 ~137°，区分度最大（算法见 ScheduleStyle）
+    // 第二十八轮：色相改由 [CourseColors] 统一分配 —— 本学期每门课均分 360°，互不重复，
+    // 并且和桌面小组件用的是同一个色相（用户：「高数B 和 航空航天概论不能同色」）。
     private fun courseColor(courseName: String): Int {
         courseColorMap[courseName]?.let { return it }
-        // 配色参照 NexioSchedule：不用 hash 散列，而是一组固定的鲜艳色板（Material 500 系），
-        // 按课程首次出现的顺序分配「与已用色色相距离最远」的那一支，保证相邻课程区分明显。
-        val usedHues = courseColorMap.values.map { hueOf(it) }
-        val color = if (usedHues.isEmpty()) {
-            COURSE_PALETTE[0]
-        } else {
-            COURSE_PALETTE.maxByOrNull { c -> usedHues.minOf { hueDistance(hueOf(c), it) } }
-                ?: COURSE_PALETTE[0]
-        }
+        val hue = CourseColors.hueOf(courseName)
+        val color = android.graphics.Color.HSVToColor(floatArrayOf(hue, 0.72f, 0.82f))
         courseColorMap[courseName] = color
         return color
     }
 
     private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
-
-    /** 色相（0..360） */
-    private fun hueOf(color: Int): Float {
-        val hsv = FloatArray(3)
-        android.graphics.Color.colorToHSV(color, hsv)
-        return hsv[0]
-    }
-
-    /** 两个色相之间的最短角距 */
-    private fun hueDistance(a: Float, b: Float): Float {
-        val d = kotlin.math.abs(a - b) % 360f
-        return if (d > 180f) 360f - d else d
-    }
 
     /** 一块课在当天占第几栏：同一时段有多门课时横向分栏，重合的块画色点 */
     private data class LaneInfo(val lane: Int, val lanes: Int, val overlap: Boolean)
@@ -1172,15 +1153,6 @@ class ScheduleFragment : Fragment() {
         return blocks.indices.map { i -> LaneInfo(laneOf[i], lanes, overlaps[i]) }
     }
 
-    private companion object {
-        /** NexioSchedule 的课程色板（Course.kt: courseColors），按 Material 500 系挑的 11 个鲜艳色 */
-        val COURSE_PALETTE = intArrayOf(
-            0xFF4CAF50.toInt(), 0xFF2196F3.toInt(), 0xFFFF9800.toInt(),
-            0xFFF44336.toInt(), 0xFFE91E63.toInt(), 0xFF00BCD4.toInt(),
-            0xFF3F51B5.toInt(), 0xFFAB47BC.toInt(), 0xFF009688.toInt(),
-            0xFF673AB7.toInt(), 0xFFE6B422.toInt()
-        )
-    }
 }
 
 /** 向下滚多少像素后顶栏完全收起（和工作圈 ReportListScroll 的 320px 对齐） */

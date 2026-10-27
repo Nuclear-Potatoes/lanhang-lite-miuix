@@ -1,5 +1,8 @@
 package com.lanhang.miuix.moments
 
+import top.yukonga.miuix.kmp.icon.MiuixIcons
+import top.yukonga.miuix.kmp.icon.extended.Search
+
 import android.net.Uri
 import android.os.Bundle
 import android.view.LayoutInflater
@@ -66,6 +69,8 @@ class MomentsFragment : Fragment() {
 
     private var items by mutableStateOf<List<MomentItem>>(emptyList())
     private var loading by mutableStateOf(false)
+    /** 上一次加载是否失败（列表为空时才用来画「加载失败 / 重新加载」，有内容时不打扰） */
+    private var loadFailed by mutableStateOf(false)
     private var refreshing by mutableStateOf(false)
     private var ended by mutableStateOf(false)
     private var publishing by mutableStateOf(false)
@@ -101,6 +106,7 @@ class MomentsFragment : Fragment() {
             when (page) {
                 MomentPage.PUBLISH -> closePublish()
                 MomentPage.PROFILE -> closeProfile()
+                MomentPage.SEARCH -> closeSearch()
                 else -> Unit
             }
         }
@@ -203,6 +209,18 @@ class MomentsFragment : Fragment() {
                 }
                 // 统一转场：和「我的」二级页、通讯录下钻完全同一套几何/时长/曲线
                 // （第十轮重写：发表页以前还用 600ms 弹簧 + 视差淡入，观感和别处不一致）
+                // 工作圈关键词过滤（第三十一轮）：命中规则的动态**只在本机藏起来**，
+                // 自己发的、寻物/招领帖由 MomentsFilterStore.match 内部豁免。
+                val feedVisible = remember(items, revision) {
+                    if (!MomentsFilterStore.enabled) {
+                        items
+                    } else {
+                        items.filter {
+                            MomentsFilterStore.match(it.content.text.orEmpty(), it.feed.user_id) == null
+                        }
+                    }
+                }
+                val feedHidden = if (feedVisible.size == items.size) 0 else items.size - feedVisible.size
                 MiuiNavStack(
                     key = page,
                     forward = pageForward,
@@ -253,12 +271,22 @@ class MomentsFragment : Fragment() {
                             emptyText = getString(R.string.profile_empty_other),
                         )
 
+                        MomentPage.SEARCH -> MomentSearchScreen(
+                            items = items,
+                            query = searchQuery,
+                            onQueryChange = { searchQuery = it },
+                            onOpenProfile = { openProfile(it) },
+                        )
+
                         else -> MomentsScreen(
+                            filteredCount = feedHidden,
                             listState = feedListState,
                             focusFeedId = focusFeedId,
                             onFocusConsumed = { focusFeedId = null },
-                            items = items,
+                            items = feedVisible,
                             loading = loading,
+                loadFailed = loadFailed,
+                onRetry = { load(reset = true) },
                             refreshing = refreshing,
                             ended = ended,
                             emptyText = emptyText,
@@ -301,10 +329,15 @@ class MomentsFragment : Fragment() {
     /** 这次换页是「往里推」还是「往回退」，交给 MiuiNavStack 决定动画方向（第十轮） */
     private var pageForward = true
 
+    /** 搜索页的查询串（放在 Fragment 上：切页、返回都不该丢） */
+    private var searchQuery by mutableStateOf("")
+
     /** 发表页 = 二级页（返回箭头 + 右上角「发表」）；列表页 = 主 Tab。 */
     fun syncToolbar() {
         val act = activity as? MainActivity ?: return
         if (isHidden || !isAdded) return
+        // 不是当前 Tab 就不要动顶栏（见 MainActivity.activeTab 的注释：抢写会造成标题叠加）
+        if (act.activeTab != com.lanhang.miuix.ui.shell.ShellState.TAB_MOMENTS) return
         when (page) {
             MomentPage.PUBLISH -> act.showToolbarSub(
                 getString(R.string.moments_publish_title),
@@ -323,7 +356,17 @@ class MomentsFragment : Fragment() {
                 { closeProfile() },
             )
 
-            else -> act.showToolbarMain(getString(R.string.tab_moments))
+            MomentPage.SEARCH -> act.showToolbarSub(
+                getString(R.string.moments_search_title),
+                { closeSearch() },
+            )
+
+            // 列表页：右上角一颗搜索按钮（用户第三十一轮要求「工作圈搜索在顶栏加一个搜索按钮」）
+            else -> act.showToolbarMain(
+                getString(R.string.tab_moments),
+                MiuixIcons.Search,
+                { openSearch() },
+            )
         }
     }
 
@@ -352,6 +395,23 @@ class MomentsFragment : Fragment() {
         pageForward = true
         page = MomentPage.PUBLISH
         backCallback.isEnabled = true
+        syncToolbar()
+    }
+
+    /** 顶栏搜索按钮：进搜索页（推入动画；搜索页是普通二级页，返回箭头/返回键都能退） */
+    private fun openSearch() {
+        if (page == MomentPage.SEARCH) return
+        pageForward = true
+        page = MomentPage.SEARCH
+        backCallback.isEnabled = true
+        syncToolbar()
+    }
+
+    private fun closeSearch() {
+        if (page != MomentPage.SEARCH) return
+        pageForward = false
+        page = MomentPage.LIST
+        backCallback.isEnabled = false
         syncToolbar()
     }
 
@@ -438,20 +498,33 @@ class MomentsFragment : Fragment() {
                 items = if (reset) newItems else items + newItems
                 if (page.size < MomentsApi.PAGE_SIZE) ended = true
                 fromFeedId = page.lastOrNull()?.feed_id ?: fromFeedId
+                loadFailed = false
                 emptyText = if (items.isEmpty()) AppContext.instance.getString(R.string.moments_empty) else null
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                // 页面已经销毁（切 Tab / 退到后台）：这不是网络失败，别写进界面状态
+                throw e
             } catch (e: ApiException) {
                 Diagnostics.record(AppContext.instance, AppContext.instance.getString(R.string.moments_tag_load), e)
                 handleLoadError(AppContext.instance.getString(R.string.moments_load_failed, e.message.orEmpty()))
             } catch (e: Exception) {
                 Diagnostics.record(AppContext.instance, AppContext.instance.getString(R.string.moments_tag_load), e)
                 handleLoadError(AppContext.instance.getString(R.string.moments_network_error))
+            } catch (t: Throwable) {
+                // 第二十四轮：兜底。只接 Exception 的话，任何 Error（类加载失败、OOM 之类）
+                // 会让协程直接死掉，下面两行永远不会跑 —— 界面就永久停在「转圈」或一片空白，
+                // 连「加载失败 / 重新加载」都出不来。凡是没拉成就必须复位并允许重试。
+                Diagnostics.record(AppContext.instance, AppContext.instance.getString(R.string.moments_tag_load), t)
+                handleLoadError(AppContext.instance.getString(R.string.moments_network_error))
+            } finally {
+                loading = false
+                refreshing = false
             }
-            loading = false
-            refreshing = false
         }
     }
 
     private fun handleLoadError(message: String) {
+        // 有内容时照旧只 toast（别把已经看到的东西盖掉）；一片空白时露出「加载失败 / 重新加载」
+        loadFailed = items.isEmpty()
         if (items.isEmpty()) emptyText = message else toast(message)
     }
 
@@ -609,7 +682,7 @@ class MomentsFragment : Fragment() {
 }
 
 /** 工作圈这一栈的页面（枚举顺序 = 层级深度，用来定推入/返回方向） */
-internal enum class MomentPage { LIST, PUBLISH, PROFILE }
+internal enum class MomentPage { LIST, PUBLISH, PROFILE, SEARCH }
 
 /** 一条动态最多 9 张图 */
 private const val MAX_MOMENT_IMAGES = 9

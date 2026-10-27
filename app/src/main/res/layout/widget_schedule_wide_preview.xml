@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  选择器里的 4×2 预览：静态图（`scratch/r26_preview_wide.py` 生成）。
+  为什么必须是静态图而不是真渲染，见 AGENTS.md §26.2 第 3 条。
+-->
+<ImageView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:adjustViewBounds="false"
+    android:contentDescription="@string/widget_schedule_wide_description"
+    android:scaleType="fitXY"
+    android:src="@drawable/widget_schedule_wide_preview" />

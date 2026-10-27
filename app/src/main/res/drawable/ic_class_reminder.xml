@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 上课提醒的通知小图标（第三十一轮）：铃铛剪影，单色，Android 8+ 按系统模板染色 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M12,3a7,7 0 0 0 -7,7v4l-1.6,2.7A1,1 0 0 0 4.3,18h15.4a1,1 0 0 0 0.9,-1.3L19,14v-4a7,7 0 0 0 -7,-7zM9.5,19a2.5,2.5 0 0 0 5,0z" />
+</vector>

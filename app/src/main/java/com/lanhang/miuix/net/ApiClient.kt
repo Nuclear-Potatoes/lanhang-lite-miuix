@@ -36,10 +36,17 @@ object ApiClient {
         debugContext = context.applicationContext
         cookieSp = context.getSharedPreferences("lanhang_cookies", Context.MODE_PRIVATE)
         loadCookies()
+        // 第二十四轮：断网时必须有「快速失败」。
+        // 以前只有 connect 20s / read 30s，而 OkHttp 在 DNS 失败、弱网、重试的情况下
+        // 会把一圈组合起来拉到一分钟以上，界面就一直停在「加载中」黑屏 ——
+        // 用户看到的不是「加载失败」，是「永远不动」。所以补一条 callTimeout：
+        // 整次调用（含重试、重定向、读 body）硬上限，到点就抛 IOException，
+        // 页面统一走「加载失败 → 点击重新加载」。
         http = OkHttpClient.Builder()
-            .connectTimeout(20, TimeUnit.SECONDS)
-            .readTimeout(30, TimeUnit.SECONDS)
-            .writeTimeout(30, TimeUnit.SECONDS)
+            .connectTimeout(8, TimeUnit.SECONDS)
+            .readTimeout(20, TimeUnit.SECONDS)
+            .writeTimeout(20, TimeUnit.SECONDS)
+            .callTimeout(25, TimeUnit.SECONDS)
             .cookieJar(object : CookieJar {
                 override fun saveFromResponse(url: HttpUrl, list: List<Cookie>) {
                     for (cookie in list) {

@@ -43,7 +43,16 @@ class ShellState {
     /** 顶栏右上角的文字动作（如二级页的「发表」）；null = 不显示 */
     var actionText by mutableStateOf<String?>(null)
 
-    /** 文字动作的回调 */
+    /**
+     * 顶栏右上角的**图标**动作（工作圈的搜索）。
+     *
+     * 2026-10-28 第三十一轮用户要求「工作圈搜索在顶栏加一个搜索按钮」：和 [actionText] 互斥，
+     * 二者都为空时右上角什么都不画。图标比文字省宽 —— 主 Tab 的标题可能很长，
+     * 放「搜索」两个字会把「工作圈」挤出中缝。
+     */
+    var actionIcon by mutableStateOf<androidx.compose.ui.graphics.vector.ImageVector?>(null)
+
+    /** 文字动作的回调（图标动作也走这个） */
     var onAction by mutableStateOf<(() -> Unit)?>(null)
 
     // 2026-10-26 第十一轮：原来的 `barMotion`（INSTANT/MORPH/FADE 三档）已删除。

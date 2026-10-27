@@ -1,11 +1,13 @@
 package com.lanhang.miuix.widget
 
 import com.lanhang.miuix.schedule.ScheduleData
+import com.lanhang.miuix.schedule.PeriodClock
 import com.lanhang.miuix.schedule.ScheduleRepository
 import com.lanhang.miuix.session.Session
 import java.time.DayOfWeek
 import java.time.Instant
 import java.time.LocalDate
+import java.time.LocalDateTime
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.time.temporal.ChronoUnit
@@ -16,7 +18,9 @@ object ScheduleWidgetData {
         val name: String,
         val room: String,
         val start: Int,
-        val end: Int
+        val end: Int,
+        /** 任课教师（4×2 宽版的副信息要显示「第 N-M 节 | 教室 | 教师」） */
+        val teacher: String = ""
     )
 
     data class DayInfo(
@@ -31,6 +35,39 @@ object ScheduleWidgetData {
         val days: List<DayInfo>,
         val range: String
     )
+
+    /**
+     * 4×2「今日安排」要展示哪一天。
+     *
+     * 2026-10-27 第二十六轮（用户：「如果今日课程上完，那就在 4×2 小组件上显示明天的课表」）：
+     * 今天的课**全部上完**（或者今天本来就没课）就翻到明天 —— 晚上打开桌面，看到的应该是
+     * 「明天 / 周三」的课，而不是一句「今天的课已上完」占着两行空白；明天也没课才退回那句提示。
+     *
+     * 明天的快照单独 [load] 一次（可能跨周，`load` 自己会换算周次），不要用今天的 days 顶替。
+     */
+    data class WideTarget(
+        val date: LocalDate,
+        val snapshot: WeekSnapshot?,
+        /** 展示的是明天：表头写「明天 / 周三」，且不按钟点淘汰课程 */
+        val tomorrow: Boolean
+    )
+
+    fun wideTarget(now: LocalDateTime = LocalDateTime.now()): WideTarget {
+        val today = now.toLocalDate()
+        val nowMinute = PeriodClock.minutesOf(now.toLocalTime())
+        val todaySnapshot = load(today)
+        val leftToday = todaySnapshot?.days?.firstOrNull { it.date == today }?.courses.orEmpty()
+            .count { PeriodClock.endMinute(it.end) > nowMinute }
+        if (leftToday > 0) return WideTarget(today, todaySnapshot, false)
+        val next = today.plusDays(1)
+        val nextSnapshot = load(next)
+        val nextCourses = nextSnapshot?.days?.firstOrNull { it.date == next }?.courses.orEmpty()
+        return if (nextCourses.isNotEmpty()) {
+            WideTarget(next, nextSnapshot, true)
+        } else {
+            WideTarget(today, todaySnapshot, false)
+        }
+    }
 
     private val dayNames = listOf(
         "星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"
@@ -161,7 +198,8 @@ object ScheduleWidgetData {
                         name = name,
                         room = course.room?.trim().orEmpty(),
                         start = number,
-                        end = number
+                        end = number,
+                        teacher = course.teacher?.trim().orEmpty()
                     )
                 )
             }
@@ -177,7 +215,9 @@ object ScheduleWidgetData {
             val next = items[index]
             val contiguous = next.start == current.end + 1
             val sameBreak = current.end != 4 && current.end != 8
-            if (next.name == current.name && next.room == current.room && contiguous && sameBreak) {
+            if (next.name == current.name && next.room == current.room &&
+                next.teacher == current.teacher && contiguous && sameBreak
+            ) {
                 current = current.copy(end = next.end)
             } else {
                 result.add(current)

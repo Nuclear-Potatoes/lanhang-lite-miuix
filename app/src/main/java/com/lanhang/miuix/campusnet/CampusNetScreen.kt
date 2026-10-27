@@ -348,36 +348,31 @@ fun CampusNetScreen(modifier: Modifier = Modifier) {
             )
         }
 
-        // ---------------- 自助服务 ----------------
+        // ---------------- 账号设置 ----------------
+        // 2026-10-27 第二十八轮（用户：「直接删除网络认证自助服务这个功能就行，只保留校园网账号设置」）：
+        // 上一版把「网络认证自助服务」和「校园网账号设置」并成了两行，仍然嫌多 —— 自助服务那张 H5
+        // 进去也是先落到同一个深澜认证站点，和账号设置重复。现在这一块只剩**一行**「校园网账号设置」，
+        // 跳转的仍是原来「工作」页里那个应用（`/apps/all` 的 id 与地址原样保留）。
         Card(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 12.dp, vertical = 6.dp)
                 // 第十九轮：整卡可点时也要裁成卡片圆角，不然按下去是直角方块
-                .clip(RoundedCornerShape(16.dp))
-                .clickable {
-                    // 自助服务还是那张 H5（改密码 / 看在用设备），交给既有 WebView 页
-                    com.lanhang.miuix.ui.OaWebViewActivity.open(
-                        context,
-                        SELF_SERVICE_URL,
-                        null,
-                        context.getString(R.string.campus_net_self_service),
-                        null,
-                    )
-                },
-            insideMargin = PaddingValues(horizontal = 16.dp, vertical = 14.dp),
+                .clip(RoundedCornerShape(16.dp)),
+            insideMargin = PaddingValues(horizontal = 16.dp, vertical = 4.dp),
         ) {
-            Column(modifier = Modifier.fillMaxWidth()) {
-                Text(
-                    text = stringResource(R.string.campus_net_self_service),
-                    style = MiuixTheme.textStyles.title4,
-                    color = MiuixTheme.colorScheme.onSurface,
-                )
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    text = stringResource(R.string.campus_net_self_service_subtitle),
-                    style = MiuixTheme.textStyles.footnote2,
-                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+            SettingsLinkRow(
+                title = stringResource(R.string.campus_net_account_title),
+                subtitle = stringResource(R.string.campus_net_account_subtitle),
+            ) {
+                // 深澜认证服务的账号页，appId 带上才能走网关换取 token
+                com.lanhang.miuix.ui.OaWebViewActivity.open(
+                    context = context,
+                    url = ACCOUNT_SETTINGS_URL,
+                    appToken = null,
+                    title = context.getString(R.string.campus_net_account_title),
+                    cookie = null,
+                    appId = ACCOUNT_SETTINGS_APP_ID,
                 )
             }
         }
@@ -389,6 +384,33 @@ fun CampusNetScreen(modifier: Modifier = Modifier) {
             color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
             modifier = Modifier.padding(horizontal = 22.dp),
         )
+    }
+}
+
+/** 卡片里的一行：标题 + 副标题，整行可点 */
+@Composable
+private fun SettingsLinkRow(title: String, subtitle: String, onClick: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .clickable(onClick = onClick)
+            .padding(vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = title,
+                style = MiuixTheme.textStyles.title4,
+                color = MiuixTheme.colorScheme.onSurface,
+            )
+            Spacer(Modifier.height(4.dp))
+            Text(
+                text = subtitle,
+                style = MiuixTheme.textStyles.footnote2,
+                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+            )
+        }
     }
 }
 
@@ -414,4 +436,10 @@ private fun trafficText(bytes: Long, context: android.content.Context): String {
 }
 
 /** 自助服务入口（需在校园网内，校外会在统一身份认证回跳处中断） */
-private const val SELF_SERVICE_URL = "http://srunwebserver.device.nchu.edu.cn:8800/site/nchu"
+
+/**
+ * 「校园网账号设置」：原来挂在「工作」页里的那个应用（`/apps/all` 里 id 为
+ * `i7FIaf9wQXotusT8MjxrBs`，深澜上网认证服务系统），第二十七轮起并入本页自助服务区。
+ */
+private const val ACCOUNT_SETTINGS_URL = "http://Go.nchu.edu.cn/?id=7"
+private const val ACCOUNT_SETTINGS_APP_ID = "i7FIaf9wQXotusT8MjxrBs"

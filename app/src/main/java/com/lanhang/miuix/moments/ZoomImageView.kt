@@ -10,7 +10,7 @@ import android.view.MotionEvent
 import android.view.ScaleGestureDetector
 import android.view.animation.DecelerateInterpolator
 import androidx.appcompat.widget.AppCompatImageView
-import kotlin.math.max
+import kotlin.math.abs
 import kotlin.math.min
 
 /**
@@ -24,6 +24,9 @@ class ZoomImageView @JvmOverloads constructor(
 
     /** 单击（onSingleTapConfirmed，双击不触发） */
     var onTap: (() -> Unit)? = null
+
+    /** 长按（松手前不触发单击）：图片查看器用它弹「保存图片」 */
+    var onLongPress: (() -> Unit)? = null
 
     /** 是否处于放大状态：放大时要让位给平移手势，不允许上滑关闭（见 DragDismissLayout） */
     val isZoomed: Boolean
@@ -39,6 +42,11 @@ class ZoomImageView @JvmOverloads constructor(
         scaleType = ScaleType.MATRIX
     }
 
+    override fun onDetachedFromWindow() {
+        cancelPendingClose()
+        super.onDetachedFromWindow()
+    }
+
     private val scaleDetector = ScaleGestureDetector(context,
         object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
             override fun onScale(detector: ScaleGestureDetector): Boolean {
@@ -47,19 +55,53 @@ class ZoomImageView @JvmOverloads constructor(
             }
         })
 
+    /**
+     * 自己算双击，不用系统的 `onSingleTapConfirmed` + `onDoubleTap`（第二十四轮）。
+     *
+     * 系统的双击窗口是 `ViewConfiguration.getDoubleTapTimeout()`（300ms，不可改）：
+     * 手慢一点、或者无障碍/自动化点击间隔大一点，第二下就落在窗口外 —— 第一下已经被判成
+     * 「单击」把查看器关掉了，用户想要的是放大。这里改成 400ms 的宽窗口：
+     * 第一下按下时挂一个「稍后关闭」，第二下只要在窗口内到达就取消关闭并切换缩放，
+     * 手感更宽容，慢手也不会误退出。
+     */
+    private val closeHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private var pendingClose: Runnable? = null
+
+    /** 双击是否落在放大态：放大过（双击 / 捏合）就还原原比例，否则放大 */
+    private fun toggleZoom(fx: Float, fy: Float) {
+        val zoomedIn = curScale > baseScale * 1.05f
+        val target = if (zoomedIn) baseScale else baseScale * DOUBLE_TAP_SCALE
+        animateScaleTo(target, fx, fy)
+    }
+
+    private fun cancelPendingClose() {
+        pendingClose?.let { closeHandler.removeCallbacks(it) }
+        pendingClose = null
+    }
+
     private val gestureDetector = GestureDetector(context,
         object : GestureDetector.SimpleOnGestureListener() {
             override fun onDown(e: MotionEvent) = true
 
-            override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
-                onTap?.invoke()
+            override fun onSingleTapUp(e: MotionEvent): Boolean {
+                if (pendingClose != null) {
+                    // 第二下（双击）：不关，改缩放，锚点用这一下的位置
+                    cancelPendingClose()
+                    toggleZoom(e.x, e.y)
+                } else {
+                    val r = Runnable {
+                        pendingClose = null
+                        onTap?.invoke()
+                    }
+                    pendingClose = r
+                    closeHandler.postDelayed(r, DOUBLE_TAP_WINDOW_MS)
+                }
                 return true
             }
 
-            override fun onDoubleTap(e: MotionEvent): Boolean {
-                val target = if (curScale > baseScale * 1.4f) baseScale else baseScale * 2.5f
-                animateScaleTo(target)
-                return true
+            override fun onLongPress(e: MotionEvent) {
+                cancelPendingClose()
+                onLongPress?.invoke()
             }
 
             override fun onScroll(
@@ -114,18 +156,33 @@ class ZoomImageView @JvmOverloads constructor(
         applyMatrix()
     }
 
-    private fun animateScaleTo(target: Float) {
+    /**
+     * 平滑缩放到 [target]，以 ([fx], [fy]) 为锚点。
+     *
+     * 每帧的增量 = 本帧累计倍率 / 上一帧累计倍率，**累计倍率从起始倍率一次算出来**，
+     * 不再「每帧 curScale *= f」：后者把浮点误差也乘进去，连续双击十几次后
+     * 会偏出零点几个百分点，用户就会觉得「缩不回原比例」。
+     */
+    private fun animateScaleTo(target: Float, fx: Float, fy: Float) {
         if (!drawableReady) return
         val start = curScale
-        val factor = target / start
+        val total = target / start
+        if (abs(total - 1f) < 0.001f) return
         anim?.cancel()
-        anim = ValueAnimator.ofFloat(1f, factor).apply {
+        // 缩小时锚在视图中心：图变小后会被 clamp 居中，锚在指尖反而会「飘」
+        val pivotX = if (total < 1f) width / 2f else fx
+        val pivotY = if (total < 1f) height / 2f else fy
+        anim = ValueAnimator.ofFloat(0f, 1f).apply {
             duration = 220
             interpolator = DecelerateInterpolator()
+            var applied = 1f
             addUpdateListener { v ->
-                val f = v.animatedValue as Float
-                matrixHelper.postScale(f, f, width / 2f, height / 2f)
-                curScale *= f
+                val p = v.animatedValue as Float
+                val cum = 1f + (total - 1f) * p
+                val step = cum / applied
+                applied = cum
+                matrixHelper.postScale(step, step, pivotX, pivotY)
+                curScale = start * cum
                 clamp()
                 applyMatrix()
             }
@@ -190,5 +247,10 @@ class ZoomImageView @JvmOverloads constructor(
 
     companion object {
         private const val MAX_SCALE = 8f
+        /** 双击放大到的倍数（相对「贴合视图」的比例） */
+        private const val DOUBLE_TAP_SCALE = 2.5f
+
+    /** 双击窗口：比系统的 300ms 宽一点，手慢也不会被误判成两次单击 */
+    private const val DOUBLE_TAP_WINDOW_MS = 400L
     }
 }

@@ -8,6 +8,7 @@ import android.graphics.Paint
 import android.graphics.RectF
 import android.graphics.Typeface
 import androidx.core.graphics.ColorUtils
+import com.lanhang.miuix.schedule.CourseColors
 import com.lanhang.miuix.schedule.PeriodClock
 import com.lanhang.miuix.session.Session
 import com.lanhang.miuix.util.LocaleHelper
@@ -27,6 +28,8 @@ object ScheduleWidgetRenderer {
     private val dateFormatter = DateTimeFormatter.ofPattern("M-d")
     /** 规范里的日期写法是「无前导零 + 短横」（`8-16`），两个小部件统一用这个 */
     private val todayDateFormatter = DateTimeFormatter.ofPattern("M-d")
+    /** 4×2 宽版时间列的时刻写法（`08:00`，不带秒） */
+    private val clockFormatter = DateTimeFormatter.ofPattern("HH:mm")
 
     fun render(
         appContext: Context,
@@ -272,11 +275,74 @@ object ScheduleWidgetRenderer {
         return bitmap
     }
 
+    /**
+     * 「课表 · 今日安排」4×2 宽版：两行课程卡（按用户给的设计稿做）。
+     *
+     * 结构（与设计稿一致）：
+     * - 外框是**灰调容器**（`Palette.header`），两行是**白卡**（`Palette.background`）——
+     *   和 4×4 / 2×2 的「白卡 + 灰块」正好反过来，这是设计稿的层次；
+     * - 表头左「今天 / 周二」、右「第 N 周」，都是「次」层级（`onSurfaceVariant`）；
+     * - 每行：左两行时刻（上课 / 下课）→ 一根课程色条 → 课名（Demibold）+ 「第 N-M 节 | 教室 | 教师」；
+     * - 没排满时空槽就是一张白卡（设计稿也是这样），不写「今天没有课」之类的碎字；
+     * - 正在上的那节把色条换成主色，一眼能看出「现在在上这节」。
+     *
+     * 时间规则与 2×2 一致：今天已经下课的课不再出现，后面的课顶上来；始终最多两行。
+     *
+     * 2026-10-27 第二十六轮（用户：「如果今日课程上完，那就在 4×2 小组件上显示明天的课表」）：
+     * 今天的课全部上完后，由 [ScheduleWidgetData.wideTarget] 把 targetDate 换成明天、快照也换成明天，
+     * 这里只负责把表头写成「明天 / 周三」并关掉按钟点淘汰。
+     */
+    fun renderWide(
+        appContext: Context,
+        snapshot: WeekSnapshot?,
+        widthDp: Int,
+        heightDp: Int,
+        targetDate: LocalDate? = null,
+        now: LocalDateTime = LocalDateTime.now(),
+        /**
+         * 展示的是「明天」。只影响表头前缀（今天 / %s → 明天 / %s），
+         * 以及不按钟点淘汰课程（明天当然还没上完）。
+         */
+        tomorrow: Boolean = false
+    ): Bitmap {
+        val context = LocaleHelper.wrap(appContext)
+        val density = context.resources.displayMetrics.density
+        val width = (widthDp * density).roundToInt().coerceAtLeast(1)
+        val height = (heightDp * density).roundToInt().coerceAtLeast(1)
+        val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bitmap)
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+        val palette = palette(context)
+        val radius = 18f * density
+        // 容器是灰调（设计稿），不是纯白卡底；深色下换成卡底、让每行再亮一档，
+        // 两个主题都保持「卡片浮在容器上」的层次（见 WideRenderer.containerColor/slotColor）
+        paint.color = if (palette.isDark) palette.background else palette.header
+        canvas.drawRoundRect(
+            RectF(0f, 0f, width.toFloat(), height.toFloat()),
+            radius,
+            radius,
+            paint
+        )
+        if (snapshot == null) {
+            drawEmpty(canvas, paint, context, width, height, density, palette)
+            return bitmap
+        }
+        WideRenderer(
+            canvas, paint, context, density, width, height, palette, snapshot,
+            targetDate ?: now.toLocalDate(), now, tomorrow
+        ).draw()
+        return bitmap
+    }
+
     /* ---------- 课程配色：淡彩底 + 同色系深字（Miuix 化，取代原来的「饱和色 + 白字」） ---------- */
 
-    /** 课程色相：同课同色，不同课相差约 137°（黄金角），相邻课程的色相互相岔开。 */
-    private fun courseHue(name: String): Float =
-        (((name.hashCode() * 137.508f) % 360f) + 360f) % 360f
+    /**
+     * 课程色相：和课表**同一张表**（[CourseColors]）。
+     *
+     * 第二十八轮之前这里是 `hashCode * 137.508`，跟课表那套固定色板完全对不上 ——
+     * 同一门课在课表是一种绿、在桌面组件是另一种绿（用户：「要保证课程颜色与小部件同步」）。
+     */
+    private fun courseHue(name: String): Float = CourseColors.hueOf(name)
 
     /**
      * 色块底：卡底只借一点课程色相的染色（浅色 15% / 深色 26%）。
@@ -284,17 +350,30 @@ object ScheduleWidgetRenderer {
      * 这样整张小部件仍是「白卡 + 一个主色」的 Miuix 观感，不会变成七彩色盘；
      * 区分度交给文字色（见 [courseInk]），一眼仍能认出「这是哪门课」。
      */
-    private fun courseTint(name: String, palette: Palette): Int {
+    private fun tintOf(hue: Float, palette: Palette): Int {
         val dyed = ColorUtils.HSLToColor(
-            floatArrayOf(courseHue(name), 0.62f, if (palette.isDark) 0.62f else 0.52f)
+            floatArrayOf(hue, 0.62f, if (palette.isDark) 0.62f else 0.52f)
         )
         return ColorUtils.blendARGB(palette.background, dyed, if (palette.isDark) 0.26f else 0.15f)
     }
 
+    private fun courseTint(name: String, palette: Palette): Int = tintOf(courseHue(name), palette)
+
+    /**
+     * 课程原色：4×2 宽版左侧那根色条用它（淡彩底 + 原色条，和 Miuix 列表的强调条同一路子）。
+     * 只做装饰，不承载文字，所以可以用饱和度较高的一档。
+     */
+    private fun accentOf(hue: Float, palette: Palette): Int = ColorUtils.HSLToColor(
+        floatArrayOf(
+            hue,
+            if (palette.isDark) 0.62f else 0.55f,
+            if (palette.isDark) 0.64f else 0.44f
+        )
+    )
+
     /** 色块文字：同色相的深（浅色主题）/ 亮（深色主题）版本，与底色对比度 ≥ 4.5 */
-    private fun courseInk(name: String, palette: Palette): Int {
-        val hue = courseHue(name)
-        val tint = courseTint(name, palette)
+    private fun inkOf(hue: Float, palette: Palette): Int {
+        val tint = tintOf(hue, palette)
         val saturation = if (palette.isDark) 0.66f else 0.58f
         val step = if (palette.isDark) 0.02f else -0.02f
         val low = if (palette.isDark) 0.55f else 0.18f
@@ -309,8 +388,313 @@ object ScheduleWidgetRenderer {
         return color
     }
 
+    private fun courseInk(name: String, palette: Palette): Int = inkOf(courseHue(name), palette)
+
+    /**
+     * 同屏课程的色相：**直接取总表**，不做任何「按屏去重」。
+     *
+     * 第二十八轮（用户：「要保证课程颜色与小部件中课程的颜色同步」）：
+     * 以前这里会按屏去重 —— 同屏里色相相差不到 [MIN_HUE_GAP] 就顺次转开 47°，
+     * 于是**同一门课在桌面上是一种颜色、在课表里是另一种颜色**（4×2 一天只有两三门课，
+     * 几乎每次都会转色）。现在总表 [CourseColors] 按学期均分 360°，一学期十几门课
+     * 彼此至少差 20° 以上，同屏撞色不可能发生，这里取表值即可，也就和课表严格同色。
+     */
+    private fun distinctHues(courses: List<CourseBlock>): FloatArray =
+        FloatArray(courses.size) { courseHue(courses[it].name) }
+
     /** 淡彩底上文字的对比度下限（WCAG AA 正文 4.5:1） */
     private const val MIN_TINT_CONTRAST = 4.5
+
+    /** 4×2 宽版：两行「时刻 + 色条 + 课名 / 节次·教室·教师」 */
+    private class WideRenderer(
+        private val canvas: Canvas,
+        private val paint: Paint,
+        private val context: Context,
+        private val density: Float,
+        private val width: Int,
+        private val height: Int,
+        private val palette: Palette,
+        private val snapshot: WeekSnapshot,
+        private val target: LocalDate,
+        private val now: LocalDateTime,
+        /** 展示的是明天（今日课上完之后翻过去，见 ScheduleWidgetData.wideTarget） */
+        private val tomorrow: Boolean = false
+    ) {
+        private val dayLabels =
+            context.resources.getStringArray(com.lanhang.miuix.R.array.schedule_day_names)
+        private val nowMinute = PeriodClock.minutesOf(now.toLocalTime())
+
+        /** 秒级「现在」，算「还剩 N 分钟」用它向上取整，才不会把 18 分 40 秒显示成 19 分整 */
+        private val nowSecond = now.hour * 3600 + now.minute * 60 + now.second
+
+        /** 每行那张卡的底色：深色下比容器亮 7%，浅色就是纯白（与设计稿一致） */
+        private val slotColor = if (palette.isDark) {
+            ColorUtils.blendARGB(palette.background, 0xFFFFFFFF.toInt(), 0.07f)
+        } else {
+            palette.background
+        }
+
+        /** 内容安全区 9dp（规范要求 ≥14px@1080p，这里给得比下限宽一点） */
+        private val outerPad = dp(9f)
+        private val headerH = dp(17f)
+        private val headerGap = dp(3f)
+        private val rowGap = dp(5f)
+        private val slotCount = 2
+
+        /** 只有「今天」才按钟点淘汰已下课的课（与 2×2 同一条规则） */
+        private val filterByClock = target == now.toLocalDate()
+
+        /** 进行中那行的底色：主色兑进卡底（浅 10% / 深 16%），一眼能看出「正在上」 */
+        private fun activeSlotColor(): Int =
+            ColorUtils.blendARGB(slotColor, palette.primary, if (palette.isDark) 0.16f else 0.10f)
+
+        /** 还剩几分钟下课（向上取整）；不在进行中就返回 null */
+        private fun minutesLeft(course: CourseBlock): Int? {
+            val startMin = PeriodClock.startMinute(course.start)
+            val endMin = PeriodClock.endMinute(course.end)
+            if (nowMinute < startMin || nowMinute >= endMin) return null
+            val left = (endMin * 60 - nowSecond + 59) / 60
+            return if (left > 0) left else null
+        }
+
+        fun draw() {
+            drawHeader()
+            val contentTop = outerPad + headerH + headerGap
+            val contentH = (height - outerPad - contentTop).coerceAtLeast(0f)
+            val all = snapshot.days.firstOrNull { it.date == target }?.courses.orEmpty()
+            val courses = if (filterByClock) {
+                all.filter { PeriodClock.endMinute(it.end) > nowMinute }
+            } else {
+                all
+            }
+            when {
+                courses.isNotEmpty() -> drawSlots(courses, contentTop, contentH)
+                // 今天本来有课但都上完了：说「已上完」，别让人以为课表丢了
+                filterByClock && all.isNotEmpty() -> drawCenterText(
+                    contentTop, contentH,
+                    context.getString(com.lanhang.miuix.R.string.widget_today_done),
+                    context.getString(com.lanhang.miuix.R.string.widget_today_done_hint, snapshot.week)
+                )
+                courses.isEmpty() -> drawCenterText(
+                    contentTop, contentH,
+                    context.getString(com.lanhang.miuix.R.string.widget_today_empty),
+                    context.getString(com.lanhang.miuix.R.string.widget_empty_hint)
+                )
+            }
+        }
+
+        private fun drawHeader() {
+            val centerY = outerPad + headerH / 2f
+            val weekday = dayLabels[(target.dayOfWeek.value - 1).coerceIn(0, 6)]
+            val left = context.getString(
+                if (tomorrow) {
+                    com.lanhang.miuix.R.string.widget_wide_tomorrow_format
+                } else {
+                    com.lanhang.miuix.R.string.widget_wide_today_format
+                },
+                weekday
+            )
+            val right = context.getString(
+                com.lanhang.miuix.R.string.widget_week_format, snapshot.week
+            )
+            paint.style = Paint.Style.FILL
+            paint.alpha = 255
+            paint.typeface = Typeface.DEFAULT
+            paint.color = palette.onSurfaceVariant
+            paint.textSize = dp(12f)
+            paint.textAlign = Paint.Align.LEFT
+            canvas.drawText(
+                ellipsize(left, width - 2 * outerPad),
+                outerPad,
+                centerY + paint.textSize * 0.35f,
+                paint
+            )
+            paint.textAlign = Paint.Align.RIGHT
+            canvas.drawText(
+                right,
+                width - outerPad,
+                centerY + paint.textSize * 0.35f,
+                paint
+            )
+            paint.textAlign = Paint.Align.LEFT
+        }
+
+        private fun drawSlots(courses: List<CourseBlock>, contentTop: Float, contentH: Float) {
+            if (contentH <= 0f) return
+            val rowH = ((contentH - rowGap * (slotCount - 1)) / slotCount).coerceAtLeast(1f)
+            // 两行相邻，色条颜色要分得开（同 2×2 的去重规则）
+            val hues = distinctHues(courses.take(slotCount))
+            for (index in 0 until slotCount) {
+                val top = contentTop + index * (rowH + rowGap)
+                drawSlot(
+                    course = courses.getOrNull(index),
+                    top = top,
+                    rowH = rowH,
+                    hue = hues.getOrNull(index) ?: 0f
+                )
+            }
+        }
+
+        /** 一行课程卡；[course] 为 null 时只画白卡（设计稿里的空槽） */
+        private fun drawSlot(
+            course: CourseBlock?,
+            top: Float,
+            rowH: Float,
+            hue: Float
+        ) {
+            val radius = minOf(dp(10f), rowH / 2f)
+            val left = outerPad
+            val right = width - outerPad
+            // 正在上的那节：整张卡铺主色淡彩 + 右侧「N 分钟结束」（nexio 的做法），色条仍是课程色
+            val left1 = course?.let { minutesLeft(it) }
+            paint.style = Paint.Style.FILL
+            paint.color = if (left1 != null) activeSlotColor() else slotColor
+            canvas.drawRoundRect(RectF(left, top, right, top + rowH), radius, radius, paint)
+            if (course == null) return
+
+            val padH = dp(10f)
+            val timeW = dp(30f)
+            val twoLine = rowH >= dp(32f)
+            val timeSize = (rowH * 0.24f).coerceIn(dp(7.5f), dp(10f))
+            val startText = PeriodClock.start(course.start)?.let { clockFormatter.format(it) }.orEmpty()
+            val endText = PeriodClock.end(course.end)?.let { clockFormatter.format(it) }.orEmpty()
+
+            // 左：上下两行时刻（上课 / 下课），统一右对齐，让色条那一列保持竖直
+            paint.typeface = Typeface.DEFAULT
+            paint.textSize = timeSize
+            paint.color = palette.onSurfaceVariant
+            paint.textAlign = Paint.Align.RIGHT
+            val timeRight = left + padH + timeW
+            if (twoLine) {
+                val timeBlockH = timeSize * 2 + dp(4f)
+                val timeTop = top + (rowH - timeBlockH) / 2f
+                canvas.drawText(startText, timeRight, timeTop + timeSize * 0.86f, paint)
+                canvas.drawText(
+                    endText, timeRight,
+                    timeTop + timeSize + dp(4f) + timeSize * 0.86f, paint
+                )
+            } else {
+                val text = if (endText.isBlank()) startText else "$startText-$endText"
+                canvas.drawText(text, timeRight, top + rowH / 2f + timeSize * 0.36f, paint)
+            }
+
+            // 中：课程色条（始终是课程自己的颜色；「正在上」由卡片底色和右侧倒计时表达）
+            val barW = dp(3.5f)
+            val barPadY = minOf(dp(9f), rowH * 0.16f)
+            val barLeft = timeRight + dp(7f)
+            paint.color = accentOf(hue, palette)
+            canvas.drawRoundRect(
+                RectF(barLeft, top + barPadY, barLeft + barW, top + rowH - barPadY),
+                barW / 2f, barW / 2f, paint
+            )
+
+            // 右：课名 + 「第 N-M 节 | 教室 | 教师」，进行中时右端再放「N 分钟结束」
+            val textLeft = barLeft + barW + dp(9f)
+            val countdownSize = (rowH * 0.25f).coerceIn(dp(9f), dp(12.5f))
+            var countdownW = 0f
+            if (left1 != null) {
+                paint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+                paint.textSize = countdownSize
+                countdownW = paint.measureText(
+                    context.getString(com.lanhang.miuix.R.string.widget_wide_minutes_left, left1)
+                ) + dp(8f)
+            }
+            val textW = (right - padH - textLeft - countdownW).coerceAtLeast(dp(8f))
+            val titleSize = (rowH * 0.29f).coerceIn(dp(11f), dp(15f))
+            val metaSize = (titleSize * 0.74f).coerceIn(dp(8f), dp(10.5f))
+            val blockH = if (twoLine) titleSize + dp(3f) + metaSize else titleSize
+            val blockTop = top + (rowH - blockH) / 2f
+            paint.textAlign = Paint.Align.LEFT
+            paint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+            paint.textSize = titleSize
+            paint.color = palette.onSurface
+            canvas.drawText(
+                ellipsize(course.name, textW), textLeft, blockTop + titleSize * 0.84f, paint
+            )
+            if (twoLine) {
+                paint.typeface = Typeface.DEFAULT
+                paint.textSize = metaSize
+                paint.color = palette.onSurfaceVariant
+                canvas.drawText(
+                    ellipsize(metaOf(course), textW),
+                    textLeft,
+                    blockTop + titleSize + dp(3f) + metaSize * 0.84f,
+                    paint
+                )
+            }
+            if (left1 != null) {
+                // 倒计时贴在副信息那一行的竖直中线上（单行布局时就贴在整行中线）
+                paint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+                paint.textSize = countdownSize
+                paint.color = palette.primary
+                paint.textAlign = Paint.Align.RIGHT
+                val baseY = if (twoLine) {
+                    blockTop + titleSize + dp(3f) + metaSize * 0.5f + countdownSize * 0.34f
+                } else {
+                    top + rowH / 2f + countdownSize * 0.34f
+                }
+                canvas.drawText(
+                    context.getString(
+                        com.lanhang.miuix.R.string.widget_wide_minutes_left, left1
+                    ),
+                    right - padH, baseY, paint
+                )
+                paint.textAlign = Paint.Align.LEFT
+            }
+        }
+
+        /** 「第 9-10 节 | 明德楼A栋-A200 | 张中华」——缺哪段就不拼哪段 */
+        private fun metaOf(course: CourseBlock): String {
+            val parts = ArrayList<String>(3)
+            parts.add(
+                if (course.start == course.end) {
+                    context.getString(
+                        com.lanhang.miuix.R.string.widget_wide_period_one, course.start
+                    )
+                } else {
+                    context.getString(
+                        com.lanhang.miuix.R.string.widget_wide_period_range, course.start, course.end
+                    )
+                }
+            )
+            if (course.room.isNotBlank()) parts.add(course.room)
+            if (course.teacher.isNotBlank()) parts.add(course.teacher)
+            return parts.joinToString(" | ")
+        }
+
+        private fun drawCenterText(contentTop: Float, contentH: Float, title: String, hint: String) {
+            if (contentH <= 0f) return
+            val centerY = contentTop + contentH / 2f
+            paint.textAlign = Paint.Align.CENTER
+            paint.alpha = 255
+            paint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+            paint.textSize = dp(12.5f)
+            paint.color = palette.onSurface
+            canvas.drawText(
+                ellipsize(title, width - 2 * outerPad),
+                width / 2f,
+                centerY - dp(2f),
+                paint
+            )
+            if (contentH > dp(34f)) {
+                paint.typeface = Typeface.DEFAULT
+                paint.textSize = dp(10f)
+                paint.color = palette.onSurfaceVariant
+                canvas.drawText(
+                    ellipsize(hint, width - 2 * outerPad),
+                    width / 2f,
+                    centerY + dp(13f),
+                    paint
+                )
+            }
+            paint.textAlign = Paint.Align.LEFT
+        }
+
+        private fun ellipsize(text: String, maxWidth: Float): String =
+            fitText(paint, text, maxWidth)
+
+        private fun dp(value: Float): Float = value * density
+    }
 
     private class TodayRenderer(
         private val canvas: Canvas,
@@ -423,22 +807,30 @@ object ScheduleWidgetRenderer {
             val shown = minOf(MAX_TODAY_ROWS, capacity, courses.size)
             val rowH = ((contentH - cardGap * (shown - 1)) / shown).coerceAtLeast(1f)
             val ongoing = ongoingOf(courses)
+            // 同一天里的课要一眼分得开：按名字取色相后逐行去重（见 distinctHues）
+            val hues = distinctHues(courses.take(shown))
             for (index in 0 until shown) {
                 val course = courses[index]
                 val top = contentTop + index * (rowH + cardGap)
                 // 只有「正在上」的课才在右侧显示距下课倒计时
                 val left = if (course === ongoing) minutesLeft(course) else null
-                drawRow(course, top, rowH, left)
+                drawRow(course, top, rowH, left, hues[index])
             }
         }
 
-        private fun drawRow(course: CourseBlock, top: Float, rowH: Float, countdown: Int?) {
+        private fun drawRow(
+            course: CourseBlock,
+            top: Float,
+            rowH: Float,
+            countdown: Int?,
+            hue: Float
+        ) {
             paint.style = Paint.Style.FILL
             paint.alpha = 255
             // 「正在上」用主色实心块把注意力拉过来；其余课程是淡彩底 + 同色系深字
             val inProgress = countdown != null
-            val cardColor = if (inProgress) palette.primary else courseTint(course.name, palette)
-            val nameColor = if (inProgress) palette.onPrimary else courseInk(course.name, palette)
+            val cardColor = if (inProgress) palette.primary else tintOf(hue, palette)
+            val nameColor = if (inProgress) palette.onPrimary else inkOf(hue, palette)
             // 次要信息（时间 · 教室 / 倒计时）压到同色 ~70%，对应规范的「次」层级
             val metaColor = ColorUtils.setAlphaComponent(nameColor, if (inProgress) 0xDE else 0xC4)
             paint.color = cardColor
@@ -753,13 +1145,17 @@ object ScheduleWidgetRenderer {
             canvas.drawRoundRect(RectF(x, bodyTop, x + dayW, bodyBottom), radius, radius, paint)
         }
 
-        /** 节次分割线：前景 4%（浅）/ 10%（深）的发丝线，只画星期区，不压时间列 */
+        /**
+          * 节次分割线：前景 4%（浅）/ 8%（深）的发丝线，只画星期区，不压时间列。
+          *
+          * 注意：`paint.color` 已经把 alpha 一起设进去了，**不许再写 `paint.alpha = 255`**
+          * （那样会把 4% 的黑线顶成纯黑，本轮用户反馈的「课程底下黑线太重」就是它）。
+          */
         private fun drawGridLines() {
             val left = outerPad + timeW + gapW
             val right = width - outerPad - gapW
             paint.style = Paint.Style.FILL
             paint.color = palette.gridLine
-            paint.alpha = 255
             val thickness = (density * 0.5f).coerceAtLeast(1f)
             for (index in 1 until 11) {
                 val y = rowTop(index) - gapH / 2f
@@ -1099,7 +1495,7 @@ object ScheduleWidgetRenderer {
                 onPrimary = 0xFFFFFFFF.toInt(),
                 onSurface = 0xFFE6FFFFFF.toInt(),
                 onSurfaceVariant = 0xFF8E8E93.toInt(),
-                gridLine = 0x1AFFFFFF.toInt(),
+                gridLine = 0x16FFFFFF.toInt(),
                 isDark = true
             )
         } else {
@@ -1113,7 +1509,7 @@ object ScheduleWidgetRenderer {
                 onPrimary = 0xFFFFFFFF.toInt(),
                 onSurface = 0xFF000000.toInt(),
                 onSurfaceVariant = 0xFF999999.toInt(),
-                gridLine = 0x0F000000.toInt(),
+                gridLine = 0x0A000000.toInt(),
                 isDark = false
             )
         }

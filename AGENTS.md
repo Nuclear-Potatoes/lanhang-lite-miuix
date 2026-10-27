@@ -4,6 +4,441 @@
 功能范围：账号登录 + 课表原生渲染（周视图/网格）+ 成绩（学期切换/统计）+ 工作圈（融云圈动态）+ 设置（亮/暗/跟随系统主题、课表导出 .ics/.csv/分享）；底栏四 Tab = **课表 / 工作 / 工作圈 / 我的**（2026-10-26 第六轮把原「成绩」与「我的 → 工作」互换：工作升为一级 Tab，成绩进「我的」二级页）；「我的」下挂**成绩** / 通讯录 / 消息 / **私信（融云 IM 2.9，2026-10-26 接入）** / 身份码 / 相册 / 个人资料 / 设置。不做 OA 应用列表。
 （成绩曾被用户移除，2026-10-21 应用户要求加回。）
 
+### 执行纪律（用户红线，2026-10-27 立）
+
+> 用户原话：「以后绝对不能出现一个任务执行两小时的情况」。
+
+这不是建议，是硬约束。落地成下面几条，每轮开工前先对照：
+
+1. **单轮预算 ≈ 40 分钟**（含构建、安装、截图、写文档）。到点就把「已完成 / 未验证」照实讲清收尾，
+   不准为了补一张图继续拖。
+2. **单次等待上限 120 秒 × 最多 2 次**。禁止用 `Start-Sleep` 十几分钟去等一个「真实时间窗口」
+   （课中、整点、跨天）。要那个窗口就换手段：
+   debug-only 的「假装现在几点」注入开关 / PIL 预览图 / 单测，或者直接留给用户下次看。
+3. **单步失败两次就停手汇报**：构建、安装、UI 定位、坐标点不中，各给两次机会，第二次还不行就
+   说明现状 + 换方案，不再盲试第三种坐标。
+4. **优先做用户真正要的功能**，验证按「能快速验证的优先」排序；耗时最长的验证放最后，
+   且允许不做。做不到就明写「本轮未验证 + 原因 + 下次怎么验」。
+5. **不做无害但费时的自动收尾**（重建预览图、反复截同一页、反复 dump 界面）。省下的时间用来
+   把用户提的四件事做对。
+
+---
+
+## 31. 第二十九轮（2026-10-28）：顶栏叠加修复 · 工作圈搜索/关键词过滤 · 深色评论区阴影 · 长按复制与评论删除 · 上课提醒（1.1.1 / versionCode 53，已发版）
+
+用户五条原话：「从桌面小组件进入后再点击别的 tab，会出现顶栏叠加到一起的情况」/「工作圈搜索、工作圈过滤功能，移植过来，其中工作圈过滤功能放到设置里，工作圈搜索在顶栏加一个搜索按钮。遵照 miuix 设计规范」/「深色模式下工作圈评论区的阴影丢失」/「给工作圈加一个长按文字自由复制的功能，将评论的删除功能做到评论的左下角，蓝色字体，点击后询问是否删除，可以参考工作圈帖子删除的实现逻辑」/「上课提醒功能，也一并放到设置中」。
+
+### 31.1 顶栏叠加：不是两个栏，是一个栏的标题在打架
+
+复现三次（含用户给的确切路径：工作圈 → 打开图片 → HOME → 小组件进课表）都**没能**在模拟器上截到双标题；8 秒后的截图与 3 秒后完全一致，说明早期读到的「双标题」是缩放伪影。真正机制是**标题写入竞态**：从小组件进来时 `applyPendingTab()` 把 Tab 切到课表，而各 Fragment 的 `onResume → syncToolbar()` 同时往 `shell.title` 写自己那一页的标题，`AnimatedContent` 的目标在一两帧内翻转，两段标题动画叠在一起。两条确定性修法（都对，都要留）：
+
+- `ShellBars.kt` 标题切换改成**顺序淡出→淡入**（`fadeOut` 先、`fadeIn` 延后半个 `BarAnimation.DURATION_MS`），任何时刻最多只有一个标题可见；
+- `MainActivity` 暴露 `val activeTab: Int`，`MomentsFragment` / `MineFragment` / `WorkFragment` 的 `syncToolbar()` 开头加「不是我这个 Tab 就直接 return」。切 Tab 时只会有一个 Fragment 在写标题。
+
+### 31.2 顶栏动作支持图标（搜索按钮的落点）
+
+`ShellState` 加 `actionIcon: ImageVector?`，与 `actionText` **互斥**（图标优先）。`showToolbarMain(title, actionIcon, onAction)` 收成单个函数（不要再加重载：默认参数会让单参调用变成歧义）。图标只在 `else if (label == null)` 分支画，避免搜索图标和「发表」抢位置。图标来自 `top.yukonga.miuix.kmp.icon.extended.Search`（**注意包名是 `icon`（单数）+ `extended` 子包**，写成 `icons.MiuixIcons.Search` 编不过）。
+
+### 31.3 工作圈搜索（本地真实搜索，不假装全量）
+
+`moments/MomentSearchScreen.kt` + `MomentTextMatcher`（全角/半角归一 + 位置映射，高亮用 `SpanStyle(background = primary.copy(alpha = .28f))`）。入口：工作圈顶栏右上角放大镜 → `MomentPage.SEARCH`（`MiuiNavStack` 推入，返回箭头/返回键都能退，`backCallback` 里也要认这个页）。**只搜已加载的帖子**，页面底部固定写出「只在已加载的 N 条动态里搜索」，不做假的「全站搜索」。
+
+### 31.4 工作圈过滤（设置 → 工作圈 → 工作圈过滤）
+
+`moments/MomentsFilterStore.kt`：4 个预设档（广告推广 / 兼职招聘 / 二手交易 / 房屋租赁）+ 最多 30 条自定义规则，一条规则内空格分隔多词 = 同时包含，命中即在本机隐藏。`MomentsFragment` 里 `feedVisible = items.filter { match(...) == null }`，列表底部给一行「已按关键词过滤 N 条动态」，免得用户以为动态丢了。
+
+- **总开关默认关闭**（第一版默认开、装上就少内容，属于「像 bug 的功能」，本轮已改）；预设只是预先勾好，用户打开开关立刻生效。
+- 自己发的动态、寻物/招领（`PROTECTED` 词表）永不隐藏。
+- 过滤只影响本机显示，不碰服务端。
+
+### 31.5 深色模式评论区阴影 / 长按复制 / 评论删除
+
+- 深色下阴影会被深底吃掉，所以深色改成「深色投影 + 1dp 白色 7% 描边」，浅色保留原来的 4dp 黑色 10% 投影；
+- 帖子正文与评论正文包 `SelectionContainer`，长按即系统选中菜单，可自由复制（不再只有整段复制）；
+- 评论删除从「长按评论菜单」挪到**评论左下角蓝色小字**，仅自己的评论显示（`uid == Session.userId`），点击走和删帖同一套确认对话框。
+
+### 31.6 上课提醒（设置 → 通用 → 上课提醒）
+
+移植上游四个文件并适配本项目：`ClassReminderStore`（开关 + 提前量 0/5/10/15/20/30，默认 15）、`ClassReminderPlan`（纯逻辑：窗口 7 天、按节次聚合、学期边界外不排、`triggerAt > now` 才收，错过不补发）、`ClassReminder`（AlarmManager 排 `5000+序号` 的 requestCode 区间，每次重排全量对账，不写台账文件；每天 00:05 一个 `ACTION_RESYNC` 兜底）、`ClassReminderScreen`。
+
+- 课表数据直接复用小组件的 `ScheduleWidgetData.load(date)`：它已经处理周次换算、单双周、连堂合并，另写一份必然两边不一致。
+- 清单加 `SCHEDULE_EXACT_ALARM`（没授权时退回 `setAndAllowWhileIdle`，只晚几分钟，页面上明说）、`ClassReminderReceiver` 订阅 BOOT_COMPLETED / MY_PACKAGE_REPLACED / TIME_SET / TIMEZONE_CHANGED —— **应用更新后不重排就会静默失效**，这条是必需的。
+- 「下一次提醒」**即使开关关着也照常算并显示**（第一版关着返回 null，页面显示「最近 7 天没有课」，明明有课却说过没有，是明确的错误信息，本轮已改）。
+
+### 31.7 本轮验证（模拟器 emulator-5554，1220×2656，第 9 周）
+
+| 项 | 结果 |
+| --- | --- |
+| 构建 | `assembleRelease` 成功（三次，含两处修正） |
+| 工作圈顶栏搜索图标 | ✅ 右上一颗放大镜，标题不再被挤 |
+| 搜索页 | ✅ 输 `28` 命中 1 条并高亮「28」；输 `16` 显示「没有匹配的动态」+ 范围说明 |
+| 设置页两个新入口 | ✅「上课提醒 / 已关闭」「工作圈过滤 / 已关闭」 |
+| 工作圈过滤页 | ✅ 开关 / 4 预设 / 自定义输入 / 0·30 计数 / 页脚全部正常 |
+| 上课提醒页 | ✅ 提前量 6 档选中态正确；「下一次提醒」= 焊接技术与工程导论 10月28日 08:00 第 1 节 |
+| 闹钟真的落地 | ✅ `dumpsys alarm` 见 `CLASS_REMINDER_ALARM` 07:45 / 09:45 与 `ACTION_RESYNC` 00:05；关掉开关后再查，class 闹钟全清 |
+| 顶栏叠加 | ⚠️ 三次复现均未出现（含用户确切路径）；已按机制修掉，等用户实测确认 |
+| 深色阴影 / 长按复制 / 蓝色删除 | ⚠️ 代码已改、编译通过，未做逐项截图（当轮时间预算已用尽） |
+
+已知小遗留：关掉提醒开关后 `ACTION_RESYNC` 那条每日闹钟仍留着（无害，下次启动 `rearm` 会清）。工作 Tab 的常用功能横条仍未做视觉检查。
+
+### 31.8 本轮没做的事
+
+用户随后明确要求「push 到 github 并发布 release」，已按既有流程推 `main` + 打 `v1.1.1` 标签触发 Actions 出包。语音通话 / 视频通话继续搁置。
+
+## 30. 第二十七 / 二十八轮（2026-10-27）：校园网自助服务合并 · 小组件进课表 · 关于页致谢 · 课程配色全局唯一（未发版，versionCode 仍 52）
+
+用户原话（三轮连着说的，一起做）：
+
+> 「可以将校园网一键认证功能去掉了，校园网登录已经取代了这个功能。另外，将校园网账号设置合入
+> 校园网登录-网络认证自助服务区域，点击这个功能则跳到原来的校园网账号设置页面。另外有个bug，
+> 如果我提前切换到非课表tab（如工作、工作圈或我的）然后回到桌面点击小组件进入程序，顶栏不会
+> 换为课表，仍然会显示工作、工作圈或我的。另外，把关于中原项目lanhanglite移到致谢一栏中。」
+
+> 「扩展课表中课程选色的多样性，保证可读性的同时也要保证不要有课程的颜色出现重复的情况，
+> 并且要保证课程颜色与小部件中课程的颜色同步，比如我的高数B和航空航天概论就出现了颜色重复
+> 的情况，不能出现颜色的重复」
+
+### 30.1 校园网：一键认证删掉，账号设置并进「网络认证自助服务」
+
+- `work/WorkCatalog.kt`：删掉 `校园网一键认证`（原生「校园网登录」已完全取代它）**和**
+  `校园网账号设置`（搬去校园网登录页）。51 → **49** 条，`网络服务` 组从 6 项变 4 项。
+- `campusnet/CampusNetScreen.kt`：这一块现在只有**一行**「校园网账号设置」（`SettingsLinkRow`），
+  跳转原来工作页那个应用（`ACCOUNT_SETTINGS_URL = http://Go.nchu.edu.cn/?id=7`，
+  `ACCOUNT_SETTINGS_APP_ID = i7FIaf9wQXotusT8MjxrBs`），仍走 `OaWebViewActivity.open(..., appId = ...)`，
+  网关换取 token 的行为和以前完全一样。
+  **演进记录**：27 轮先做成「自助服务 + 账号设置」两行卡；用户随即说
+  「直接删除网络认证自助服务这个功能就行，只保留校园网账号设置」——28 轮把自助服务那行和
+  本地常量 `SELF_SERVICE_URL` 一起删掉（`SrunApi.SELF_SERVICE_URL` 保留，认证本身还要用），
+  行组件改名 `SettingsLinkRow`，底部提示语也从「自助服务需在校园网内使用」改成
+  「校园网账号设置需在校园网内使用」。
+- 新增字符串 `campus_net_account_title` / `campus_net_account_subtitle`（中/英各一份）；
+  `campus_net_self_service*` 两条字符串现在没有引用（留着，认证页将来若要挂快捷入口还能用）。
+
+**踩过的坑（务必记住）**：第一版用「可跨块的非贪婪正则」去删某个 `WorkApp(...)` 条目 ——
+`WorkApp\(\n(?:\s+[^\n]*\n)*?\s+name = "校园网一键认证",...` —— 正则从**文件里第一个** `WorkApp(`
+开始吞，一路吃到目标条目，把「教学办公 / 校园服务」整两组的条目全删了，结果工作页
+「常用功能」里的查用电 / 缴电费 / 智慧教务全消失（用户当场发现）。
+**教训：整块删除 JSON 风格条目不要用能跨块的正则；直接从 `artifacts/apps.json` 重新生成整张表。**
+
+### 30.2 「从桌面小组件进来，顶栏还是旧 Tab」（bug）
+
+现象：切到「工作」→ 回桌面 → 点小组件进 App：页面和底栏都是课表，**顶栏却写着「工作」**。
+复现截图 `artifacts/r29-bug-tab-before.png`（修复后 `artifacts/r29-tab-fix.png`）。
+
+原因：`ScheduleWidgetUpdater.clickPendingIntent()` 的 intent 本身带对了
+`EXTRA_OPEN_SCHEDULE`，问题在于**执行时机** —— `onNewIntent` 回调时窗口还停着
+（`onRestart/onStart` 之前），此时 commit 的 Fragment 事务 + `startPagerSwap` 的顶栏/滑页动画
+会半途卡住，于是内容切了、标题没跟上。
+
+修法（`ui/MainActivity.kt`）：
+
+- `handleWidgetIntent()` 只把目标记到 `pendingTab`，并**立刻 `removeExtra`**（否则主题 recreate
+  会再执行一遍）；
+- 新增 `applyPendingTab()`：三个时机各试一次 —— `onCreate`（冷启动）、`onResume`（窗口将显示）、
+  `onNewIntent` 里 `binding.root.post { }`（App 在前台时不会再来 onResume）；
+- 执行时临时把 `restoring = true`，即「从桌面跳进来」不做左右滑动（也不给卡半截动画留机会），
+  切完再 `applyTitle(shell.tab)` 对齐一次标题 —— 这一条是兜底，杜绝「页面课表 / 顶栏工作」。
+
+### 30.3 关于页：「原项目 lanhang-lite」进「致谢」
+
+`mine/MineScreen.kt`：`mine_credits_upstream` 那一行从「开源」卡搬到「致谢」卡首行
+（`aboutStack` 里补 `LocalContext`，因为点击要 `openUrl`）。「开源」卡现在只剩「开源地址」。
+
+### 30.4 课程配色：全学期均分色相，课表与小组件共表（`schedule/CourseColors.kt`，新增）
+
+老代码两条路各算各的：
+
+| 位置 | 老算法 | 毛病 |
+| --- | --- | --- |
+| 课表 `ScheduleFragment.courseColor` | 固定 11 色板 + 「离已用色最远」贪心 | 课一多色板用完，只能从用过的色里再挑 → 高数B1 与 航空航天概论 同一种绿 |
+| 小组件 `courseHue` | `hashCode * 137.508` | 和课表**根本不是一种颜色** |
+| 小组件 `distinctHues` | 同屏色相差 < 42° 就转开 47° | 「按屏去重」把颜色改掉 → 桌面与课表不同色 |
+
+现在统一到 `CourseColors`：`ScheduleRepository.allCachedCourseNames()` 扫一遍已缓存的
+`schedule_w{N}.json`（周次范围取自 `schedule_cache.json` 的 `起始周次/结束周次`），课程名排序后
+**均分 360°**（每门间隔 360/n，起点偏 8° 避开正红）。于是：
+
+- 不同课必然不同色（十几门课 → 间隔 20° 以上，严格不重复）；
+- 同课必然同色（纯函数，与出现顺序/周次/只画某一天无关）；
+- 课表和小部件取的都是 `CourseColors.hueOf(name)`，**同一色相**，再各自派生：
+  课表走 `ScheduleStyle.courseFill/onCourseTint`（同色相染色底 + 深字），
+  小组件走 `tintOf/inkOf`（对比度 ≥ 4.5）—— 可读性仍由各自负责。
+- 小组件 `distinctHues()` 现在**只取表值、不再转色**（否则同屏转色就破坏同步）。
+- `ScheduleRepository.refresh()` 写缓存后调 `CourseColors.invalidate()`，加退课/转专业后下次取色重建；
+  取不到课程表（缓存全空）时才退回老的 hash 黄金角兜底。
+
+验证：`artifacts/r30-schedule-colors.png`（课表，高数B1 酒红 / 航空航天概论 绿 / 焊接 蓝紫 /
+美育 橙棕 / 英语 绿 / 思政 蓝 / 体育 橄榄 / 计算机 青绿 / 形势 青 / 职业生涯 紫，无重复）、
+`artifacts/r30-widget-colors3.png`（4×2 小组件）。逐像素取样核对同色相：
+形势与政策1 课表 hue 187.9 / 小组件色条 hue 188.1（同步）；计算机那一行因为「正在上」卡片底色
+是 primary 蓝，色条取样会被掺色，属正常。
+
+### 30.5 本轮验证清单
+
+| 项 | 图 |
+| --- | --- |
+| 顶栏 bug 复现 | `artifacts/r29-bug-tab-before.png` |
+| 顶栏 bug 已修（点小组件进来顶栏=课表） | `artifacts/r29-tab-fix.png` |
+| 校园网登录 → 自助服务两行 | `artifacts/r29-campusnet-selfservice.png` |
+| 工作页（网络服务已无「一键认证 / 账号设置」） | `artifacts/r29-work-common.png` |
+| 关于页（致谢首行=原项目） | 见 30.3，uiautomator 文本：开源→开源地址；致谢→原项目 lanhang-lite / Miuix / Coil / OkHttp |
+| 课表配色不重复 | `artifacts/r30-schedule-colors.png` |
+| 小组件与课表同色 | `artifacts/r30-widget-colors3.png` |
+
+> 强制刷新桌面小组件（调试用，`exported=true` 的自定义 action 可以 shell 直接打）：
+> `adb shell am broadcast -a com.lanhang.miuix.widget.ACTION_TICK -n com.lanhang.miuix/.widget.ScheduleWidgetProvider`
+> —— `APPWIDGET_UPDATE` 那种受保护广播从 shell 打不出去（SecurityException），ACTION_TICK 可以。
+
+---
+
+## 29. 第二十六轮（2026-10-27）：工作页功能清单本地化 + 4×2 小组件「课上完翻到明天」（未发版，versionCode 仍 52）
+
+用户原话：
+
+> 「将工作页面的功能区本地化，不要联网获取工作中的功能列表，如果今日课程上完，
+> 那就在 4*2 小组件上显示明天的课表」
+
+### 29.1 「工作」页功能清单本地化
+
+- 新增 `work/WorkCatalog.kt`：把 `POST /apps/all` 的返回**固化成本地表**（2026-10-27 抓取快照，
+  `id` / `home_page_url` 原样保留），结构就是 `List<Pair<String?, List<WorkApp>>>`，
+  和 `WorkDirectory.sections()` 同型，`WorkPage` 一行都不用改布局。
+- `WorkPage` 的 `LaunchedEffect` 不再发请求：
+  ```kotlin
+  sections = WorkCatalog.sections      // 本地清单
+  portal = Session.workUrl             // 门户地址只读登录时缓存的配置
+  loading = false
+  ```
+  同时把 `loading` 初值改成 `false`（否则会闪一帧转圈）。
+  `/configuration/all` 那次请求也一起去掉了 —— 它同样是首屏转圈的原因之一。
+- **只本地化「列表」，不本地化「功能」**：点开某个应用仍走原来的网关预检 + WebView 链路，
+  需要网络就有网络请求，不需要的（校园网登录、图书馆座位预约）本来就是原生页。
+- 刻意不收「最近使用」（服务端按你最近点过的动态生成，写死会永远同一批，反而误导；
+  顶部「常用功能」已经承担该角色）和「系统应用」（整组只有无效的「通知服务」）。
+- 分类沿用：教学办公 / 校园服务 / 网上办事 / 网络服务 / 图书馆，共 51 项。
+  学校新增应用时改这一张表即可（`Order` 用数组顺序表达）。
+
+### 29.2 4×2「今日安排」：今天的课上完就翻到明天
+
+- `ScheduleWidgetData.wideTarget(now)` 决定「这块 4×2 该画哪天」：
+  - 今天还有没上完的课 → `WideTarget(today, todaySnapshot, tomorrow = false)`（原行为，含倒计时）；
+  - 今天课上完了、或今天本来没课 → `load(today.plusDays(1))` 单独取明天快照，
+    `tomorrow = true`；明天也没课才退回原来的「今天的课已上完」提示。
+- `renderWide(..., tomorrow = false)` → `WideRenderer`：表头在
+  `widget_wide_today_format`（今天 / %s）和新增的 `widget_wide_tomorrow_format`（明天 / %s）之间切；
+  `filterByClock` 天然为 false（`target != now.toLocalDate()`），所以明天不按钟点淘汰课程。
+- 两处调用都走 `wideTarget()`：真实刷新（`updateWidget` 的 WIDE 分支）和选择器里的静态预览
+  （`pushGeneratedPreview`），避免「预览是今天、放上去变明天」的错位。
+
+### 29.3 验证记录（模拟器 emulator-5554，1.1.0 覆盖安装）
+
+- **工作页断网**：`svc wifi disable` + `svc data disable` → 强杀 → 冷启动 → 工作页
+  **立刻**出完整清单（常用功能 5 项 + 打开办事大厅 + 搜索 + 教学办公宫格），
+  和联网时一模一样（`artifacts/r28-work-offline.png`）。这就是本地化的目的：断网也能进去点原生功能。
+- **4×2 上课中（真机）**：设备时钟走到 14:00–15:40（GMT）正好是「大学计算机基础训练」，
+  组件的行 1 变成浅蓝调卡 + 右侧粗蓝字「77 分钟结束」，行 2「形势与政策1」仍是纯白卡
+  （`artifacts/r28-widget-after-launch.png`）—— 上一轮没等到的那张图，这一轮碰上了。
+- **4×2 明天**：临时把 `leftToday > 0` 改成 `leftToday > 999` 强制走明天分支，编译安装后
+  组件显示「明天 / 周三」+ 焊接技术与工程导论 08:00–09:40 `第 1-2 节 | C402 | 刘冠鹏` +
+  高等数学B1 10:00–11:40 `第 3-4 节 | E302 | 舒琳馨`，无倒计时（`artifacts/r28-widget-tomorrow-test.png`）。
+  **验完立刻改回并重新编译安装**（发布包不含这个测试改动，`if (leftToday > 0)` 已确认复原）。
+- 设备收尾：深色主题、首页 4×2 一件、网络已恢复。**本轮没有 push、没有 release**（用户没说要推）。
+
+### 29.4 本轮踩到的坑
+
+1. **重装/重启后桌面留一张灰色占位卡**（app 图标居中、没有内容），logcat 是
+   `AppWidgetHostView: Error inflating RemoteViews / Resources$NotFoundException: Resource ID #0x0` ——
+   这是 launcher 缓存的旧 `RemoteViews` 失效，**不是渲染器出错、也不是布局被删**。
+   对付它：正常启动一次 App（会把新位图重新推给所有实例）即可，不需要删掉重放组件。
+2. 设备时钟是 **GMT**（比北京慢 8 小时），所以「北京 22:1x」在设备上正好是「14:1x」——
+   判断某节是不是「上课中」必须按**设备时间**算，别按本地时间想当然。
+3. 想要某个时间窗口的截图，**别干等**（见开头「执行纪律」第 2 条）：把条件临时改成恒真、
+   截完立刻改回，是这里最省时间的做法（一轮 ~4 分钟，含两次编译）。
+
+---
+
+## 28. 第二十五轮（2026-10-27）：组件「上课中/上课前」两态、图片双击缩放与长按保存、断网重试、消息只提示自己的帖子、设置与关于整理（未发版，versionCode 仍 52）
+
+用户原话（四件事）：
+
+> 「第一张图是上课中，第二张图是上课前，继续做小组件……另外，工作圈中点击图片放大至全屏后，
+> 双击放大图片，再次双击将图片缩小至原比例，长按弹出是否保存图片弹窗。第二，如果联网失败导致
+> 无法加载出界面，应该显示小文字为加载失败，点击重新加载。点击后尝试重新加载界面。第三，消息栏
+> 中只提示与自己帖子有关的消息……第四，整理一下设置与关于界面的选项，大小不统一，设置里面不应该
+> 有跳转到关于的选项……参考 nexio 课程表的关于页面做一下你的关于页面」
+
+### 28.1 4×2「今日安排」：上课中 / 上课前 两态（设计稿两图）
+
+设计稿判读：**上课中** = 那一行换成浅蓝调的行卡 + 右侧粗蓝字「98分钟结束」，左侧课程色条保留原色；
+**上课前** = 纯白卡片、无倒计时、无色条变化。所以「现在」这件事**只落在行卡底色 + 倒计时文字上**，
+不去改课程色条（改了就等于「现在」压过「哪门课」，两行会认不出彼此）。
+
+- `minutesLeft(course): Int?` —— 只在 `startMin <= nowMinute < endMin` 时返回
+  `(endMin*60 - nowSecond + 59) / 60`（**向上取整**：20:39:59 显示「1 分钟结束」而不是「0」）。
+- `activeSlotColor()` = `blendARGB(slotColor, palette.primary, if (isDark) 0.16f else 0.10f)`，
+  绘行卡时只有 `minutesLeft != null` 才用它；色条仍走 `accentOf(hue, palette)`。
+- 倒计时文案 `widget_wide_minutes_left`（「%1$d分钟结束」/「%1$d min left」），右对齐、`palette.primary`、
+  BOLD、`(rowH*0.25f).coerceIn(dp(9f), dp(12.5f))` —— 跟设计稿一样是「比课名小一号但更亮」。
+- 上课前 / 下课后：整行回到 `Palette.background`（深色是其 7% 白混色），不画倒计时。
+- 颜色仍然全部来自 `Palette`（§26.2 第 1 条）；**不做「饱和填充 + 白字」**（§26.2 第 2 条）。
+
+### 28.2 工作圈图片预览：双击缩放 + 长按保存
+
+- `moments/ZoomImageView.kt`：**自己接管手势**（`detectTapGestures` 的 `onTap`/`onLongPress` 改成
+  公开字段，由 Activity 挂），`isZoomed = drawableReady && curScale > baseScale*1.01f`。
+- 双击：`toggleZoom()` 在 `baseScale` ↔ `baseScale * DOUBLE_TAP_SCALE(2.5f)` 之间切；`MAX_SCALE = 8f`。
+- **单点关闭必须等 400ms**：系统双击窗口是 300ms，而 adb 每次 `input tap` 都要新起一个 JVM，
+  两条命令必然超过 300ms —— 于是「双击」看起来像「两次单击 → 两次关闭」。现在 `onSingleTapUp`
+  先 `cancelPendingClose()` 再判断：未放大就把关闭动作 `postDelayed(DOUBLE_TAP_WINDOW_MS)`，
+  第二击会把它取消；已放大则立即关闭（放大态下单击=退出，符合微信/小红书心智）。
+- 长按 → `askSaveImage(url)` → Miuix 确认弹窗（`moments_save_image_title/_summary/_confirm`）→ Coil 取
+  `SuccessResult` → `toBitmap()` → MediaStore 写入 `Pictures/蓝航Lite/lanhang_<millis>.jpg`（JPEG q95）。
+  写库失败/无权限分别提示 `moments_save_image_failed` / `_denied`，成功 `_done`。
+- 清单加了 `WRITE_EXTERNAL_STORAGE`（`maxSdkVersion="28"`，29+ 走 MediaStore 不需要）。
+
+### 28.3 断网：一片空白 → 「加载失败 / 点击重新加载」
+
+- 新组件 `ui/miuix/LoadFailedHint.kt`：两行小字（`footnote1` 「加载失败」+ `footnote2` 主色「重新加载」），
+  整块可点（圆角 16dp 的水波纹），**没有图标、没有大标题** —— 用户要的是「小文字」。
+- 三处接上：消息（`MessagesScreen`，error item 直接换成它）、工作圈（`MomentsScreen` 的 `loadFailed` 分支）、
+  工作圈的「有表头」分支（个人主页/相册）。
+- **白屏根因（本轮真 bug，已修）**：`MomentsScreen` 里「容器」的条件原来是
+  `header != null || items.isNotEmpty() -> LazyColumn(...)`，而「转圈 / 空态 / 加载失败」三个 item
+  全挂在这个 LazyColumn 里面。于是「没有表头 + 一条数据都没有」连容器都不组合 → 整页纯黑，
+  断网冷启动正好落这一格：用户永远等不到「加载失败」。现在条件是 `else`，容器无条件存在。
+- 网络层：`ApiClient` 加 `callTimeout(25s)`，`connect` 20s→8s、读/写 30s→20s。
+  以前只有 connect/read，DNS 失败 + 重试能把一次请求拖到一分钟以上，界面一直「加载中」。
+- `MomentsFragment.load()`：`catch (CancellationException) { throw }`（切 Tab 不算网络失败）、
+  `catch (Throwable)` 兜底、`loading/refreshing` 放进 `finally`。只接 `Exception` 的话，
+  任何 Error 都会让协程直接死掉，那两行复位永远不跑。
+- 首次加载态补一行小字「加载中…」（`moments_loading`），只有转圈会像卡死。
+
+### 28.4 消息栏只提示「与自己帖子有关」的互动
+
+- 新 `moments/InteractionFilter.kt`：`/message/history` 会把**你参与过的任何动态**的互动都推给你
+  （点赞/评论别人的动态，别人再评论，也会来），所以要用所有权过滤：
+  - `feedsOf(raw)` → `MomentsApi.getFeeds(ids)`（新增接口）拿每条动态的 `user_id`；
+  - `keepMine(raw, feeds)` 只留 `feed.user_id == Session.userId` 的互动；
+  - `unreadCountMine(unread)` 角标走同一条规则（否则角标数 ≠ 列表条数，用户会以为丢消息）。
+  - **拿不到动态时必须不过滤**（宁可多提示，也不要把消息吞掉）。
+- 消息页同时加了「全部 / 评论 / 赞」三个筛选 chip + 右上「刷新」，列表项分「评论」和「赞」两种排版。
+- 验证：列表 5 条全部是我自己那条「身份证/学生证在二食堂与逸夫楼附近」的赞与评论（`artifacts/r27-msg-skiavk.png`）。
+
+### 28.5 设置 / 关于：统一尺寸，关于移出设置
+
+- 设置里每行统一 `SettingRow(title, summary = null, value = null, onClick = null)`
+  （`pressableRow(corner = 16.dp)`、`padding(horizontal = 16.dp, vertical = 15.dp)`、右侧统一 `ChevronForward`）。
+  以前的毛病是「有箭头的一行、没箭头的值行、带副标题的一行」三种高度混排。
+- **删掉「支持」整栏**（含跳转「关于」那一条）：关于现在只能在「我的」页点开，设置里不再出现。
+- 「关于」按 nexio 课程表那套重做：`aboutHero`（图标 + 蓝航Lite + 版本 + tagline）→
+  `aboutApp`（应用版本 / 接口标识 / 当前账号）→ `aboutDiagnostics`（诊断与日志）→
+  `aboutOpenSource`（开源地址 / 原项目）→ `aboutStack`（致谢：Miuix / Coil / OkHttp）→ `footer`。
+  分组标题用 `SmallTitle`，卡片 = 一张白卡包一组，行与行之间只有 0.5dp 分隔线。
+- 浅色 / 深色都截图确认：`artifacts/r27-settings-light.png`、`r27-about-light.png`、
+  `r27-settings-dark.png`、`r27-about-dark.png`。
+
+### 28.6 本轮踩到的坑（务必记住）
+
+1. **模拟器 skiaGL 下「大标题」被画成一团白拖影**（消息页、空工作圈页；同一页面 uiautomator 里文字
+   完全正常）。不是代码问题：`adb shell setprop debug.hwui.renderer skiavk` 后立刻干净。
+   以后遇到「某个页面标题糊成一片」先换渲染后端复验，别去改 `ShellBars`。
+2. **放小部件最稳的手法**：选择器里展开分组后 `adb shell "input draganddrop <预览中心> <落点> 2000"`
+   （`input swipe` 会被列表当成滚动）。落点选首页空白区（约 611,700）。
+3. `adb root` 在 production build 上不可用（`adbd cannot run as root in production builds`），
+   `date` 改不了系统时间 —— 想验证「上课中」那一路，只能等设备时间真的落在某一节课里。
+   注意模拟器时钟是 **GMT**（比北京慢 8 小时），课表按设备时间算。
+4. `Select-String -LiteralPath` 传不存在的路径会以退出码 1 结束；`-Pattern 'a|b'` 加引号会报位置参数错，
+   用逗号分隔的裸模式。
+
+### 28.7 验证记录
+
+- 消息：断网 → 「加载失败 / 重新加载」（`r27-retry-offline.png`）；恢复网络后点它 → 列表回来
+  （`r27-retry-online.png`）。
+- 工作圈：断网冷启动 → 4 秒内出「加载失败 / 重新加载」（`r27-moments-off4s.png`，修白屏前是纯黑）；
+  恢复网络点重试 → 正常出动态流（`r27-moments-retry-ok.png`）。
+- 图片预览：双击进 2.5×（`r27-viewer-zoom.png`）、再双击回原比（`r27-zoom-out2.png`）、
+  长按弹「保存图片」（`r27-save-dialog.png`）、保存后 toast（`r27-save-toast.png`）、相册里能看到
+  （`r27-album2.png`）。
+- 小部件：4×2 已放上首页（`r27-widget-clock.png`，两行真实数据、两种课程色）。
+  **「上课中」浅蓝调 + 倒计时这一态本轮没能真机截图**（见 28.6 第 3 条，等课上再说）。
+- 设备收尾：深色主题、首页 4×2 一件。**本轮没有 push、没有 release**（用户没说要推）。
+
+---
+
+## 27. 第二十四轮（2026-10-27）：新增 4×2「今日安排」小组件（未发版，versionCode 仍 52）
+
+用户原话：「参考这个组件做一个4*2的小组件」+ 一张设计参考图（灰容器里两行白卡：左两行时刻、一根紫色课程条、
+课名 Demibold、「第 9-10 节 | 明德楼A栋-A200 | 张中华」副信息，第二行是空槽）。
+
+### 27.1 架构：三变体一套数据一套渲染
+
+- 新增 `widget/WidgetVariant.kt`：`enum class WidgetVariant { WEEK, TODAY, WIDE }`。
+  **原来的 `Boolean isSmall` 全部删除**——尺寸一多，布尔量必然变成一堆 if 嵌套。
+  - `ScheduleWidgetProvider.variant = WEEK`（4×4）
+  - `ScheduleWidgetSmallProvider.variant = TODAY`（2×2）
+  - `ScheduleWidgetWideProvider.variant = WIDE`（4×2，本轮新增）
+- `ScheduleWidgetUpdater`：`allVariants: List<Pair<Class<*>, WidgetVariant>>`；
+  `variantOf(manager, id)` 按 `getAppWidgetInfo()?.provider?.className` 反查变体（查不到退回 WEEK）。
+  `updateAll` / `pushGeneratedPreview` / `updateWidget` 全部按变体分叉，**数据加载、午夜闹钟、点击跳转、
+  `TodayNavStore` 隔离逻辑一律不动**。
+- 渲染入口新增 `ScheduleWidgetRenderer.renderWide(appContext, snapshot, widthDp, heightDp, targetDate, now)`，
+  内部类 `WideRenderer` 与 `TodayRenderer` 同级（都建在 object 内部，才能用 private 的 `Palette` / `fitText`）。
+
+### 27.2 视觉规格（对齐设计稿，颜色只用 Palette）
+
+- 容器 = 灰调，每行 = 卡：
+  - 浅色：容器 `Palette.header`（#F0F0F0）、行卡 `Palette.background`（#FFFFFF）；
+  - 深色：容器 `Palette.background`（#242424）、行卡 = 容器混 7% 白（`blendARGB(background, white, 0.07)`）。
+  - **两个主题都保持「卡片浮在容器上」的层次**；深色别照抄浅色的「容器更亮」，那样行卡会变成凹陷的洞。
+- 表头：左「今天 / 周二」（`widget_wide_today_format`）、右「第 N 周」（`widget_week_format`），
+  `onSurfaceVariant` + 12dp + DEFAULT 字重（「次」层级，不与课名抢层级）。
+- 每行（内容安全区 9dp，行距 5dp，圆角 10dp）：
+  - 左：两行时刻 `HH:mm`（上课 / 下课），右对齐，`onSurfaceVariant`；
+  - 中：课程色条 3.5dp 宽、圆角、上下各留 `min(9dp, 16% 行高)`，颜色 = `accentOf(hue)`（HSL 0.55/0.44 浅、0.62/0.64 深）；
+    **正在上的那节换成 `Palette.primary`**（不写倒计时文字，设计稿里没有）；
+  - 右：课名 BOLD + 「第 N-M 节 | 教室 | 教师」，缺哪段就不拼哪段（`metaOf`）。
+  - 行高 < 32dp 时退化成单行（时刻合成 `08:00-09:40`、副信息不画），防止用户把 4×2 压扁后糊成一团。
+- 空槽照样画一张行卡（设计稿就是这样），不写「今天没有课」；真没课时才走 `drawCenterText` 空态。
+
+### 27.3 数据层：`CourseBlock` 新增 `teacher`
+
+- `ScheduleWidgetData.CourseBlock` 加 `val teacher: String = ""`（默认值，避免动所有构造点）；
+  由 `ScheduleModels.Course.teacher` 取值；`merge()` 的合并键从「课名 + 教室 + 连续 + 不跨午休」改成
+  「课名 + 教室 + **教师** + 连续 + 不跨午休」，否则同一门课换老师会被误并。
+- 4×4 / 2×2 不读这个字段，行为不变（已回归验证）。
+
+### 27.4 资源与命名
+
+- `res/layout/widget_schedule_wide.xml`：**只有一个 ImageView**（id 仍叫 `@+id/widget_bitmap`，
+  更新代码不用分叉）+ 注释说明「本变体无底栏」；4×2 是纯位图、没有翻天。
+- `res/layout/widget_schedule_wide_preview.xml`：静态 `ImageView` → `@drawable-nodpi/widget_schedule_wide_preview.png`。
+- `res/xml/schedule_widget_wide_info.xml`：`targetCellWidth=4` / `targetCellHeight=2`，`minWidth=250dp` /
+  `minHeight=110dp`（70·n−30），`minResizeWidth=200dp` / `minResizeHeight=90dp`，`updatePeriodMillis=0`。
+- 文案：`widget_schedule_wide_name` =「蓝航Lite·今日安排」（2–10 汉字、与其它组件不重名）、
+  `widget_schedule_wide_description` =「两行显示今天的课程与教室」（≤22 字）、
+  `widget_wide_today_format` / `widget_wide_period_one` / `widget_wide_period_range`（zh + en 双份）。
+  **en 文案里不要放 `\'`**：aapt 会报 `Invalid unicode escape sequence`（踩过）。
+- 清单：`.widget.ScheduleWidgetWideProvider`，`exported=true`，`APPWIDGET_UPDATE` + `meta-data`。
+- 预览图生成脚本 `scratch/r26_preview_wide.py`（PIL，880×440 = 280×140dp×3.143）：
+  几何常量与 `WideRenderer` 一一对应，**改渲染器必须重跑**（AGENTS §26.2 第 3 条：预览是外观复制品，不是真渲染）。
+
+### 27.5 验证记录（模拟器 emulator-5554，1.1.0 覆盖安装）
+
+- 深色：`今天 / 周二` + `第 9 周`；行 1 = 大学英语1 `10:00 11:40` `第 3-4 节 | B408 | 许丽萍`（条为 `primary` 蓝，
+  因为当时正在上）、行 2 = 大学计算机基础训练 `14:00 15:40` `第 5-6 节 | 综合楼南310 | 黄华`（条为课程色）。
+- 浅色：同数据，灰容器 + 白卡，和设计稿一致（`artifacts/r26-light-wide2.png`）。
+- 选择器：蓝航Lite 组显示「3 个微件」，第三张卡片标题/尺寸/描述正确（`artifacts/r26-pick7.png`）。
+- 回归：2×2 重装后正常（倒计时、胶囊、◀ ▶、三色不撞）`artifacts/r26-2x2.png`；4×4 重装后正常
+  `artifacts/r26-4x4b.png`（light）/`r26-final-home.png`（dark）。
+- 设备已恢复原状：深色主题 + 首页 4×4 一件。**本轮没有 push、没有 release**（用户没说要推）。
+
+### 27.6 小部件操作备忘（本轮踩到的）
+
+- 选择器里展组后，**点卡片下方的「+ 添加」最稳**（`uiautomator dump` 里是 `content-desc="添加“蓝航Lite·周课表”微件"`，
+  中心约 (610,1902)）；`input draganddrop` 有时被列表当成滚动，只有慢速长拖才生效。
+- 主题模式弹窗选项的真实坐标（1220×2656，density 2.75）：`亮色 (134,1957)`、`暗色 (134,2117)`、
+  `跟随系统 (180,2277)`。**别按截图比例去估**，一律先 `uiautomator dump`。
+
 ---
 
 ## 26. 第二十三轮（2026-10-27）：桌面小组件按 HyperOS 规范重做（1.1.0 / versionCode 52）
@@ -70,6 +505,29 @@
   要用 `input draganddrop <预览图坐标> <落点> 2600`；拖完再 `tap` 一下固定。
 * 选择器里群组需先展开（行尾箭头 x≈1104），再向下滚才能看到 2×2 预览。
 * 切主题路径：我的 → 设置 → 外观 → 主题模式 → 亮色/暗色；切完小组件会跟着重绘（`updateAll`）。
+
+### 26.6 同日补丁：2×2 撞色 / 4×4 黑线太重
+
+用户原话：
+
+> 「给 2*2 的小组件的不同课程加上不同的颜色，
+> 4*4 的小组件课程底下的黑色线颜色不要这么重」
+
+1. **2×2 撞色**：色相原来只由课名哈希决定，同一天两三门课哈希到相近色相就变成「一片紫」。
+   现在 `distinctHues(courses)` 逐行去重：与已用色相相差 < 42° 就按 47° 顺次转开（最多 12 次）。
+   4×4 不用（不同天的课被时间隔开，保持「同课同色」更重要）。
+2. **4×4 黑线太重 = `paint.alpha = 255` 把半透明色顶成纯黑**。`Paint.color` 已经把 alpha 一起设好，
+   再写 `paint.alpha = 255` 就把 4% 的黑线变成 100% 黑（浅色下就是用户说的「黑线」；
+   深色下 10% 白线被顶成近纯白，同样扎眼）。现在 `drawGridLines()` 不碰 alpha，
+   线色浅色 `0x0A000000`（4%）/ 深色 `0x16FFFFFF`（8.6%）。
+3. **硬规则**：任何 `paint.color = <带 alpha 的色>` 之后**不许**再写 `paint.alpha = ...`；
+   要降透明度就用 `ColorUtils.setAlphaComponent(...)` 连色带 alpha 一起给。
+4. 截图：`artifacts/r25-light-2x2.png` / `r25-dark-2x2.png`（三色分明）、
+   `r25-light-week.png` / `r25-dark-week.png`（分隔线明显变淡）。
+5. 选择器预览图同步重生成（`r24_preview.py` 的 `GRID` 改 `0x0A`），
+   保证预览与放下后一致。
+6. 本次修改**未发版**（用户未说 push），按 `VERSION.md` 规则等下次要发版时
+   再把 `versionCode` +1、`versionName` 进位到 `1.1.1`。
 
 ---
 

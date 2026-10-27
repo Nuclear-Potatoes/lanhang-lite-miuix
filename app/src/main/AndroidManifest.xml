@@ -3,9 +3,16 @@
     xmlns:tools="http://schemas.android.com/tools">
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- 工作圈长按保存图片：API 29 起走 MediaStore 不需要权限，28 及以下仍要写外部存储 -->
+    <uses-permission
+        android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        android:maxSdkVersion="28" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <!-- 私信的新消息用系统通知提示（im/ImNotify.kt），Android 13+ 需要运行时授权 -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- 上课提醒要准点响（第三十一轮）：Android 12+ 精确闹钟需要单独声明，
+         没有授权时退回 setAndAllowWhileIdle，只会晚几分钟 -->
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
     <!-- 私信发语音 -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <!-- 私信发位置（只取一次上次已知点，不做后台定位） -->
@@ -39,6 +46,18 @@
             <meta-data
                 android:name="android.appwidget.provider"
                 android:resource="@xml/schedule_widget_info" />
+        </receiver>
+
+        <receiver
+            android:name=".widget.ScheduleWidgetWideProvider"
+            android:exported="true"
+            android:label="@string/widget_schedule_wide_name">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/schedule_widget_wide_info" />
         </receiver>
 
         <receiver
@@ -93,6 +112,19 @@
                 android:name="android.support.FILE_PROVIDER_PATHS"
                 android:resource="@xml/file_paths" />
         </provider>
+
+    <!-- 上课提醒的闹钟与系统事件入口（第三十一轮）：
+         开机 / 应用更新 / 改时间时区都必须重排，否则提醒会静默消失到下次打开 App -->
+    <receiver
+        android:name=".schedule.ClassReminderReceiver"
+        android:exported="false">
+        <intent-filter>
+            <action android:name="android.intent.action.BOOT_COMPLETED" />
+            <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            <action android:name="android.intent.action.TIME_SET" />
+            <action android:name="android.intent.action.TIMEZONE_CHANGED" />
+        </intent-filter>
+    </receiver>
 
 </application>
 

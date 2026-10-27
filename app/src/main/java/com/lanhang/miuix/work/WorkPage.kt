@@ -41,6 +41,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.lanhang.miuix.R
 import com.lanhang.miuix.net.WorkApp
+import com.lanhang.miuix.session.Session
 import com.lanhang.miuix.ui.OaWebViewActivity
 import com.lanhang.miuix.ui.miuix.LanhangIcons
 import com.lanhang.miuix.ui.miuix.SchoolIcons
@@ -215,7 +216,7 @@ private val COMMON_SLOTS = listOf(
 /**
  * 「工作」二级页：办事大厅应用目录。
  *
- * 数据全部来自学校接口（`POST /apps/all`），本地不写死功能清单。
+ * 2026-10-27 第二十六轮：功能清单**本地化**（[WorkCatalog]），不再联网拉 `POST /apps/all`。
  *
  * 布局照用户要求改成**宫格**（原版蓝航就是一个图标一个名字的宫格），不再是竖排列表：
  * 每个分类一张 Miuix 卡片，卡片内标题 + 宫格（每行 [GRID_COLUMNS] 个），图标沿用 Lite 版自己画的那套
@@ -239,21 +240,20 @@ fun WorkPage(
     var query by rememberSaveable { mutableStateOf("") }
     var sections by remember { mutableStateOf<List<Pair<String?, List<WorkApp>>>>(emptyList()) }
     var portal by remember { mutableStateOf("") }
-    var loading by remember { mutableStateOf(true) }
+    // 本地清单没有加载过程，初值就是 false（否则会闪一帧转圈）
+    var loading by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf("") }
     var reload by remember { mutableIntStateOf(0) }
     var busyApp by remember { mutableStateOf<String?>(null) }
 
+    // 2026-10-27 第二十六轮（用户：「将工作页面的功能区本地化，不要联网获取工作中的功能列表」）：
+    // 清单来自 [WorkCatalog] 的本地表 → 进页面立刻有内容，断网也是同一屏；功能本身（点开后那个 H5）
+    // 照旧联网，这里只是不再为「功能列表」发请求。
+    // 门户地址只读登录时缓存的配置，不再打 `/configuration/all`（那也是首屏转圈的原因之一）。
     LaunchedEffect(reload) {
-        loading = true
         error = ""
-        val result = runCatching { WorkRepository.directory(force = reload > 0) }
-        portal = runCatching { WorkRepository.portalUrl() }.getOrDefault("")
-        result.onSuccess {
-            sections = it.sections()
-        }.onFailure {
-            error = it.message.orEmpty()
-        }
+        sections = WorkCatalog.sections
+        portal = Session.workUrl
         loading = false
     }
 

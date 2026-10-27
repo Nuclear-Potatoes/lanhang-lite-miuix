@@ -51,6 +51,39 @@ object ScheduleRepository {
         }
     }
 
+    /**
+     * 全学期出现过的课程名（去重、按名字排序）。
+     *
+     * 第二十八轮（用户：「扩展课表中课程选色的多样性……不要有课程的颜色出现重复」）：
+     * 要保证「不同课不同色」，就必须先知道本学期到底有哪些课 —— 按名字 hashCode 取色相必然撞色
+     * （高数B1 和 航空航天概论 就是同一档绿）。所以这里扫一遍已缓存的周文件
+     * （`schedule_w{N}.json`），把课程名收齐，交给 [CourseColors] 均分色相。
+     *
+     * 只读缓存、不发网络请求；缓存里没有的周次直接跳过。
+     */
+    fun allCachedCourseNames(): List<String> {
+        if (!::appDir.isInitialized) return emptyList()
+        val names = sortedSetOf<String>()
+        val meta = loadCached()?.data
+        fun collect(d: ScheduleData?) {
+            d?.schedule?.forEach { day ->
+                day.periods?.forEach { period ->
+                    period.courses?.forEach { course ->
+                        val n = course.name?.trim().orEmpty()
+                        if (n.isNotEmpty()) names.add(n)
+                    }
+                }
+            }
+        }
+        collect(meta)
+        val first = meta?.weekInfo?.startWeek?.trim()?.toIntOrNull() ?: 1
+        val last = meta?.weekInfo?.endWeek?.trim()?.toIntOrNull() ?: first
+        if (last >= first) {
+            for (w in first..last) collect(loadCachedWeek(w)?.data)
+        }
+        return names.toList()
+    }
+
     fun cacheLastModified(): Long {
         if (!::cacheFile.isInitialized) return 0L
         return if (cacheFile.exists()) cacheFile.lastModified() else 0L

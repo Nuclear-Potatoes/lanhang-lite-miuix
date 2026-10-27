@@ -96,7 +96,8 @@ class ScheduleStyle(
          * 直到与白字的对比度达到 [MIN_WHITE_CONTRAST]；蓝/红这类本来就深的颜色不动。
          */
         fun courseColor(courseName: String): Int {
-            val hue = ((courseName.hashCode() * 137.508f % 360f) + 360f) % 360f
+            // 第二十八轮：色相统一由 [CourseColors] 分配（全学期均分，互不重复，且与小部件同色）
+            val hue = CourseColors.hueOf(courseName)
             return deepenForWhiteText(Color.HSVToColor(floatArrayOf(hue, 0.72f, 0.82f)))
         }
 

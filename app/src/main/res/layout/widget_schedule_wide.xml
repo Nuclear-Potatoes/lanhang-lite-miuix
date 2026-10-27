@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  4×2「今日安排」小部件根布局：整张位图（点击打开课表）。
+
+  这个变体**没有底栏**：设计稿就是两行只读卡片，没有翻天按钮，所以不存在
+  「位图坐标要和布局里的按钮对齐」的问题（那一套见 widget_schedule_week.xml），
+  一个 ImageView 铺满即可。以后要给 4×2 加可点元素，必须按 widget_schedule_week.xml
+  的规矩来：能对齐的东西一律做成布局里的真实 View，不要让位图去"猜"按钮位置。
+-->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent">
+
+    <ImageView
+        android:id="@+id/widget_bitmap"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:adjustViewBounds="false"
+        android:contentDescription="@string/widget_open_description"
+        android:scaleType="fitXY" />
+</FrameLayout>

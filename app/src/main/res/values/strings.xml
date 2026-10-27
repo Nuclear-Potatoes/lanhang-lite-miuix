@@ -29,6 +29,15 @@
     <string name="widget_no_course_week">本周暂无课程</string>
     <string name="widget_schedule_small_name">蓝航Lite·今日课程</string>
     <string name="widget_schedule_small_description">以课程卡片显示今天的课程</string>
+    <string name="widget_schedule_wide_name">蓝航Lite·今日安排</string>
+    <string name="widget_schedule_wide_description">两行显示今天的课程与教室</string>
+    <string name="widget_wide_today_format">今天 / %1$s</string>
+    <!-- 4×2 今日安排：今天的课上完 / 今天没课时，翻到明天（2026-10-27 第二十六轮） -->
+    <string name="widget_wide_tomorrow_format">明天 / %1$s</string>
+    <!-- 4×2：正在上的那节右侧剩余时间 -->
+    <string name="widget_wide_minutes_left">%1$d 分钟结束</string>
+    <string name="widget_wide_period_one">第 %1$d 节</string>
+    <string name="widget_wide_period_range">第 %1$d-%2$d 节</string>
     <!-- 空态里的行动胶囊（规范 3：无内容场景要给可点的去处） -->
     <string name="widget_empty_action">打开蓝航Lite</string>
     <string name="widget_today_empty">今天没有课程</string>
@@ -507,7 +516,7 @@
     <string name="campus_net_empty_account">请填写学号或工号</string>
     <string name="campus_net_empty_password">请填写密码</string>
     <string name="campus_net_failed">操作失败：%1$s</string>
-    <string name="campus_net_hint">一键认证需要先连接 NCHU_Wireless。认证只在你点按钮时进行，App 不会在后台自动重连。自助服务需在校园网内使用，校外会在统一身份认证回跳处中断。</string>
+    <string name="campus_net_hint">一键认证需要先连接 NCHU_Wireless。认证只在你点按钮时进行，App 不会在后台自动重连。校园网账号设置需在校园网内使用，校外会在统一身份认证回跳处中断。</string>
     <string name="campus_net_login_ok">认证成功</string>
     <string name="campus_net_logout_confirm_message">下线后本机将无法上网，需要重新认证。</string>
     <string name="campus_net_logout_confirm_title">确认下线？</string>
@@ -517,6 +526,9 @@
     <string name="campus_net_save_failed">密码保存失败，本次认证不受影响</string>
     <string name="campus_net_self_service">网络认证自助服务</string>
     <string name="campus_net_self_service_subtitle">修改上网密码、查看在线设备</string>
+    <!-- 第二十七轮：原「工作」页的「校园网账号设置」并入校园网登录页的自助服务区 -->
+    <string name="campus_net_account_title">校园网账号设置</string>
+    <string name="campus_net_account_subtitle">深澜认证服务系统的账号页（改密码 / 绑定运营商）</string>
     <string name="campus_net_tag">校园网认证</string>
     <string name="campus_net_traffic_gb">%1$d GB</string>
     <string name="campus_net_traffic_mb">%1$d MB</string>
@@ -580,4 +592,84 @@
     <string name="seat_step_out_confirm_title">暂离</string>
     <string name="campus_net_account_section">账号</string>
     <string name="library_seat_section">选择阅览室与时段</string>
+    <!-- 图片查看器：长按保存 / 加载失败 -->
+    <string name="moments_save_image_title">保存图片</string>
+    <string name="moments_save_image_summary">保存这张图片到手机相册</string>
+    <string name="moments_save_image_confirm">保存</string>
+    <string name="moments_save_image_done">已保存到相册</string>
+    <string name="moments_save_image_failed">保存失败，请稍后再试</string>
+    <string name="moments_save_image_denied">没有存储权限，无法保存</string>
+    <string name="load_failed">加载失败</string>
+    <string name="load_retry">重新加载</string>
+    <!-- 关于页（第二十四轮：参考 nexio 课程表的关于页重排） -->
+    <string name="settings_about_tagline">南昌航空大学第三方轻量客户端</string>
+    <string name="mine_about_section_app">应用信息</string>
+    <string name="mine_credits_miuix">Miuix</string>
+    <string name="mine_credits_miuix_summary">小米 HyperOS 风格 Compose 设计体系 · Apache-2.0</string>
+    <string name="mine_credits_coil">Coil</string>
+    <string name="mine_credits_coil_summary">Kotlin 协程图片加载 · Apache-2.0</string>
+    <string name="mine_credits_http">OkHttp / Gson</string>
+    <string name="mine_credits_http_summary">校园接口通信与 JSON 解析 · Apache-2.0</string>
+
+    <!-- 第三十一轮：工作圈搜索 / 工作圈过滤 / 上课提醒 -->
+    <string name="common_search">搜索</string>
+
+    <string name="moments_search_title">搜索工作圈</string>
+    <string name="moments_search_hint">搜索动态内容</string>
+    <string name="moments_search_typing">输入关键词开始搜索（多个词用空格分隔）</string>
+    <string name="moments_search_empty">没有匹配的动态</string>
+    <string name="moments_search_count">共 %1$d 条匹配</string>
+    <string name="moments_search_scope">只在已加载的 %1$d 条动态里搜索，继续下滑加载后再搜</string>
+
+    <string name="moments_filter_title">工作圈过滤</string>
+    <string name="moments_filter_summary_off">已关闭</string>
+    <string name="moments_filter_summary_none">已开启 · 未选任何规则</string>
+    <string name="moments_filter_summary_on">已开启 · %1$d 个关键词</string>
+    <string name="moments_filter_section_main">过滤开关</string>
+    <string name="moments_filter_enable_title">关键词过滤</string>
+    <string name="moments_filter_enable_summary">只在本机隐藏命中的动态，不修改服务端内容</string>
+    <string name="moments_filter_section_preset">预设分类</string>
+    <string name="moments_filter_preset_ad">广告推广</string>
+    <string name="moments_filter_preset_part_time">兼职招聘</string>
+    <string name="moments_filter_preset_second_hand">二手交易</string>
+    <string name="moments_filter_preset_housing">房屋租赁</string>
+    <string name="moments_filter_section_custom">自定义规则</string>
+    <string name="moments_filter_add_hint">添加规则（空格分隔多个词）</string>
+    <string name="moments_filter_add">添加</string>
+    <string name="moments_filter_rule_count">%1$d / %2$d 条</string>
+    <string name="moments_filter_custom_empty">还没有自定义规则。一条规则里可以用空格分隔多个词，表示「同时包含」。</string>
+    <string name="moments_filter_add_empty">规则不能为空</string>
+    <string name="moments_filter_add_too_long">规则太长（最多 %1$d 个字）</string>
+    <string name="moments_filter_add_many_words">一条规则最多 %1$d 个词</string>
+    <string name="moments_filter_add_many_rules">最多 %1$d 条规则</string>
+    <string name="moments_filter_add_duplicate">这条规则已经存在</string>
+    <string name="moments_filter_footer">过滤只影响这台手机上的显示，关掉开关立刻恢复。自己发的动态、寻物与招领帖不会被过滤。</string>
+    <string name="moments_filtered_hint">已按关键词过滤 %1$d 条动态</string>
+
+    <string name="settings_moments_section">工作圈</string>
+
+    <string name="class_reminder_title">上课提醒</string>
+    <string name="class_reminder_section_main">提醒开关</string>
+    <string name="class_reminder_enable">上课前提醒</string>
+    <string name="class_reminder_enable_summary">按课表在每节课开始前发一条通知</string>
+    <string name="class_reminder_section_advance">提前时间</string>
+    <string name="class_reminder_advance_zero">上课时</string>
+    <string name="class_reminder_advance_value">%1$d 分钟前</string>
+    <string name="class_reminder_section_next">下一次提醒</string>
+    <string name="class_reminder_next_none">最近 7 天没有课</string>
+    <string name="class_reminder_next_value">%1$s · 第 %2$d 节</string>
+    <string name="class_reminder_summary_off">已关闭</string>
+    <string name="class_reminder_summary_blocked">已开启 · 缺少通知权限</string>
+    <string name="class_reminder_summary_on">已开启 · %1$s</string>
+    <string name="class_reminder_no_permission">没有通知权限，提醒不会出现。请到系统设置里允许本应用发送通知。</string>
+    <string name="class_reminder_no_exact">未授予「闹钟和提醒」权限，提醒可能晚几分钟。</string>
+    <string name="class_reminder_open_settings">去系统设置</string>
+    <string name="class_reminder_test">发一条测试提醒</string>
+    <string name="class_reminder_test_hint">点一下，60 秒后会收到一条和真实提醒完全一样的通知</string>
+    <string name="class_reminder_test_done">已排定：60 秒后收到测试通知</string>
+    <string name="class_reminder_test_title">上课提醒（测试）</string>
+    <string name="class_reminder_test_body">这是一条测试通知。真实提醒会按你设置的提前时间发出。</string>
+    <string name="class_reminder_channel">上课提醒</string>
+    <string name="class_reminder_channel_desc">每节课开始前的提醒</string>
+    <string name="class_reminder_footer">提醒只在本机排定，不上传任何数据。关机或错过的提醒不会补发。</string>
 </resources>

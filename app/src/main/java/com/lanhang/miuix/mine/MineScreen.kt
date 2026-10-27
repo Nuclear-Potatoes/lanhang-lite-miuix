@@ -34,6 +34,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.res.colorResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -72,6 +73,9 @@ import top.yukonga.miuix.kmp.icon.extended.Settings
 import top.yukonga.miuix.kmp.icon.extended.Tasks
 import top.yukonga.miuix.kmp.preference.ArrowPreference
 import top.yukonga.miuix.kmp.theme.MiuixTheme
+import androidx.core.graphics.drawable.toBitmap
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.foundation.Image
 
 /**
  * 「我的」这一栈里的页面编号。
@@ -104,9 +108,15 @@ object MinePage {
      */
     const val PROFILE_OTHER = 13
 
+    /** 设置 → 工作圈 → 工作圈过滤（第三十一轮） */
+    const val MOMENTS_FILTER = 14
+
+    /** 设置 → 通用 → 上课提醒（第三十一轮） */
+    const val CLASS_REMINDER = 15
+
     fun depth(page: Int): Int = when (page) {
         ROOT -> 0
-        APPEARANCE, TOOLS, ABOUT, IM_CHAT, PROFILE_OTHER -> 2
+        APPEARANCE, TOOLS, ABOUT, IM_CHAT, PROFILE_OTHER, MOMENTS_FILTER, CLASS_REMINDER -> 2
         else -> 1
     }
 
@@ -123,6 +133,8 @@ object MinePage {
         CONTACTS -> R.string.mine_contacts
         MESSAGES -> R.string.mine_messages
         PROFILE_OTHER -> R.string.mine_profile
+        MOMENTS_FILTER -> R.string.moments_filter_title
+        CLASS_REMINDER -> R.string.class_reminder_title
         IM, IM_CHAT -> R.string.mine_im
         else -> R.string.tab_mine
     }
@@ -194,6 +206,10 @@ fun MineScreen(
     onOpenAppearance: () -> Unit,
     onOpenTools: () -> Unit,
     onOpenAbout: () -> Unit,
+    /** 设置 → 工作圈 → 工作圈过滤 */
+    onOpenMomentsFilter: () -> Unit,
+    /** 设置 → 通用 → 上课提醒 */
+    onOpenClassReminder: () -> Unit,
     onOpenContacts: () -> Unit,
     onOpenMessages: () -> Unit,
     /** 「私信」入口 → 会话列表 */
@@ -380,6 +396,20 @@ fun MineScreen(
             // 成绩：2026-10-26 第六轮从底栏降到这里（底栏那个位置让给「工作」）
             MinePage.GRADES -> Box(pageModifier) { GradesScreen(listState = pageLists.of(MinePage.GRADES)) }
 
+            // 工作圈过滤 / 上课提醒：都是自带 LazyColumn 的设置页，整页交给它们
+            // （第三十一轮；滚动状态仍按 MinePage 编号复用自己的那份）
+            MinePage.MOMENTS_FILTER -> Box(pageModifier) {
+                com.lanhang.miuix.moments.MomentsFilterScreen(
+                    listState = pageLists.of(MinePage.MOMENTS_FILTER),
+                )
+            }
+
+            MinePage.CLASS_REMINDER -> Box(pageModifier) {
+                com.lanhang.miuix.schedule.ClassReminderScreen(
+                    listState = pageLists.of(MinePage.CLASS_REMINDER),
+                )
+            }
+
             else -> {
                 val mineListState = pageLists.of(page)
                 ReportListScroll(mineListState, ShellState.TAB_MINE)
@@ -397,7 +427,8 @@ fun MineScreen(
                             state = state,
                             onOpenAppearance = onOpenAppearance,
                             onOpenTools = onOpenTools,
-                            onOpenAbout = onOpenAbout,
+                            onOpenMomentsFilter = onOpenMomentsFilter,
+                            onOpenClassReminder = onOpenClassReminder,
                             onLogout = onLogout,
                         )
 
@@ -674,41 +705,55 @@ private fun androidx.compose.foundation.lazy.LazyListScope.settingsDirectoryItem
     state: MineUiState,
     onOpenAppearance: () -> Unit,
     onOpenTools: () -> Unit,
-    onOpenAbout: () -> Unit,
+    onOpenMomentsFilter: () -> Unit,
+    onOpenClassReminder: () -> Unit,
     onLogout: () -> Unit,
 ) {
+    // 第二十四轮：**设置里不再放「关于」入口**（用户要求），关于只在「我的」首页有入口；
+    // 这一页的每一行都走同一个 [SettingRow]，行高 / 字号 / 分隔线完全一致。
     item("directory") {
         SmallTitle(stringResource(R.string.settings_general_section))
         Card(modifier = Modifier.padding(horizontal = 12.dp)) {
-            ArrowPreference(
+            SettingRow(
                 title = stringResource(R.string.settings_appearance),
                 summary = state.themeLabel,
                 onClick = onOpenAppearance,
             )
             HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
-            ArrowPreference(
+            SettingRow(
                 title = stringResource(R.string.settings_schedule_tools),
                 summary = stringResource(R.string.settings_tools_summary),
                 onClick = onOpenTools,
             )
+            HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
+            // 上课提醒（第三十一轮移植）：副标题实时说「已开启 · 15 分钟前」或「缺少通知权限」
+            SettingRow(
+                title = stringResource(R.string.class_reminder_title),
+                summary = com.lanhang.miuix.schedule.ClassReminderStore.summary(
+                    androidx.compose.ui.platform.LocalContext.current,
+                ),
+                onClick = onOpenClassReminder,
+            )
         }
     }
-    item("directoryAbout") {
-        SmallTitle(stringResource(R.string.mine_support_section))
+    item("directoryMoments") {
+        SmallTitle(stringResource(R.string.settings_moments_section))
         Card(modifier = Modifier.padding(horizontal = 12.dp)) {
-            ArrowPreference(
-                title = stringResource(R.string.settings_about_app),
-                summary = stringResource(R.string.settings_about_version, state.version),
-                onClick = onOpenAbout,
+            SettingRow(
+                title = stringResource(R.string.moments_filter_title),
+                summary = com.lanhang.miuix.moments.MomentsFilterStore.summary(
+                    androidx.compose.ui.platform.LocalContext.current,
+                ),
+                onClick = onOpenMomentsFilter,
             )
         }
     }
     item("directoryAccount") {
         SmallTitle(stringResource(R.string.settings_account_section))
         Card(modifier = Modifier.padding(horizontal = 12.dp)) {
-            ValueRow(stringResource(R.string.settings_account), state.account)
+            SettingRow(title = stringResource(R.string.settings_account), value = state.account)
             HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
-            ArrowPreference(
+            SettingRow(
                 title = stringResource(R.string.action_logout),
                 summary = stringResource(R.string.settings_logout_summary),
                 onClick = onLogout,
@@ -728,13 +773,13 @@ private fun androidx.compose.foundation.lazy.LazyListScope.settingsAppearanceIte
     item("appearance") {
         SmallTitle(stringResource(R.string.settings_appearance))
         Card(modifier = Modifier.padding(horizontal = 12.dp)) {
-            ArrowPreference(
+            SettingRow(
                 title = stringResource(R.string.settings_theme_title),
                 summary = state.themeLabel,
                 onClick = onTheme,
             )
             HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
-            ArrowPreference(
+            SettingRow(
                 title = stringResource(R.string.settings_language),
                 summary = state.languageLabel,
                 onClick = onLanguage,
@@ -750,13 +795,13 @@ private fun androidx.compose.foundation.lazy.LazyListScope.settingsToolsItems(
     item("tools") {
         SmallTitle(stringResource(R.string.settings_schedule_tools))
         Card(modifier = Modifier.padding(horizontal = 12.dp)) {
-            ArrowPreference(
+            SettingRow(
                 title = stringResource(R.string.settings_export_schedule),
                 summary = stringResource(R.string.settings_export_schedule_subtitle),
                 onClick = onExport,
             )
             HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
-            ArrowPreference(
+            SettingRow(
                 title = stringResource(R.string.menu_debug_schedule),
                 summary = stringResource(R.string.settings_debug_summary),
                 onClick = onDebugSchedule,
@@ -784,54 +829,132 @@ private fun androidx.compose.foundation.lazy.LazyListScope.settingsAboutItems(
     state: MineUiState,
     onDiagnostics: () -> Unit,
 ) {
-    item("aboutGeneral") {
-        SmallTitle(stringResource(R.string.settings_general_section))
+    // 第二十四轮：参考 nexio 课程表的「关于」页重排 ——
+    // 顶部一块居中的图标 / 名字 / 版本号当封面，下面才是条目；不再是一进来就一列清单。
+    item("aboutHero") {
+        AboutHero(version = state.version)
+    }
+    item("aboutApp") {
+        SmallTitle(stringResource(R.string.mine_about_section_app))
         Card(modifier = Modifier.padding(horizontal = 12.dp)) {
-            ValueRow(stringResource(R.string.settings_app_version), state.version)
+            SettingRow(
+                title = stringResource(R.string.settings_app_version),
+                value = state.version,
+            )
             HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
-            ValueRow(stringResource(R.string.settings_proto), state.proto)
+            SettingRow(
+                title = stringResource(R.string.settings_proto),
+                value = state.proto,
+            )
+            HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
+            SettingRow(
+                title = stringResource(R.string.settings_account),
+                value = state.account,
+            )
         }
     }
     item("aboutDiagnostics") {
         SmallTitle(stringResource(R.string.mine_support_section))
         Card(modifier = Modifier.padding(horizontal = 12.dp)) {
-            ArrowPreference(
+            SettingRow(
                 title = stringResource(R.string.settings_diagnostics),
                 summary = stringResource(R.string.settings_diagnostics_subtitle),
                 onClick = onDiagnostics,
             )
         }
     }
-    item("aboutAccount") {
-        SmallTitle(stringResource(R.string.settings_account_section))
-        Card(modifier = Modifier.padding(horizontal = 12.dp)) {
-            ValueRow(stringResource(R.string.settings_account), state.account)
-        }
-    }
     item("aboutOpenSource") {
         val context = androidx.compose.ui.platform.LocalContext.current
         SmallTitle(stringResource(R.string.mine_open_source_section))
         Card(modifier = Modifier.padding(horizontal = 12.dp)) {
-            ArrowPreference(
+            SettingRow(
                 title = stringResource(R.string.mine_open_source),
                 summary = stringResource(R.string.mine_open_source_summary),
                 onClick = { openUrl(context, OPEN_SOURCE_URL) },
             )
         }
     }
-    item("aboutCredits") {
+    item("aboutStack") {
         val context = androidx.compose.ui.platform.LocalContext.current
         SmallTitle(stringResource(R.string.mine_credits_section))
         Card(modifier = Modifier.padding(horizontal = 12.dp)) {
-            ArrowPreference(
+            // 2026-10-27 第二十七轮（用户：「把关于中原项目 lanhanglite 移到致谢一栏中」）：
+            // 原项目只作致谢，不再和「开源地址」挤在同一张卡里
+            SettingRow(
                 title = stringResource(R.string.mine_credits_upstream),
                 summary = stringResource(R.string.mine_credits_upstream_summary),
                 onClick = { openUrl(context, UPSTREAM_URL) },
+            )
+            HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
+            SettingRow(
+                title = stringResource(R.string.mine_credits_miuix),
+                summary = stringResource(R.string.mine_credits_miuix_summary),
+            )
+            HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
+            SettingRow(
+                title = stringResource(R.string.mine_credits_coil),
+                summary = stringResource(R.string.mine_credits_coil_summary),
+            )
+            HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
+            SettingRow(
+                title = stringResource(R.string.mine_credits_http),
+                summary = stringResource(R.string.mine_credits_http_summary),
             )
         }
     }
     item("footer") {
         SettingsFooter()
+    }
+}
+
+/** 关于页封面：应用图标 + 名字 + 版本 + 一句话说明（居中） */
+@Composable
+private fun AboutHero(version: String) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    // 自适应图标走系统 ApplicationInfo，拿到的就是桌面上那枚（不用另外做一张图）
+    val icon = remember(context) {
+        runCatching {
+            context.packageManager.getApplicationIcon(context.packageName)
+                .toBitmap(168, 168)
+                .asImageBitmap()
+        }.getOrNull()
+    }
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 26.dp, bottom = 4.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        if (icon != null) {
+            Image(
+                bitmap = icon,
+                contentDescription = null,
+                modifier = Modifier
+                    .size(84.dp)
+                    .clip(RoundedCornerShape(22.dp)),
+            )
+            Spacer(Modifier.height(14.dp))
+        }
+        Text(
+            text = stringResource(R.string.app_name),
+            style = MiuixTheme.textStyles.title1,
+            fontWeight = FontWeight.SemiBold,
+            color = MiuixTheme.colorScheme.onSurface,
+        )
+        Spacer(Modifier.height(4.dp))
+        Text(
+            text = stringResource(R.string.settings_about_version, version),
+            style = MiuixTheme.textStyles.footnote1,
+            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+        )
+        Spacer(Modifier.height(8.dp))
+        Text(
+            text = stringResource(R.string.settings_about_tagline),
+            style = MiuixTheme.textStyles.footnote2,
+            color = MiuixTheme.colorScheme.onBackgroundVariant,
+            textAlign = TextAlign.Center,
+            modifier = Modifier.padding(horizontal = 32.dp),
+        )
     }
 }
 
@@ -848,28 +971,69 @@ private fun SettingsFooter() {
     )
 }
 
-/** 只读信息行：左标题右值（Miuix 的 BasicComponent 排版） */
+/**
+ * 设置 / 关于页里的一行（第二十四轮：**行高与字号统一**）。
+ *
+ * 之前这一页混用了三种行：Miuix 库的 `ArrowPreference`（内边距由库里定）、自定义
+ * `ValueRow`、还有带彩色图标的 `MineRow`，三套 padding 叠在一页上，行高就参差不齐。
+ * 现在统一到这一个组件：上下 15dp、标题 body1、副标题 footnote1、右侧值 body2、
+ * 可点的行尾部统一一枚 20dp 尖括号。带副标题的行天然更高，那是两行文字撑出来的，
+ * 不是内边距不一样。
+ */
 @Composable
-private fun ValueRow(title: String, value: String) {
+private fun SettingRow(
+    title: String,
+    summary: String? = null,
+    value: String? = null,
+    onClick: (() -> Unit)? = null,
+) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .then(
+                if (onClick != null) Modifier.pressableRow(onClick = onClick, corner = 16.dp)
+                else Modifier
+            )
             .padding(horizontal = 16.dp, vertical = 15.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text(
-            text = title,
-            style = MiuixTheme.textStyles.body1,
-            color = MiuixTheme.colorScheme.onSurface,
-        )
-        Text(
-            text = value,
-            style = MiuixTheme.textStyles.body2,
-            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.padding(start = 16.dp),
-        )
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = title,
+                style = MiuixTheme.textStyles.body1,
+                color = MiuixTheme.colorScheme.onSurface,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            if (!summary.isNullOrBlank()) {
+                Text(
+                    text = summary,
+                    style = MiuixTheme.textStyles.footnote1,
+                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.padding(top = 2.dp),
+                )
+            }
+        }
+        if (!value.isNullOrBlank()) {
+            Text(
+                text = value,
+                style = MiuixTheme.textStyles.body2,
+                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(start = 16.dp),
+            )
+        }
+        if (onClick != null) {
+            Spacer(Modifier.width(8.dp))
+            Icon(
+                imageVector = MiuixIcons.ChevronForward,
+                contentDescription = null,
+                tint = MiuixTheme.colorScheme.onBackgroundVariant,
+                modifier = Modifier.size(20.dp),
+            )
+        }
     }
 }

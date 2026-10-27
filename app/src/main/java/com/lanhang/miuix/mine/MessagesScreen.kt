@@ -42,7 +42,9 @@ import com.lanhang.miuix.moments.FeedContent
 import com.lanhang.miuix.moments.UserInfoCache
 import com.lanhang.miuix.net.InteractionMessage
 import com.lanhang.miuix.net.MomentsApi
+import com.lanhang.miuix.moments.InteractionFilter
 import com.lanhang.miuix.ui.miuix.LanhangAvatar
+import com.lanhang.miuix.ui.miuix.LoadFailedHint
 import com.lanhang.miuix.ui.miuix.LanhangIcons
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -84,6 +86,8 @@ fun MessagesScreen(
     var messages by remember { mutableStateOf<List<InteractionMessage>?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
     var more by remember { mutableStateOf(true) }
+    /** 翻页游标 = 服务端原始列表最后一条的 id（过滤掉不需要的互动后，游标不能跟着丢） */
+    var cursor by remember { mutableStateOf<String?>(null) }
     var loadingMore by remember { mutableStateOf(false) }
     var revision by remember { mutableIntStateOf(0) }
     var filter by remember { mutableIntStateOf(FILTER_ALL) }
@@ -96,26 +100,25 @@ fun MessagesScreen(
         more = true
         val result = runCatching {
             withContext(Dispatchers.IO) {
-                val list = MomentsApi.getHistoryMessages(null, PAGE_SIZE)
-                val feedIds = list.map { it.feedId }.filter { it.isNotEmpty() }.distinct()
-                val texts = if (feedIds.isEmpty()) {
-                    emptyMap()
-                } else {
-                    runCatching { MomentsApi.getFeeds(feedIds) }.getOrDefault(emptyList())
-                        .associate { feed -> feed.feed_id.orEmpty() to feedText(feed.content) }
-                }
+                val raw = MomentsApi.getHistoryMessages(null, PAGE_SIZE)
+                val (list, texts) = keepMyFeeds(raw)
                 UserInfoCache.resolve(list.map { it.userId } + list.mapNotNull { it.replyTo })
                 val unreadIds = runCatching {
                     MomentsApi.getUnreadMessages().map { it.messageId }.toSet()
                 }.getOrDefault(emptySet())
-                Triple(list, texts, unreadIds)
+                val kept = list.map { it.messageId }.toSet()
+                Loaded(
+                    list, texts, unreadIds.filter { it in kept }.toSet(),
+                    raw.lastOrNull()?.messageId, raw.size >= PAGE_SIZE,
+                )
             }
         }
-        result.onSuccess { (list, texts, unreadIds) ->
-            messages = list
-            excerpt = texts
-            unread = unreadIds
-            more = list.size >= PAGE_SIZE
+        result.onSuccess { loaded ->
+            messages = loaded.messages
+            excerpt = loaded.texts
+            unread = loaded.unreadIds
+            cursor = loaded.cursor
+            more = loaded.more
         }
         result.onFailure { error = it.message ?: context.getString(R.string.messages_load_failed) }
     }
@@ -123,26 +126,22 @@ fun MessagesScreen(
     /** 触底加载下一页（from_message_id 游标） */
     suspend fun loadMore() {
         if (loadingMore || !more) return
-        val last = messages?.lastOrNull()?.messageId ?: return
+        val last = cursor ?: return
         loadingMore = true
         val result = runCatching {
             withContext(Dispatchers.IO) {
-                val list = MomentsApi.getHistoryMessages(last, PAGE_SIZE)
-                val feedIds = list.map { it.feedId }.filter { it.isNotEmpty() }.distinct()
-                val texts = if (feedIds.isEmpty()) {
-                    emptyMap()
-                } else {
-                    runCatching { MomentsApi.getFeeds(feedIds) }.getOrDefault(emptyList())
-                        .associate { feed -> feed.feed_id.orEmpty() to feedText(feed.content) }
-                }
+                val raw = MomentsApi.getHistoryMessages(last, PAGE_SIZE)
+                val (list, texts) = keepMyFeeds(raw)
                 UserInfoCache.resolve(list.map { it.userId })
-                list to texts
+                Loaded(list, texts, emptySet(), raw.lastOrNull()?.messageId,
+                    raw.size >= PAGE_SIZE)
             }
         }
-        result.onSuccess { (list, texts) ->
-            messages = (messages ?: emptyList()) + list
-            excerpt = excerpt + texts
-            more = list.size >= PAGE_SIZE
+        result.onSuccess { loaded ->
+            messages = (messages ?: emptyList()) + loaded.messages
+            excerpt = excerpt + loaded.texts
+            cursor = loaded.cursor ?: cursor
+            more = loaded.more
         }
         loadingMore = false
     }
@@ -186,10 +185,7 @@ fun MessagesScreen(
         LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
             when {
                 error != null -> item("error") {
-                    MessageStateBox(
-                        message = error!!,
-                        action = stringResourceSafe(R.string.contacts_retry),
-                    ) { revision++ }
+                    LoadFailedHint(onRetry = { revision++ })
                 }
 
                 messages == null -> item("loading") {
@@ -373,6 +369,28 @@ private fun FilterPill(text: String, selected: Boolean, onClick: () -> Unit) {
             .padding(horizontal = 14.dp, vertical = 6.dp),
     )
 }
+
+/**
+ * 只保留「与我自己的帖子有关」的互动（第二十四轮第 4 条）。
+ *
+ * 融云圈的 `/message/history` 会把**你参与过的**帖子上的新互动也推给你：我点赞/评论了别人的动态，
+ * 那条动态又有别人评论，我也会收到一条 —— 那不是「我的消息」。这里按帖子作者判：只看 `user_id`
+ * 是我自己的帖子。取不到帖子信息（例如接口失败）时**原样返回**，宁可多显示也不能把消息全吞掉。
+ */
+private fun keepMyFeeds(raw: List<InteractionMessage>): Pair<List<InteractionMessage>, Map<String, String>> {
+    val feeds = InteractionFilter.feedsOf(raw)
+    val texts = feeds.associate { feed -> feed.feed_id.orEmpty() to feedText(feed.content) }
+    return InteractionFilter.keepMine(raw, feeds) to texts
+}
+
+/** 一次加载的结果（含翻页游标：用服务端原始列表的最后一条，过滤后也不会卡住翻页） */
+private data class Loaded(
+    val messages: List<InteractionMessage>,
+    val texts: Map<String, String>,
+    val unreadIds: Set<String>,
+    val cursor: String?,
+    val more: Boolean,
+)
 
 @Composable
 private fun MessageStateBox(message: String, action: String?, onClick: () -> Unit) {

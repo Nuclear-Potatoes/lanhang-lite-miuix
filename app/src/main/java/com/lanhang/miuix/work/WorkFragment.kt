@@ -105,6 +105,8 @@ class WorkFragment : Fragment() {
 
     private fun syncToolbar() {
         val act = activity as? MainActivity ?: return
+        // 不是当前 Tab 就别写标题（抢写会让顶栏标题叠加，见 MainActivity.activeTab 注释）
+        if (act.activeTab != com.lanhang.miuix.ui.shell.ShellState.TAB_WORK) return
         val route = page
         if (route == WorkRoute.ROOT) {
             act.showToolbarMain(getString(R.string.tab_work))

@@ -192,6 +192,8 @@ class MineFragment : Fragment() {
                     onOpenProfile = { open(MinePage.PROFILE) },
                     onOpenSettings = { open(MinePage.SETTINGS) },
                     onOpenAppearance = { open(MinePage.APPEARANCE) },
+            onOpenMomentsFilter = { open(MinePage.MOMENTS_FILTER) },
+            onOpenClassReminder = { open(MinePage.CLASS_REMINDER) },
                     onOpenTools = { open(MinePage.TOOLS) },
                     onOpenAbout = { open(MinePage.ABOUT) },
             onOpenContacts = { open(MinePage.CONTACTS) },
@@ -325,7 +327,8 @@ class MineFragment : Fragment() {
      */
     fun syncToolbar() {
         val act = activity as? MainActivity ?: return
-        if (isHidden) return
+        // 不是当前 Tab 就别写标题（抢写会让顶栏标题叠加，见 MainActivity.activeTab 注释）
+        if (isHidden || act.activeTab != com.lanhang.miuix.ui.shell.ShellState.TAB_MINE) return
         val page = stack.last().page
         if (page == MinePage.ROOT) {
             act.showToolbarMain(getString(R.string.tab_mine))
@@ -537,7 +540,11 @@ class MineFragment : Fragment() {
         viewLifecycleOwner.lifecycleScope.launch {
             val count = runCatching {
                 kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                    com.lanhang.miuix.net.MomentsApi.getUnreadCount()
+                    // 第二十四轮第 4 条：角标也只看「我的帖子」上的互动，否则会出现
+                    // 「角标 3、点进去什么都没有」（别人的帖子上的互动已经被过滤掉了）
+                    com.lanhang.miuix.moments.InteractionFilter.unreadCountMine(
+                        com.lanhang.miuix.net.MomentsApi.getUnreadMessages()
+                    )
                 }
             }.getOrDefault(0)
             if (count != uiState.unreadCount) uiState = uiState.copy(unreadCount = count)

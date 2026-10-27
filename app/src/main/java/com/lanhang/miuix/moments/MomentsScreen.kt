@@ -2,7 +2,9 @@ package com.lanhang.miuix.moments
 
 import android.net.Uri
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
@@ -47,6 +49,7 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onGloballyPositioned
@@ -58,10 +61,12 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
+import com.lanhang.miuix.ui.miuix.isNightMode
 import coil.compose.AsyncImage
 import com.lanhang.miuix.R
 import com.lanhang.miuix.net.cleanOrgName
 import com.lanhang.miuix.ui.miuix.LanhangAvatar
+import com.lanhang.miuix.ui.miuix.LoadFailedHint
 import com.lanhang.miuix.ui.miuix.rememberBottomSafeInsetDp
 import com.lanhang.miuix.ui.miuix.refreshTexts
 import com.lanhang.miuix.ui.miuix.showMiuixConfirm
@@ -105,6 +110,12 @@ fun MomentsScreen(
     ended: Boolean,
     emptyText: String?,
     revision: Int,
+    /** 被「工作圈过滤」藏起来的条数：>0 时列表底部给一句说明，免得用户以为动态丢了 */
+    filteredCount: Int = 0,
+    /** true = 上一次加载失败且列表里没有任何内容：露出「加载失败 / 重新加载」 */
+    loadFailed: Boolean = false,
+    /** 「重新加载」被点：重新拉第一页 */
+    onRetry: () -> Unit = {},
     onRefresh: () -> Unit,
     onLoadMore: () -> Unit,
     onLike: (MomentItem) -> Unit,
@@ -185,8 +196,14 @@ fun MomentsScreen(
             Box(modifier = Modifier.fillMaxSize()) {
                 when {
                     // 有表头时（个人主页 / 相册）：资料卡要先出来，加载态和空态放进列表里，
-                    // 不能整页盖一个转圈，否则刚点进来的那一瞬间只剩一个加载圈
-                    header != null || items.isNotEmpty() -> LazyColumn(
+                    // 不能整页盖一个转圈，否则刚点进来的那一瞬间只剩一个加载圈。
+                    //
+                    // 第二十四轮（断网白屏）：这个条件以前是 `header != null || items.isNotEmpty()`，
+                    // 而「转圈 / 空 / 加载失败」三个 item 全挂在这个 LazyColumn 里面 ——
+                    // 于是「没有表头 + 一条数据都没有」连容器都不组合，整页纯黑。
+                    // 断网冷启动正好落在这一格：用户看到的是永远不出现的「加载失败」。
+                    // 改成 else：容器无条件存在，里面再决定摆转圈、空态还是「加载失败 / 重新加载」。
+                    else -> LazyColumn(
                         state = listState,
                         modifier = Modifier.fillMaxSize(),
                         contentPadding = PaddingValues(top = 6.dp, bottom = 96.dp),
@@ -204,7 +221,9 @@ fun MomentsScreen(
                                 }
                             } else if (items.isEmpty()) {
                                 item("headerEmpty") {
-                                    Text(
+                                    if (loadFailed) {
+                                        LoadFailedHint(onRetry = onRetry)
+                                    } else Text(
                                         text = emptyText ?: stringResource(R.string.moments_empty),
                                         style = MiuixTheme.textStyles.body2,
                                         color = MiuixTheme.colorScheme.onBackgroundVariant,
@@ -216,17 +235,31 @@ fun MomentsScreen(
                                 }
                             }
                         } else if (loading && items.isEmpty()) {
+                            // 首次加载：转圈 + 一行小字。断网时这一屏可能要停十几秒
+                            // （等 callTimeout），只有转圈会像「卡死」，配一行说明才像在加载。
                             item("loading") {
                                 Box(
                                     modifier = Modifier
                                         .fillMaxWidth()
-                                        .padding(top = 80.dp),
+                                        .padding(top = 76.dp),
                                     contentAlignment = Alignment.Center,
-                                ) { CircularProgressIndicator() }
+                                ) {
+                                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                        CircularProgressIndicator()
+                                        Spacer(Modifier.height(14.dp))
+                                        Text(
+                                            text = stringResource(R.string.moments_loading),
+                                            style = MiuixTheme.textStyles.footnote1,
+                                            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                                        )
+                                    }
+                                }
                             }
                         } else if (items.isEmpty()) {
                             item("empty") {
-                                Text(
+                                if (loadFailed) {
+                                    LoadFailedHint(onRetry = onRetry)
+                                } else Text(
                                     text = emptyText ?: stringResource(R.string.moments_empty),
                                     style = MiuixTheme.textStyles.body2,
                                     color = MiuixTheme.colorScheme.onBackgroundVariant,
@@ -249,7 +282,7 @@ fun MomentsScreen(
                                 onComment = { commentTarget = item to null },
                                 onReply = { userId -> commentTarget = item to userId },
                                 onCommentsLongPress = { myCommentsTarget = item },
-                                onCommentLongPress = { comment -> commentDeleteTarget = item to comment },
+                                onCommentDelete = { comment -> commentDeleteTarget = item to comment },
                                 onImage = onImage,
                                 onOpenProfile = onOpenProfile,
                             )
@@ -257,6 +290,19 @@ fun MomentsScreen(
                             if (index < items.lastIndex) {
                                 HorizontalDivider(
                                     modifier = Modifier.padding(horizontal = 24.dp, vertical = 2.dp),
+                                )
+                            }
+                        }
+                        if (filteredCount > 0) {
+                            item("filtered") {
+                                Text(
+                                    text = stringResource(R.string.moments_filtered_hint, filteredCount),
+                                    style = MiuixTheme.textStyles.footnote2,
+                                    color = MiuixTheme.colorScheme.onBackgroundVariant,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(top = 10.dp),
+                                    textAlign = androidx.compose.ui.text.style.TextAlign.Center,
                                 )
                             }
                         }
@@ -417,7 +463,7 @@ private fun MomentCard(
     onReply: (String) -> Unit,
     onCommentsLongPress: () -> Unit,
     onOpenProfile: (String) -> Unit = {},
-    onCommentLongPress: (CommentEntry) -> Unit,
+    onCommentDelete: (CommentEntry) -> Unit,
     onImage: (List<String>, Int, android.graphics.Rect?) -> Unit,
 ) {
     // MomentItem.likes/comments 是普通可变列表（非 Compose 状态），
@@ -487,7 +533,13 @@ private fun MomentCard(
             val text = item.content.text.orEmpty()
             if (text.isNotBlank()) {
                 Spacer(Modifier.height(10.dp))
-                Text(text = text, style = MiuixTheme.textStyles.body1)
+                // 2026-10-28 第三十一轮（用户：「给工作圈加上长按文字自由复制的功能」）：
+                // 正文包进 SelectionContainer —— 长按即选中，可拖把手选任意段，
+                // 复制菜单是系统那套（复制 / 全选），不用自己造按钮。
+                // 卡片自己的长按（删自己的动态）挂在正文**之外**，两者不抢手势。
+                SelectionContainer {
+                    Text(text = text, style = MiuixTheme.textStyles.body1)
+                }
             }
 
             val media = item.content.media
@@ -589,10 +641,34 @@ private fun MomentCard(
                     Spacer(Modifier.height(4.dp))
                     val replyInline = stringResource(R.string.moments_reply_inline)
                     val separator = stringResource(R.string.moments_comment_separator)
+                    // 2026-10-28 第三十一轮（用户：「深色模式下工作圈评论区的阴影丢失」）：
+                    // 浅色下这块靠 Miuix 默认投影浮在卡片上；深色里投影是黑的，打在近黑的底上
+                    // 等于没有，评论区就和卡片糊成一片。深色改成「深投影 + 1dp 亮边」：
+                    // 亮边是深色下唯一读得出来的层次，投影负责把边缘和卡片拉开。
+                    val commentShape = RoundedCornerShape(10.dp)
+                    val darkMode = LocalContext.current.isNightMode()
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clip(RoundedCornerShape(10.dp))
+                            .shadow(
+                                elevation = 4.dp,
+                                shape = commentShape,
+                                clip = false,
+                                ambientColor = Color.Black.copy(alpha = 0.10f),
+                                spotColor = Color.Black.copy(alpha = 0.10f),
+                            )
+                            .then(
+                                if (darkMode) {
+                                    Modifier.border(
+                                        width = 1.dp,
+                                        color = Color.White.copy(alpha = 0.07f),
+                                        shape = commentShape,
+                                    )
+                                } else {
+                                    Modifier
+                                }
+                            )
+                            .clip(commentShape)
                             .background(MiuixTheme.colorScheme.surfaceContainerHigh)
                             .combinedClickable(
                                 onClick = {},
@@ -612,7 +688,7 @@ private fun MomentCard(
                                     // 轻点 = 回复；长按 = 删除这条评论
                                     .combinedClickable(
                                         onClick = { if (!uid.isNullOrEmpty()) onReply(uid) },
-                                        onLongClick = { onCommentLongPress(comment) },
+                                        onLongClick = { onCommentDelete(comment) },
                                     ),
                                 verticalAlignment = Alignment.Top,
                             ) {
@@ -664,11 +740,29 @@ private fun MomentCard(
                                             )
                                         }
                                     }
-                                    Text(
-                                        text = comment.content.orEmpty(),
-                                        style = MiuixTheme.textStyles.footnote1,
-                                        color = MiuixTheme.colorScheme.onSurface,
-                                    )
+                                    // 评论正文同样可选可复制（长按选中）
+                                    SelectionContainer {
+                                        Text(
+                                            text = comment.content.orEmpty(),
+                                            style = MiuixTheme.textStyles.footnote1,
+                                            color = MiuixTheme.colorScheme.onSurface,
+                                        )
+                                    }
+                                    // 2026-10-28 第三十一轮（用户：「把评论的删除功能做到评论的左下角，
+                                    // 蓝色字体，点击后询问是否删除，参考帖子删除的实现」）：
+                                    // 只有自己的评论露这颗键；点它 = 原来的长按，走同一条
+                                    // commentDeleteTarget → showMiuixConfirm 二次确认链路。
+                                    if (!uid.isNullOrEmpty() && uid == Session.userId) {
+                                        Text(
+                                            text = stringResource(R.string.moments_delete),
+                                            style = MiuixTheme.textStyles.footnote2,
+                                            color = MiuixTheme.colorScheme.primary,
+                                            modifier = Modifier
+                                                .clip(RoundedCornerShape(6.dp))
+                                                .clickable { onCommentDelete(comment) }
+                                                .padding(horizontal = 4.dp, vertical = 2.dp),
+                                        )
+                                    }
                                 }
                             }
                         }

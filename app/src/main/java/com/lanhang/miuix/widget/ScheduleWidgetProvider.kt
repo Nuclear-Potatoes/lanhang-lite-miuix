@@ -13,8 +13,8 @@ import kotlinx.coroutines.launch
 
 open class ScheduleWidgetProvider : AppWidgetProvider() {
 
-    /** 排版变体：false=全周课表（4×4），true=课表·小（2×2，今日列表紧凑档） */
-    open val isSmall: Boolean = false
+    /** 排版变体：默认全周课表（4×4），子类改这一项即可换尺寸 */
+    open val variant: WidgetVariant = WidgetVariant.WEEK
 
     override fun onUpdate(
         context: Context,
@@ -42,7 +42,7 @@ open class ScheduleWidgetProvider : AppWidgetProvider() {
 
     override fun onDisabled(context: Context) {
         super.onDisabled(context)
-        // 本组件最后一个实例移除时，另一组件（课表·小）可能还有实例在用午夜闹钟
+        // 本组件最后一个实例移除时，其它变体（2×2 / 4×2）可能还有实例在用午夜闹钟
         if (ScheduleWidgetUpdater.activeCount(context) == 0) {
             ScheduleWidgetUpdater.cancelMidnight(context)
             ScheduleWidgetUpdater.cancelTick(context)
