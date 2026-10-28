@@ -99,6 +99,20 @@ class ZoomImageView @JvmOverloads constructor(
                 return true
             }
 
+            /**
+             * 第三十四轮（用户：「工作圈图片全屏展示时，双击放大，再次双击缩小」）：
+             * 自定义的双击判定走的是「第一下挂延时关闭、第二下来到就取消」，窗口 400ms。
+             * 手上稍慢一点、或系统动画卡一下就落到窗口外，第二下被当成新的单击 →
+             * 直接退出查看器，用户感知就是「双击没放大，反而关了」。
+             * 这里同时接系统的 onDoubleTap（300ms 内必触发）当第二条判定路径，
+             * 两条路径谁先到都算双击，且都会 cancelPendingClose，不会关页面。
+             */
+            override fun onDoubleTap(e: MotionEvent): Boolean {
+                cancelPendingClose()
+                toggleZoom(e.x, e.y)
+                return true
+            }
+
             override fun onLongPress(e: MotionEvent) {
                 cancelPendingClose()
                 onLongPress?.invoke()
@@ -251,6 +265,6 @@ class ZoomImageView @JvmOverloads constructor(
         private const val DOUBLE_TAP_SCALE = 2.5f
 
     /** 双击窗口：比系统的 300ms 宽一点，手慢也不会被误判成两次单击 */
-    private const val DOUBLE_TAP_WINDOW_MS = 400L
+    private const val DOUBLE_TAP_WINDOW_MS = 520L
     }
 }

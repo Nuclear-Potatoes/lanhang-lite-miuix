@@ -202,12 +202,17 @@ class ScheduleFragment : Fragment() {
     }
 
     /**
-     * 仅识别明显的横向手势：左滑进入下一周、右滑返回上一周。
-     * NestedScrollView 保持处理纵向滚动；识别到横滑后才阻止 SwipeRefreshLayout 拦截。
+     * 横向跟手切周（第三十四轮，用户：「参考 nexio 课程表的周次课表切换效果，做到无极跟手切换，
+     * 而非每次滑动一段时间后才切换」）。
+     *
+     * 之前是「攒够 56dp 再一次性跳过去」：手指在屏幕上滑了一半什么都不会动，松手才突然切走，
+     * 完全没有跟手感。现在手指一过 touchSlop，当前内容层就 1:1 跟着手指走
+     * （到第一周/最后一周时按 0.35 衰减，明确告诉用户「到头了」），松手时：
+     *  - 超过 30% 屏宽 → 先把手上的这一层顺着手势滑出，再切到相邻周（新内容从另一侧滑入）；
+     *  - 没到门槛 → 弹回原位，不切周。
      */
     private fun installWeekSwipe(target: View) {
         val touchSlop = ViewConfiguration.get(requireContext()).scaledTouchSlop
-        val minimumDistance = dp(56).toFloat()
         var downX = 0f
         var downY = 0f
         var horizontal = false
@@ -218,6 +223,7 @@ class ScheduleFragment : Fragment() {
                     downX = event.x
                     downY = event.y
                     horizontal = false
+                    activeContentLayer().animate().cancel()
                     false
                 }
 
@@ -228,26 +234,42 @@ class ScheduleFragment : Fragment() {
                         horizontal = true
                         touchedView.parent?.requestDisallowInterceptTouchEvent(true)
                     }
+                    if (horizontal) {
+                        val layer = activeContentLayer()
+                        val atStart = currentWeek <= startWeek && dx > 0f
+                        val atEnd = currentWeek >= maxWeek && dx < 0f
+                        layer.translationX = if (atStart || atEnd) dx * 0.35f else dx
+                    }
                     false
                 }
 
-                MotionEvent.ACTION_UP -> {
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    val layer = activeContentLayer()
                     val dx = event.x - downX
                     val dy = event.y - downY
-                    val isWeekSwipe = horizontal &&
-                        abs(dx) >= minimumDistance &&
-                        abs(dx) > abs(dy) * 1.2f
-                    if (isWeekSwipe) {
-                        switchWeek(if (dx < 0f) currentWeek + 1 else currentWeek - 1)
+                    val width = (layer.width.takeIf { it > 0 } ?: 1).toFloat()
+                    // 判据不依赖「MOVE 里有没有置过 horizontal」：
+                    // 快速一甩（260ms 那种）系统只发一两个 MOVE，甚至干脆不发，
+                    // 只看松手时的位移与方向，才不会出现「慢滑能切、快甩不动」。
+                    val isPass = abs(dx) > width * 0.2f && abs(dx) > abs(dy) * 1.2f
+                    val targetWeek = if (dx < 0f) currentWeek + 1 else currentWeek - 1
+                    val canSwitch = isPass && targetWeek in startWeek..maxWeek
+                    horizontal = false
+                    if (canSwitch) {
+                        val out = if (dx < 0f) -width else width
+                        layer.animate()
+                            .translationX(out)
+                            .setDuration(140)
+                            .withEndAction {
+                                layer.translationX = 0f
+                                switchWeek(targetWeek)
+                            }
+                            .start()
                         true
                     } else {
+                        layer.animate().translationX(0f).setDuration(180).start()
                         false
                     }
-                }
-
-                MotionEvent.ACTION_CANCEL -> {
-                    horizontal = false
-                    false
                 }
 
                 else -> false

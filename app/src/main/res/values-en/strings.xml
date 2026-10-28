@@ -690,4 +690,6 @@
     <string name="class_reminder_perm_battery">Battery optimization</string>
     <string name="class_reminder_perm_granted">Granted</string>
     <string name="class_reminder_perm_missing">Not granted</string>
+    <string name="class_reminder_advance_title">Advance notice</string>
+    <string name="class_reminder_back">Back</string>
 </resources>

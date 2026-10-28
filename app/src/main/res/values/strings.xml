@@ -725,4 +725,6 @@
     <string name="class_reminder_perm_battery">电池优化</string>
     <string name="class_reminder_perm_granted">已授权</string>
     <string name="class_reminder_perm_missing">未授权</string>
+    <string name="class_reminder_advance_title">提前提醒时间</string>
+    <string name="class_reminder_back">返回</string>
 </resources>
