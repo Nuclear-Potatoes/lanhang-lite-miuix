@@ -171,7 +171,7 @@ object ClassReminderIsland {
 
     /** 正文：节次 ｜ 地点 ｜ 教师，缺哪段就不拼哪段 */
     private fun contentOf(section: String, room: String, teacher: String): String =
-        listOf(section, room, teacher).filter { it.isNotBlank() }.joinToString(" · ")
+        listOf(section, room, teacher).filter { it.isNotBlank() }.joinToString(" ｜ ")
 
     /** 缩略态放不下完整课名，取前 6 个字（和 Nexio 一致的做法） */
     private fun shortOf(name: String): String = if (name.length <= 6) name else name.take(6)
@@ -282,7 +282,7 @@ object ClassReminderIsland {
                     put("subContent", "")
                     put("picFunction", "")
                     put("showDivider", true)
-                    put("showContentDivider", false)
+                    put("showContentDivider", true)
                     put("colorTitle", "#111111")
                     put("colorTitleDark", "#ffffff")
                     put("colorContent", "#333333")
@@ -299,13 +299,9 @@ object ClassReminderIsland {
                 "hintInfo",
                 JSONObject().apply {
                     put("type", 2)
-                    if (counting) {
-                        put("content", "")
-                        put("title", "")
-                    } else {
-                        put("content", "")
-                        put("title", "")
-                    }
+                    // 参考大岛：底部左侧是标签 + 倒计时（标签「即将上课」/「已上课」）
+                    put("title", if (counting) "即将上课" else "已上课")
+                    put("content", "")
                     put(
                         "timerInfo",
                         JSONObject().apply {
@@ -323,8 +319,10 @@ object ClassReminderIsland {
                             }
                         }
                     )
+                    // 底部右侧：标签「地点」+ 教室（参考图里就是这两列）
                     put("subContent", "")
-                    put("subTitle", room)
+                    put("subTitle", if (room.isBlank()) "" else "地点")
+                    put("extraTitle", room)
                     put("colorContent", "#666666")
                     put("colorContentDark", "#aaaaaa")
                     put("colorTitle", "#222222")

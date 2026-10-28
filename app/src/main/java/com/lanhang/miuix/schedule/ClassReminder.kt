@@ -107,10 +107,12 @@ object ClassReminder {
             runCatching { manager.cancel(nextDayPending(app)) }
             return
         }
+        // 已经弹过的那几条不再排（「上课前启动补发」的槽位 triggerAt 在过去，
+        // 若不去重，每次重排都会立刻再响一次）
         val desired = ClassReminderPlan.upcoming(
             now = System.currentTimeMillis(),
             advanceMinutes = ClassReminderStore.advanceMinutes,
-        )
+        ).filterNot { ClassReminderStore.isReminded(it.key) }
         // 先把这次不需要的槽位全撤掉（含改提前量之后挪位的、换课表之后消失的）
         for (index in 0 until ClassReminderPlan.MAX_SLOTS) {
             if (index >= desired.size) cancelSlot(app, manager, index)
@@ -153,6 +155,7 @@ object ClassReminder {
             Log.d(TAG, "skip late alarm for ${slot.key}")
             return
         }
+        ClassReminderStore.markReminded(slot.key)
         showSlot(app, slot)
         // 课前那条发出去之后，把「上课」「下课」两个边界也挂上：
         // 上课 → 岛切成「已上课」，下课 → 把岛收起来（Nexio 的岛就是这么收尾的）

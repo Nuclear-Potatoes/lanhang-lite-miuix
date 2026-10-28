@@ -86,6 +86,10 @@ class ScheduleFragment : Fragment() {
         tvEmpty = view.findViewById(R.id.tvEmpty)
         progress = view.findViewById(R.id.progress)
         swipeRefresh = view.findViewById(R.id.swipeRefresh)
+        // 刷新圆环的位置默认贴着内容顶端，会正好压在「第 N 周」胶囊上；
+        // 往下挪到表头之下，出现时不挡住周次
+        val dens = resources.displayMetrics.density
+        swipeRefresh.setProgressViewOffset(false, (96 * dens).toInt(), (150 * dens).toInt())
 
         style = ScheduleStyle.fromTheme(requireContext())
         applyChromeStyle()
@@ -219,8 +223,9 @@ class ScheduleFragment : Fragment() {
      */
 
     /** 跟手切周的现场 */
-    private var pagerOld: ImageView? = null
-    private var pagerNew: ImageView? = null
+    private var pagerGhost: ImageView? = null
+    /** 钉住的时间轴（节次/时间列）：每周完全一样，不该跟着滑动 */
+    private var pagerAxis: ImageView? = null
     private var pagerBase = -1
     private var pagerTarget = -1
     private var pagerDx = 0f
@@ -267,8 +272,7 @@ class ScheduleFragment : Fragment() {
                         pagerDx = dx
                         if (pagerTarget >= 0) applyPagerDrag(dx) else applyPagerDamp(dx)
                     }
-                    // 横向时必须吃掉事件：否则被压在下面的 ScrollView 会自己去横向滚动，
-                    // 于是「位图在动 + 内容也在动」，就是用户看到的拖影与错位
+                    // 横向时必须吃掉事件：否则被压在下面的 ScrollView 会自己去横向滚动
                     horizontal
                 }
 
@@ -305,79 +309,83 @@ class ScheduleFragment : Fragment() {
         }
     }
 
-    /** 手动量一次，保证 renderAll 之后立刻能拍到正确的内容（不然拍到空白） */
-    private fun forceLayout(v: View) {
-        if (v.width <= 0 || v.height <= 0) return
-        v.measure(
-            View.MeasureSpec.makeMeasureSpec(v.width, View.MeasureSpec.EXACTLY),
-            View.MeasureSpec.makeMeasureSpec(v.height, View.MeasureSpec.EXACTLY),
-        )
-        v.layout(v.left, v.top, v.right, v.bottom)
-    }
-
-    /** 拖动开始：拍「旧周」和「新周」两张图，然后把内容层藏起来，只让两张图跟手 */
+    /**
+     * 开始拖动：拍一张「旧周」位图压在内容层上面，然后把周次直接切到目标周并正常渲染。
+     *
+     * **不要在这里手动 measure/layout 内容层**（第三十七轮的血泪）：用
+     * `EXACTLY` 规格量一次会把自绘课表按错误的尺寸重排，画面会「整体往下缩一下又弹回来」，
+     * 右侧时间轴还会整条消失 —— 用户看到的正是这个。让系统在下一帧正常布局就好。
+     * 新周内容渲染完先摆到隔壁屏，旧周位图负责跟手，谁也不会看到重排过程。
+     */
     private fun startPager(target: Int) {
         val layer = activeContentLayer()
         if (layer.width <= 0 || layer.height <= 0) return
-        forceLayout(layer)
-        val oldBmp = captureSnapshot(layer) ?: return
-        val base = currentWeek
-        currentWeek = target
-        renderAll()
-        forceLayout(layer)
-        val newBmp = captureSnapshot(layer)
-        // 立刻恢复成原周：没过阈值回弹时内容还得是原来那一周
-        currentWeek = base
-        renderAll()
-        forceLayout(layer)
-        if (newBmp == null) return
-
-        pagerBase = base
+        val bmp = captureSnapshot(layer) ?: return
+        pagerBase = currentWeek
         pagerTarget = target
         pagerDx = 0f
-        for (i in 0 until layer.childCount) layer.getChildAt(i).visibility = View.INVISIBLE
-        val dir = if (target > base) 1f else -1f
+        val dir = if (target > pagerBase) 1f else -1f
         val w = layer.width
         val h = layer.height
-        val oldIv = ImageView(requireContext()).apply {
-            setImageBitmap(oldBmp)
+        currentWeek = target
+        renderAll() // 新周进内容层，交给系统正常布局
+        val ghost = ImageView(requireContext()).apply {
+            setImageBitmap(bmp)
             scaleType = ImageView.ScaleType.FIT_XY
             isClickable = false
             isFocusable = false
         }
-        val newIv = ImageView(requireContext()).apply {
-            setImageBitmap(newBmp)
-            scaleType = ImageView.ScaleType.FIT_XY
-            isClickable = false
-            isFocusable = false
-            translationX = dir * w
+        layer.addView(ghost, FrameLayout.LayoutParams(w, h))
+        pagerGhost = ghost
+        // 左侧时间轴（节次 1..11 + 上下课时间）每周都一样，跟着滑会让它「消失又出现」，
+        // 看着像坏了。这里从旧图里裁一条钉在最上层，滑动的部分从它下面过。
+        if (!showingGrid && daySections.width > 0) {
+            val axisRight = (daySections.left + daySections.width).coerceIn(1, w / 2)
+            val parentLeft = (daySections.parent as? View)?.left ?: 0
+            val stripW = (axisRight + parentLeft).coerceIn(1, bmp.width)
+            runCatching {
+                val strip = Bitmap.createBitmap(bmp, 0, 0, stripW, bmp.height)
+                val axis = ImageView(requireContext()).apply {
+                    setImageBitmap(strip)
+                    scaleType = ImageView.ScaleType.FIT_XY
+                    isClickable = false
+                    isFocusable = false
+                }
+                layer.addView(axis, FrameLayout.LayoutParams(stripW, h))
+                pagerAxis = axis
+            }
         }
-        layer.addView(oldIv, FrameLayout.LayoutParams(w, h))
-        layer.addView(newIv, FrameLayout.LayoutParams(w, h))
-        pagerOld = oldIv
-        pagerNew = newIv
+        for (i in 0 until layer.childCount) {
+            val child = layer.getChildAt(i)
+            if (child !== ghost && child !== pagerAxis) child.translationX = dir * w
+        }
     }
 
-    /** 跟手：旧图跟着手指走，新图从隔壁屏跟着走进来 */
+    /** 跟手：旧周位图跟着手指走，新周内容从隔壁屏同步走进来 */
     private fun applyPagerDrag(dx: Float) {
         val layer = activeContentLayer()
-        val oldIv = pagerOld ?: return
-        val newIv = pagerNew ?: return
+        val ghost = pagerGhost ?: return
         val dir = if (pagerTarget > pagerBase) 1f else -1f
-        val w = layer.width.toFloat()
-        oldIv.translationX = dx
-        newIv.translationX = dx + dir * w
+        ghost.translationX = dx
+        for (i in 0 until layer.childCount) {
+            val child = layer.getChildAt(i)
+            if (child !== ghost && child !== pagerAxis) child.translationX = dx + dir * layer.width
+        }
     }
 
     /** 到头：只给一点阻尼，明确告诉用户「没有下一周了」 */
     private fun applyPagerDamp(dx: Float) {
         val layer = activeContentLayer()
-        val oldIv = pagerOld
-        val newIv = pagerNew
-        if (oldIv != null && newIv != null) {
+        val ghost = pagerGhost
+        if (ghost != null) {
             val dir = if (pagerTarget > pagerBase) 1f else -1f
-            oldIv.translationX = dx * 0.35f
-            newIv.translationX = dx * 0.35f + dir * layer.width
+            ghost.translationX = dx * 0.35f
+            for (i in 0 until layer.childCount) {
+                val child = layer.getChildAt(i)
+                if (child !== ghost && child !== pagerAxis) {
+                    child.translationX = dx * 0.35f + dir * layer.width
+                }
+            }
         } else {
             for (i in 0 until layer.childCount) {
                 layer.getChildAt(i).translationX = dx * 0.35f
@@ -388,9 +396,8 @@ class ScheduleFragment : Fragment() {
     /** 松手：完成或回弹 */
     private fun finishPager(commit: Boolean) {
         val layer = activeContentLayer()
-        val oldIv = pagerOld
-        val newIv = pagerNew
-        if (oldIv == null || newIv == null) {
+        val ghost = pagerGhost
+        if (ghost == null) {
             cleanupPager()
             restorePagerChrome()
             pagerTarget = -1
@@ -399,17 +406,21 @@ class ScheduleFragment : Fragment() {
         }
         val w = (layer.width.takeIf { it > 0 } ?: 1).toFloat()
         val dir = if (pagerTarget > pagerBase) 1f else -1f
-        val oldFrom = oldIv.translationX
-        val newFrom = newIv.translationX
-        val oldTo = if (commit) -dir * w else 0f
-        val newTo = if (commit) 0f else dir * w
+        val ghostFrom = ghost.translationX
+        val ghostTo = if (commit) -dir * w else 0f
+        val contentFrom = ghostFrom + dir * w
+        val contentTo = if (commit) 0f else dir * w
         val anim = android.animation.ValueAnimator.ofFloat(0f, 1f)
         anim.duration = if (commit) 190L else 210L
         anim.interpolator = android.view.animation.DecelerateInterpolator(1.7f)
         anim.addUpdateListener { va ->
             val f = va.animatedValue as Float
-            oldIv.translationX = oldFrom + (oldTo - oldFrom) * f
-            newIv.translationX = newFrom + (newTo - newFrom) * f
+            ghost.translationX = ghostFrom + (ghostTo - ghostFrom) * f
+            val dx = contentFrom + (contentTo - contentFrom) * f
+            for (i in 0 until layer.childCount) {
+                val child = layer.getChildAt(i)
+                if (child !== ghost && child !== pagerAxis) child.translationX = dx
+            }
         }
         anim.addListener(object : android.animation.AnimatorListenerAdapter() {
             override fun onAnimationEnd(animation: android.animation.Animator) {
@@ -417,13 +428,12 @@ class ScheduleFragment : Fragment() {
                 val base = pagerBase
                 cleanupPager()
                 if (commit) {
-                    currentWeek = target
                     updateWeekPill()
-                    renderAll()
                     ensureWeekData(target)
                 } else {
                     currentWeek = base
                     renderAll()
+                    updateWeekPill()
                 }
                 pagerTarget = -1
                 pagerBase = -1
@@ -434,13 +444,13 @@ class ScheduleFragment : Fragment() {
         anim.start()
     }
 
-    /** 清场：去掉两张图，把内容层子 View 恢复显示并归零位移 */
+    /** 清场：去掉旧周位图，把内容层子 View 位移归零 */
     private fun cleanupPager() {
         val layer = activeContentLayer()
-        pagerOld?.let { runCatching { layer.removeView(it) } }
-        pagerNew?.let { runCatching { layer.removeView(it) } }
-        pagerOld = null
-        pagerNew = null
+        pagerGhost?.let { runCatching { layer.removeView(it) } }
+        pagerGhost = null
+        pagerAxis?.let { runCatching { layer.removeView(it) } }
+        pagerAxis = null
         for (i in 0 until layer.childCount) {
             val child = layer.getChildAt(i)
             child.translationX = 0f

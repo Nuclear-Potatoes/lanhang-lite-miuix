@@ -137,6 +137,26 @@ object ClassReminderStore {
         }
         set(value) = putStr("thumb_scope", value.key)
 
+    /** 已经弹过提醒的槽位（`epochDay-节次`），只用于「补发」去重 */
+    private var remindedKeys: Set<String>
+        get() = sp?.getStringSet("reminded_keys", emptySet())?.toSet() ?: emptySet()
+        set(value) {
+            sp?.edit()?.putStringSet("reminded_keys", value)?.apply()
+        }
+
+    /** 这条槽位是否已经提醒过（跨进程重启也记得） */
+    fun isReminded(key: String): Boolean = remindedKeys.contains(key)
+
+    /** 记一条已提醒，顺手清掉今天之前的旧记录，集合不会无限长大 */
+    fun markReminded(key: String) {
+        val today = java.time.LocalDate.now().toEpochDay()
+        val keep = remindedKeys.filter { k ->
+            (k.substringBefore('-').toLongOrNull() ?: 0L) >= today
+        }.toMutableSet()
+        keep.add(key)
+        remindedKeys = keep
+    }
+
     /** 是否已经跳过一次精确闹钟授权页（避免每次进页面都把用户弹出去） */
     var exactAsked: Boolean
         get() = sp?.getBoolean("exact_asked", false) ?: false

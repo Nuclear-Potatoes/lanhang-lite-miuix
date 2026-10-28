@@ -105,18 +105,22 @@ object ClassReminderPlan {
     }
 
     /**
-     * 从 [now] 起 [WINDOW_DAYS] 天内、**触发时刻还没到**的槽位，按时间升序。
+     * 从 [now] 起 [WINDOW_DAYS] 天内**还没上课**的槽位，按时间升序。
      *
-     * 只收 `triggerAt > now`：已经过去的提醒**不补发**（关机、没电、错过就是错过）。
-     * 但「闹钟响晚了」是另一回事 —— 那次仍会在 [ClassReminder.handleAlarm] 里
-     * 按「现在是否还没上课」再判一次，晚几分钟也照常提醒。
+     * 收 `startAt > now`（而不是 `triggerAt > now`）是为了「补发」：
+     * 提前 30 分钟提醒、可用户在课前 26 分钟才打开 App，这一条**必须照发**——
+     * 用户要的是「别错过上课」，不是「没在准点排上就算了」。
+     * 补发的槽位 `triggerAt` 在过去，交给 AlarmManager 就是立刻响；
+     * 靠 [ClassReminderStore.markReminded] 去重，不会反复弹。
+     *
+     * 已经上课的槽位仍然排除（迟到补发只会干扰课堂）。
      */
     fun upcoming(now: Long, advanceMinutes: Int): List<Slot> {
         val today = Instant.ofEpochMilli(now).atZone(ZoneId.systemDefault()).toLocalDate()
         val result = mutableListOf<Slot>()
         for (offset in 0 until WINDOW_DAYS) {
             val date = today.plusDays(offset.toLong())
-            result += slotsOn(date, advanceMinutes).filter { it.triggerAt > now }
+            result += slotsOn(date, advanceMinutes).filter { it.startAt > now }
             if (result.size >= MAX_SLOTS) break
         }
         return result.take(MAX_SLOTS)
