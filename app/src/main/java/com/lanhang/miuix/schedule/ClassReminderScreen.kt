@@ -8,7 +8,6 @@ import android.net.Uri
 import android.os.Build
 import android.os.PowerManager
 import android.provider.Settings
-import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -36,6 +35,7 @@ import com.lanhang.miuix.R
 import com.lanhang.miuix.moments.FilterDivider
 import com.lanhang.miuix.moments.FilterSectionLabel
 import com.lanhang.miuix.ui.miuix.pressableRow
+import com.lanhang.miuix.ui.miuix.showMiuixPicker
 import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.Switch
 import top.yukonga.miuix.kmp.basic.Text
@@ -59,7 +59,64 @@ fun ClassReminderScreen(
     listState: LazyListState = rememberLazyListState(),
 ) {
     val context = LocalContext.current
-    var page by remember { mutableStateOf(Page.MAIN) }
+
+    /**
+     * 第三十五轮（用户：「上课提醒中，涉及到选择选项的情况，都参照成绩中学期选择中的对话框设计，
+     * 将二级页面改为对话框形式」）：原来点值行是**整页替换**成二级页，现在统一弹 Miuix 单选对话框
+     * （`showMiuixPicker`，和成绩页「学期」、课表「跳转周次」同一个组件）。
+     */
+    fun pick(
+        title: String,
+        labels: List<String>,
+        selected: Int,
+        onPick: (Int) -> Unit,
+    ) {
+        showMiuixPicker(
+            context = context,
+            title = title,
+            items = labels,
+            selectedIndex = selected,
+            cancelText = context.getString(R.string.common_cancel),
+            onPick = { index -> onPick(index) },
+        )
+    }
+
+    // 选项文案在组合作用域里算好：对话框只能在普通（非 @Composable）lambda 里弹出
+    val advanceOptions = ClassReminderStore.ADVANCE_OPTIONS
+    val advanceLabels = advanceOptions.map { minutes ->
+        if (minutes <= 0) stringResource(R.string.class_reminder_advance_zero)
+        else stringResource(R.string.class_reminder_advance_value, minutes)
+    }
+    val beforeEndOptions = ClassReminderStore.BEFORE_END_OPTIONS
+    val timingLabels = listOf(stringResource(R.string.class_reminder_timing_full)) +
+        beforeEndOptions.map { stringResource(R.string.class_reminder_timing_before_end, it) }
+    val nextDayHours = ClassReminderStore.NEXT_DAY_HOURS
+    val nextDayLabels = nextDayHours.map {
+        stringResource(R.string.class_reminder_next_day_time_value, it)
+    }
+    val dndOptions = listOf(
+        ClassReminderStore.DndLevel.SILENT to R.string.class_reminder_dnd_silent,
+        ClassReminderStore.DndLevel.PRIORITY to R.string.class_reminder_dnd_priority,
+        ClassReminderStore.DndLevel.TOTAL to R.string.class_reminder_dnd_total,
+    )
+    val dndLabels = dndOptions.map { stringResource(it.second) }
+    val islandLeftOptions = listOf(
+        "course" to R.string.class_reminder_island_left_course,
+        "room" to R.string.class_reminder_island_left_room,
+    )
+    val islandLeftLabels = islandLeftOptions.map { stringResource(it.second) }
+    val islandRightOptions = listOf(
+        "remain" to R.string.class_reminder_island_right_remain,
+        "none" to R.string.class_reminder_island_right_none,
+    )
+    val islandRightLabels = islandRightOptions.map { stringResource(it.second) }
+    val thumbOptions = listOf(
+        ClassReminderStore.ThumbScope.ORIGINAL to R.string.class_reminder_thumb_original,
+        ClassReminderStore.ThumbScope.ROOM to R.string.class_reminder_thumb_room,
+        ClassReminderStore.ThumbScope.COURSE to R.string.class_reminder_thumb_course,
+        ClassReminderStore.ThumbScope.BOTH to R.string.class_reminder_thumb_both,
+    )
+    val thumbLabels = thumbOptions.map { stringResource(it.second) }
 
     // 所有设置都提到这一层：二级页改完回第一页，第一页的摘要立刻是新值
     var enabled by remember { mutableStateOf(ClassReminderStore.enabled) }
@@ -79,12 +136,12 @@ fun ClassReminderScreen(
 
     val islandSupported = remember { ClassReminderIsland.isSupported() }
     val canNotify = remember(enabled) { ClassReminderNotify.canNotify(context) }
-    val dndOk = remember(page) { ClassDnd.canControl(context) }
-    val batteryOk = remember(page) {
+    val dndOk = remember(Unit) { ClassDnd.canControl(context) }
+    val batteryOk = remember(Unit) {
         context.getSystemService(PowerManager::class.java)
             ?.isIgnoringBatteryOptimizations(context.packageName) ?: true
     }
-    val exactOk = remember(page) {
+    val exactOk = remember(Unit) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) true
         else context.getSystemService(AlarmManager::class.java)?.canScheduleExactAlarms() ?: true
     }
@@ -93,116 +150,6 @@ fun ClassReminderScreen(
         ClassReminderPlan.next(System.currentTimeMillis(), advance)
     }
     val timeFormat = remember { DateTimeFormatter.ofPattern("M月d日 E HH:mm") }
-
-    BackHandler(enabled = page != Page.MAIN) { page = Page.MAIN }
-
-    if (page != Page.MAIN) {
-        PickerPage(
-            page = page,
-            title = stringResource(page.titleRes),
-            onBack = { page = Page.MAIN },
-        ) {
-            when (page) {
-                Page.ADVANCE -> ClassReminderStore.ADVANCE_OPTIONS.forEach { minutes ->
-                    val label = if (minutes <= 0) {
-                        stringResource(R.string.class_reminder_advance_zero)
-                    } else {
-                        stringResource(R.string.class_reminder_advance_value, minutes)
-                    }
-                    OptionRow(label, advance == minutes) {
-                        advance = minutes
-                        ClassReminderStore.advanceMinutes = minutes
-                        ClassReminder.rearm(context)
-                        page = Page.MAIN
-                    }
-                }
-
-                Page.TIMING -> {
-                    OptionRow(stringResource(R.string.class_reminder_timing_full), inClassFull) {
-                        inClassFull = true
-                        ClassReminderStore.inClassFull = true
-                        ClassReminder.rearm(context)
-                        page = Page.MAIN
-                    }
-                    ClassReminderStore.BEFORE_END_OPTIONS.forEach { minutes ->
-                        OptionRow(
-                            label = stringResource(R.string.class_reminder_timing_before_end, minutes),
-                            selected = !inClassFull && beforeEnd == minutes,
-                        ) {
-                            inClassFull = false
-                            beforeEnd = minutes
-                            ClassReminderStore.inClassFull = false
-                            ClassReminderStore.inClassBeforeEndMinutes = minutes
-                            ClassReminder.rearm(context)
-                            page = Page.MAIN
-                        }
-                    }
-                }
-
-                Page.NEXT_DAY_TIME -> ClassReminderStore.NEXT_DAY_HOURS.forEach { hour ->
-                    OptionRow(
-                        label = stringResource(R.string.class_reminder_next_day_time_value, hour),
-                        selected = nextDayHour == hour,
-                    ) {
-                        nextDayHour = hour
-                        ClassReminderStore.nextDayHour = hour
-                        ClassReminder.rearm(context)
-                        page = Page.MAIN
-                    }
-                }
-
-                Page.DND_LEVEL -> listOf(
-                    ClassReminderStore.DndLevel.SILENT to R.string.class_reminder_dnd_silent,
-                    ClassReminderStore.DndLevel.PRIORITY to R.string.class_reminder_dnd_priority,
-                    ClassReminderStore.DndLevel.TOTAL to R.string.class_reminder_dnd_total,
-                ).forEach { (level, res) ->
-                    OptionRow(stringResource(res), dndLevel == level) {
-                        dndLevel = level
-                        ClassReminderStore.dndLevel = level
-                        page = Page.MAIN
-                    }
-                }
-
-                Page.ISLAND_LEFT -> listOf(
-                    "course" to R.string.class_reminder_island_left_course,
-                    "room" to R.string.class_reminder_island_left_room,
-                ).forEach { (key, res) ->
-                    OptionRow(stringResource(res), islandLeft == key) {
-                        islandLeft = key
-                        ClassReminderStore.islandLeft = key
-                        page = Page.MAIN
-                    }
-                }
-
-                Page.ISLAND_RIGHT -> listOf(
-                    "remain" to R.string.class_reminder_island_right_remain,
-                    "none" to R.string.class_reminder_island_right_none,
-                ).forEach { (key, res) ->
-                    OptionRow(stringResource(res), inClassRight == key) {
-                        inClassRight = key
-                        ClassReminderStore.inClassRight = key
-                        page = Page.MAIN
-                    }
-                }
-
-                Page.THUMB -> listOf(
-                    ClassReminderStore.ThumbScope.ORIGINAL to R.string.class_reminder_thumb_original,
-                    ClassReminderStore.ThumbScope.ROOM to R.string.class_reminder_thumb_room,
-                    ClassReminderStore.ThumbScope.COURSE to R.string.class_reminder_thumb_course,
-                    ClassReminderStore.ThumbScope.BOTH to R.string.class_reminder_thumb_both,
-                ).forEach { (scope, res) ->
-                    OptionRow(stringResource(res), thumb == scope) {
-                        thumb = scope
-                        ClassReminderStore.thumbScope = scope
-                        page = Page.MAIN
-                    }
-                }
-
-                Page.MAIN -> Unit
-            }
-        }
-        return
-    }
 
     LazyColumn(
         modifier = modifier.fillMaxSize(),
@@ -253,7 +200,18 @@ fun ClassReminderScreen(
                 ValueRow(
                     title = stringResource(R.string.class_reminder_advance_title),
                     value = advanceLabelText(advance),
-                    onClick = { page = Page.ADVANCE },
+                    onClick = {
+                        pick(
+                            title = context.getString(R.string.class_reminder_advance_title),
+                            labels = advanceLabels,
+                            selected = advanceOptions.indexOf(advance),
+                        ) { index ->
+                            val minutes = advanceOptions.getOrNull(index) ?: return@pick
+                            advance = minutes
+                            ClassReminderStore.advanceMinutes = minutes
+                            ClassReminder.rearm(context)
+                        }
+                    },
                 )
             }
         }
@@ -313,7 +271,26 @@ fun ClassReminderScreen(
                     ValueRow(
                         title = stringResource(R.string.class_reminder_timing),
                         value = timingLabelText(inClassFull, beforeEnd),
-                        onClick = { page = Page.TIMING },
+                        onClick = {
+                        pick(
+                            title = context.getString(R.string.class_reminder_timing),
+                            labels = timingLabels,
+                            selected = if (inClassFull) 0
+                            else 1 + beforeEndOptions.indexOf(beforeEnd),
+                        ) { index ->
+                            if (index == 0) {
+                                inClassFull = true
+                                ClassReminderStore.inClassFull = true
+                            } else {
+                                val minutes = beforeEndOptions.getOrNull(index - 1) ?: return@pick
+                                inClassFull = false
+                                beforeEnd = minutes
+                                ClassReminderStore.inClassFull = false
+                                ClassReminderStore.inClassBeforeEndMinutes = minutes
+                            }
+                            ClassReminder.rearm(context)
+                        }
+                    },
                     )
                 }
             }
@@ -344,7 +321,18 @@ fun ClassReminderScreen(
                             R.string.class_reminder_next_day_time_value,
                             nextDayHour,
                         ),
-                        onClick = { page = Page.NEXT_DAY_TIME },
+                        onClick = {
+                            pick(
+                                title = context.getString(R.string.class_reminder_next_day_time),
+                                labels = nextDayLabels,
+                                selected = nextDayHours.indexOf(nextDayHour),
+                            ) { index ->
+                                val hour = nextDayHours.getOrNull(index) ?: return@pick
+                                nextDayHour = hour
+                                ClassReminderStore.nextDayHour = hour
+                                ClassReminder.rearm(context)
+                            }
+                        },
                     )
                 }
             }
@@ -383,7 +371,17 @@ fun ClassReminderScreen(
                     ValueRow(
                         title = stringResource(R.string.class_reminder_dnd_level),
                         value = dndLabelText(dndLevel),
-                        onClick = { page = Page.DND_LEVEL },
+                        onClick = {
+                            pick(
+                                title = context.getString(R.string.class_reminder_dnd_level),
+                                labels = dndLabels,
+                                selected = dndOptions.indexOfFirst { it.first == dndLevel },
+                            ) { index ->
+                                val level = dndOptions.getOrNull(index)?.first ?: return@pick
+                                dndLevel = level
+                                ClassReminderStore.dndLevel = level
+                            }
+                        },
                     )
                 }
             }
@@ -411,19 +409,49 @@ fun ClassReminderScreen(
                         ValueRow(
                             title = stringResource(R.string.class_reminder_island_left),
                             value = islandLeftLabelText(islandLeft),
-                            onClick = { page = Page.ISLAND_LEFT },
+                            onClick = {
+                                pick(
+                                    title = context.getString(R.string.class_reminder_island_left),
+                                    labels = islandLeftLabels,
+                                    selected = islandLeftOptions.indexOfFirst { it.first == islandLeft },
+                                ) { index ->
+                                    val key = islandLeftOptions.getOrNull(index)?.first ?: return@pick
+                                    islandLeft = key
+                                    ClassReminderStore.islandLeft = key
+                                }
+                            },
                         )
                         FilterDivider()
                         ValueRow(
                             title = stringResource(R.string.class_reminder_island_in_class_right),
                             value = inClassRightLabelText(inClassRight),
-                            onClick = { page = Page.ISLAND_RIGHT },
+                            onClick = {
+                                pick(
+                                    title = context.getString(R.string.class_reminder_island_in_class_right),
+                                    labels = islandRightLabels,
+                                    selected = islandRightOptions.indexOfFirst { it.first == inClassRight },
+                                ) { index ->
+                                    val key = islandRightOptions.getOrNull(index)?.first ?: return@pick
+                                    inClassRight = key
+                                    ClassReminderStore.inClassRight = key
+                                }
+                            },
                         )
                         FilterDivider()
                         ValueRow(
                             title = stringResource(R.string.class_reminder_thumb),
                             value = thumbLabelText(thumb),
-                            onClick = { page = Page.THUMB },
+                            onClick = {
+                                pick(
+                                    title = context.getString(R.string.class_reminder_thumb),
+                                    labels = thumbLabels,
+                                    selected = thumbOptions.indexOfFirst { it.first == thumb },
+                                ) { index ->
+                                    val scope = thumbOptions.getOrNull(index)?.first ?: return@pick
+                                    thumb = scope
+                                    ClassReminderStore.thumbScope = scope
+                                }
+                            },
                         )
                         FilterDivider()
                         SwitchLine(
@@ -509,49 +537,7 @@ fun ClassReminderScreen(
     }
 }
 
-/** 二级页：一个分组标题 + 一列单选行，顶部一行「返回」 */
-@Composable
-private fun PickerPage(
-    page: Page,
-    title: String,
-    onBack: () -> Unit,
-    content: @Composable () -> Unit,
-) {
-    // 每个二级页都有自己的滚动位置，且**从顶部开始**：
-    // 共用第一页的 LazyListState 会让二级页继承第一页滚到一半的偏移（试出来的 bug）
-    val state = remember(page) { LazyListState() }
-    LazyColumn(
-        modifier = Modifier.fillMaxSize(),
-        state = state,
-        contentPadding = PaddingValues(top = 4.dp, bottom = 28.dp),
-    ) {
-        item("head") {
-            FilterSectionLabel(title)
-            Card(modifier = Modifier.padding(horizontal = 12.dp)) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .pressableRow(onClick = onBack, corner = 16.dp)
-                        .padding(horizontal = 16.dp, vertical = 13.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text(
-                        text = "\u2039  " + stringResource(R.string.class_reminder_back),
-                        style = MiuixTheme.textStyles.body1,
-                        color = MiuixTheme.colorScheme.primary,
-                    )
-                }
-            }
-        }
-        item("options") {
-            Card(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
-                Column { content() }
-            }
-        }
-    }
-}
-
-/** 第一页的值行：左边名字，右边当前值 + 箭头，点进二级页 */
+/** 值行：左边名字，右边当前值 + 箭头，点开是单选对话框 */
 @Composable
 private fun ValueRow(title: String, value: String, onClick: () -> Unit) {
     Row(
@@ -704,18 +690,6 @@ private fun thumbLabelText(scope: ClassReminderStore.ThumbScope): String = strin
         ClassReminderStore.ThumbScope.BOTH -> R.string.class_reminder_thumb_both
     }
 )
-
-/** 提醒页的分页（第三十四轮：档位不再全铺在一页上） */
-private enum class Page(val titleRes: Int) {
-    MAIN(0),
-    ADVANCE(R.string.class_reminder_advance_title),
-    TIMING(R.string.class_reminder_timing),
-    NEXT_DAY_TIME(R.string.class_reminder_next_day_time),
-    DND_LEVEL(R.string.class_reminder_dnd_level),
-    ISLAND_LEFT(R.string.class_reminder_island_left),
-    ISLAND_RIGHT(R.string.class_reminder_island_in_class_right),
-    THUMB(R.string.class_reminder_thumb),
-}
 
 /** 通知权限设置页 */
 private fun Context.openNotificationSettings() {

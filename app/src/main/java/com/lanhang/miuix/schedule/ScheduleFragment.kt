@@ -205,12 +205,26 @@ class ScheduleFragment : Fragment() {
      * 横向跟手切周（第三十四轮，用户：「参考 nexio 课程表的周次课表切换效果，做到无极跟手切换，
      * 而非每次滑动一段时间后才切换」）。
      *
-     * 之前是「攒够 56dp 再一次性跳过去」：手指在屏幕上滑了一半什么都不会动，松手才突然切走，
-     * 完全没有跟手感。现在手指一过 touchSlop，当前内容层就 1:1 跟着手指走
-     * （到第一周/最后一周时按 0.35 衰减，明确告诉用户「到头了」），松手时：
-     *  - 超过 30% 屏宽 → 先把手上的这一层顺着手势滑出，再切到相邻周（新内容从另一侧滑入）；
-     *  - 没到门槛 → 弹回原位，不切周。
+     * 第三十五轮用户反馈：「左滑右滑效果非常诡异，拖影严重，也没有做到无极切换」。
+     *
+     * 上一版把**整个内容层**整体平移，而松手时又用 `slideSwap` 再在层内部平移子 View，
+     * 两套位移叠在一起 —— 旧内容的幽灵快照跟着层一起动、新内容又自己滑入，
+     * 于是看到的就是「两张课表叠着抖」的拖影，且手势与内容不是 1:1。
+     *
+     * 现在照 app 里 HorizontalPager（MainActivity 底栏那种泳道分页）的模型重写成两页跟手：
+     *  · 手指一过 touchSlop，把旧内容拍成一张快照塞进内容层（盖在最上面）；
+     *  · 同时把目标周真正渲染进内容层，并整体挪到隔壁屏（`dx ± 屏宽`）；
+     *  · 拖动时快照与内容**各自**跟手移动（快照在 0，新内容在 ±屏宽），层本身不动 —— 不再叠影；
+     *  · 到头（第一周/最后一周）只按 0.35 阻尼，绝不渲染不存在的周；
+     *  · 松手过 20% 屏宽就顺势完成这次翻页，否则回弹。
      */
+
+    /** 跟手切周的现场 */
+    private var swipeGhost: ImageView? = null
+    private var swipeBaseWeek = -1
+    private var swipeTarget = -1
+    private var swipeDx = 0f
+
     private fun installWeekSwipe(target: View) {
         val touchSlop = ViewConfiguration.get(requireContext()).scaledTouchSlop
         var downX = 0f
@@ -235,46 +249,132 @@ class ScheduleFragment : Fragment() {
                         touchedView.parent?.requestDisallowInterceptTouchEvent(true)
                     }
                     if (horizontal) {
-                        val layer = activeContentLayer()
-                        val atStart = currentWeek <= startWeek && dx > 0f
-                        val atEnd = currentWeek >= maxWeek && dx < 0f
-                        layer.translationX = if (atStart || atEnd) dx * 0.35f else dx
+                        swipeDx = dx
+                        if (swipeTarget < 0) {
+                            val want = if (dx < 0f) currentWeek + 1 else currentWeek - 1
+                            // 到头：只有阻尼，不渲染邻居
+                            if (want in startWeek..maxWeek) beginWeekDrag(want)
+                        }
+                        if (swipeTarget >= 0) applyWeekDrag(dx) else applyBoundaryDrag(dx)
                     }
                     false
                 }
 
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                    val layer = activeContentLayer()
                     val dx = event.x - downX
                     val dy = event.y - downY
-                    val width = (layer.width.takeIf { it > 0 } ?: 1).toFloat()
-                    // 判据不依赖「MOVE 里有没有置过 horizontal」：
-                    // 快速一甩（260ms 那种）系统只发一两个 MOVE，甚至干脆不发，
-                    // 只看松手时的位移与方向，才不会出现「慢滑能切、快甩不动」。
-                    val isPass = abs(dx) > width * 0.2f && abs(dx) > abs(dy) * 1.2f
-                    val targetWeek = if (dx < 0f) currentWeek + 1 else currentWeek - 1
-                    val canSwitch = isPass && targetWeek in startWeek..maxWeek
+                    val width = (activeContentLayer().width.takeIf { it > 0 } ?: 1).toFloat()
+                    val wasHorizontal = horizontal
                     horizontal = false
-                    if (canSwitch) {
-                        val out = if (dx < 0f) -width else width
-                        layer.animate()
-                            .translationX(out)
-                            .setDuration(140)
-                            .withEndAction {
-                                layer.translationX = 0f
-                                switchWeek(targetWeek)
-                            }
-                            .start()
-                        true
-                    } else {
-                        layer.animate().translationX(0f).setDuration(180).start()
+                    // 判据只看松手位移：快速一甩系统可能只发一两个 MOVE，
+                    // 不能依赖 MOVE 里是否置过 horizontal
+                    val isPass = abs(dx) > width * 0.2f && abs(dx) > abs(dy) * 1.2f
+                    if (swipeTarget < 0) {
+                        if (wasHorizontal) applyBoundaryDrag(0f)
                         false
+                    } else {
+                        val commit = isPass &&
+                            (if (dx < 0f) swipeTarget > swipeBaseWeek else swipeTarget < swipeBaseWeek)
+                        endWeekDrag(commit)
+                        true
                     }
                 }
 
                 else -> false
             }
         }
+    }
+
+    /** 拖动开始：快照旧内容 + 把目标周渲染进层里并挪到隔壁屏 */
+    private fun beginWeekDrag(target: Int) {
+        val layer = activeContentLayer()
+        if (layer.width <= 0) return
+        val bmp = captureSnapshot(layer) ?: return
+        swipeBaseWeek = currentWeek
+        swipeTarget = target
+        swipeDx = 0f
+        currentWeek = target
+        renderAll()
+        val ghost = ImageView(requireContext()).apply {
+            setImageBitmap(bmp)
+            scaleType = ImageView.ScaleType.FIT_XY
+            isClickable = false
+            isFocusable = false
+        }
+        layer.addView(
+            ghost,
+            FrameLayout.LayoutParams(layer.width, layer.height),
+        )
+        swipeGhost = ghost
+        applyWeekDrag(0f)
+    }
+
+    /** 跟手位移：快照留在 0 附近跟手，新内容在隔壁屏跟手 */
+    private fun applyWeekDrag(dx: Float) {
+        val layer = activeContentLayer()
+        val ghost = swipeGhost ?: return
+        val width = layer.width.toFloat().takeIf { it > 0f } ?: return
+        val dir = if (swipeTarget > swipeBaseWeek) 1f else -1f
+        for (i in 0 until layer.childCount) {
+            val child = layer.getChildAt(i)
+            child.translationX = if (child === ghost) dx else dx + dir * width
+        }
+    }
+
+    /** 到头：只让内容跟着手指阻尼一下，不换周 */
+    private fun applyBoundaryDrag(dx: Float) {
+        val layer = activeContentLayer()
+        for (i in 0 until layer.childCount) {
+            layer.getChildAt(i).translationX = dx * 0.35f
+        }
+    }
+
+    /** 松手：完成或回弹，然后清场 */
+    private fun endWeekDrag(commit: Boolean) {
+        val layer = activeContentLayer()
+        val ghost = swipeGhost
+        val target = swipeTarget
+        val base = swipeBaseWeek
+        val width = layer.width.toFloat().takeIf { it > 0f } ?: 1f
+        val dir = if (target > base) 1f else -1f
+        val ghostFrom = swipeDx
+        val contentFrom = swipeDx + dir * width
+        val ghostTo = if (commit) -dir * width else 0f
+        val contentTo = if (commit) 0f else dir * width
+        val anim = android.animation.ValueAnimator.ofFloat(0f, 1f)
+        anim.duration = if (commit) 180L else 200L
+        anim.interpolator = android.view.animation.DecelerateInterpolator(1.6f)
+        anim.addUpdateListener { va ->
+            val f = va.animatedValue as Float
+            val gx = ghostFrom + (ghostTo - ghostFrom) * f
+            val cx = contentFrom + (contentTo - contentFrom) * f
+            for (i in 0 until layer.childCount) {
+                val child = layer.getChildAt(i)
+                child.translationX = if (child === ghost) gx else cx
+            }
+        }
+        anim.addListener(object : android.animation.AnimatorListenerAdapter() {
+            override fun onAnimationEnd(animation: android.animation.Animator) {
+                swipeGhost?.let { runCatching { layer.removeView(it) } }
+                swipeGhost = null
+                for (i in 0 until layer.childCount) {
+                    layer.getChildAt(i).translationX = 0f
+                }
+                swipeTarget = -1
+                swipeDx = 0f
+                if (commit) {
+                    updateWeekPill()
+                    renderAll()
+                    ensureWeekData(target)
+                } else {
+                    currentWeek = base
+                    renderAll()
+                    updateWeekPill()
+                }
+                swipeBaseWeek = -1
+            }
+        })
+        anim.start()
     }
 
     /** 数据固定在本地：有缓存直接显示，不自动联网；只有手动下拉刷新才重新拉取覆盖 */

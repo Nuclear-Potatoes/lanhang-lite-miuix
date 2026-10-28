@@ -110,13 +110,21 @@ class MiuixDialogSpec(
     val scrollableSummary: Boolean = false,
     /** 是否可点外部/返回关闭 */
     val cancelable: Boolean = true,
+    /**
+     * 自定义内容（成员卡这种整块排版不固定的弹窗用）：
+     * 给了它就渲染自己的内容，其余字段留空即可，**外壳（圆角/贴底/进出场/点外部关闭）
+     * 与所有其它弹窗完全同一份代码**。
+     */
+    val content: (@Composable (dismiss: () -> Unit) -> Unit)? = null,
 )
 
 @Composable
 private fun DialogCardBody(spec: MiuixDialogSpec, dismiss: () -> Unit) {
     val scheme = MiuixTheme.colorScheme
     val screenHeightDp = androidx.compose.ui.platform.LocalConfiguration.current.screenHeightDp.dp
-    Card(modifier = Modifier.fillMaxWidth(), cornerRadius = 26.dp) {
+    MiuixDialogCard {
+        // 自定义内容优先（其余字段留空时不占任何高度）
+        spec.content?.invoke(dismiss)
         Column(Modifier.fillMaxWidth()) {
             if (spec.title != null || spec.summary != null) {
                 Column(
@@ -243,7 +251,7 @@ private fun DialogCardBody(spec: MiuixDialogSpec, dismiss: () -> Unit) {
                             modifier = Modifier
                                 .weight(1f)
                                 .height(46.dp)
-                                .clip(androidx.compose.foundation.shape.RoundedCornerShape(20.dp))
+                                .clip(androidx.compose.foundation.shape.RoundedCornerShape(22.dp))
                                 .background(
                                     if (isPrimary) scheme.primary
                                     else scheme.onSurfaceVariantSummary.copy(alpha = 0.10f)
@@ -385,6 +393,52 @@ fun rememberBottomSafeInsetDp(extra: Dp = 6.dp): Dp {
  * ②也没有进出场动画。根因是它原来是页面内浮层，不是真正的 Dialog 窗口。
  * 现在统一走这里的 Dialog 实现（全屏窗口 → 遮罩覆盖整个屏幕，含顶栏）。
  */
+/**
+ * 第三十五轮（用户：「将 app 内的所有对话框的圆角都调大一些，参考我截图中屏幕的圆角，
+ * 让圆角整体与屏幕协调」「将所有对话框都统一成一份代码」）。
+ *
+ * 以前每个对话框各写一份 `Card(cornerRadius = 26.dp)`，圆角是硬编码常数，和机器屏幕圆角
+ * 毫无关系 —— 现在的大圆角屏看着就「方」。现在：
+ *  · [rememberDialogCornerDp] 读屏幕物理圆角（API 31+ `WindowInsets.getRoundedCorner`），
+ *    转 dp 后夹到 24~40，读不到就 34dp：对话框圆角始终与屏幕同一量级；
+ *  · [MiuixDialogCard] 是所有对话框**唯一**的卡片外壳（圆角/底色/宽度都在这），
+ *    改圆角只需要改这一处。
+ */
+@Composable
+fun rememberDialogCornerDp(): Dp {
+    val view = androidx.compose.ui.platform.LocalView.current
+    var cornerDp by remember { mutableStateOf(0f) }
+    DisposableEffect(view) {
+        val read = {
+            // 用平台 WindowInsets（ViewCompat 的 compat 版没有 getRoundedCorner），API 31+ 才有
+            val wi = if (android.os.Build.VERSION.SDK_INT >= 31) view.rootWindowInsets else null
+            val px = if (wi == null) 0 else maxOf(
+                wi.getRoundedCorner(android.view.RoundedCorner.POSITION_BOTTOM_LEFT)?.radius ?: 0,
+                wi.getRoundedCorner(android.view.RoundedCorner.POSITION_BOTTOM_RIGHT)?.radius ?: 0,
+                wi.getRoundedCorner(android.view.RoundedCorner.POSITION_TOP_LEFT)?.radius ?: 0,
+                wi.getRoundedCorner(android.view.RoundedCorner.POSITION_TOP_RIGHT)?.radius ?: 0,
+            )
+            if (px > 0) {
+                val d = view.resources.displayMetrics.density
+                cornerDp = (px / d).coerceIn(24f, 40f)
+            }
+        }
+        read()
+        view.post { read() }
+        onDispose { }
+    }
+    return (if (cornerDp > 0f) cornerDp else 34f).dp
+}
+
+/** 对话框卡片外壳：所有弹窗共用这一个（圆角 / 底色 / 宽度） */
+@Composable
+fun MiuixDialogCard(content: @Composable () -> Unit) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        cornerRadius = rememberDialogCornerDp(),
+    ) { content() }
+}
+
 fun showMiuixInput(
     context: Context,
     title: String?,
@@ -472,7 +526,7 @@ fun showMiuixInput(
                             ) + fadeOut(tween(DIALOG_EXIT_MS)),
                         ) {
                             val scheme = MiuixTheme.colorScheme
-                            Card(modifier = Modifier.fillMaxWidth(), cornerRadius = 26.dp) {
+                            MiuixDialogCard {
                                 Column(Modifier.fillMaxWidth()) {
                                     if (title != null) {
                                         Box(
@@ -510,7 +564,7 @@ fun showMiuixInput(
                                             modifier = Modifier
                                                 .weight(1f)
                                                 .height(46.dp)
-                                                .clip(androidx.compose.foundation.shape.RoundedCornerShape(20.dp))
+                                                .clip(androidx.compose.foundation.shape.RoundedCornerShape(22.dp))
                                                 .background(scheme.onSurfaceVariantSummary.copy(alpha = 0.10f))
                                                 .clickable { dismissAnimated() },
                                             contentAlignment = Alignment.Center,
@@ -526,7 +580,7 @@ fun showMiuixInput(
                                             modifier = Modifier
                                                 .weight(1f)
                                                 .height(46.dp)
-                                                .clip(androidx.compose.foundation.shape.RoundedCornerShape(20.dp))
+                                                .clip(androidx.compose.foundation.shape.RoundedCornerShape(22.dp))
                                                 .background(scheme.primary)
                                                 .clickable {
                                                     val body = text.trim()
@@ -760,6 +814,12 @@ fun showMiuixPicker(
     )
 }
 
+/** 自定义内容弹窗：外壳与其它弹窗同一份代码，内容自己排版 */
+fun showMiuixContent(
+    context: Context,
+    content: @Composable (dismiss: () -> Unit) -> Unit,
+): Dialog = showMiuixDialog(context, MiuixDialogSpec(content = content))
+
 /** 进度对话框句柄：可随时改文案，`dialog` 用于外部关闭 */
 class MiuixProgressDialog internal constructor(
     val dialog: Dialog,
@@ -791,7 +851,7 @@ fun showMiuixProgress(
         installViewTreeOwners(host ?: context)
         setContent {
             LanhangMiuixTheme(darkTheme = (host ?: context).isNightMode()) {
-                Card(modifier = Modifier.fillMaxWidth(), cornerRadius = 26.dp) {
+                MiuixDialogCard {
                     Column(Modifier.fillMaxWidth()) {
                         Column(
                             modifier = Modifier.fillMaxWidth().padding(24.dp),

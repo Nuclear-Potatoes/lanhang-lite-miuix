@@ -23,8 +23,8 @@ android {
         applicationId = "com.lanhang.miuix"
         minSdk = 26
         targetSdk = 35
-        versionCode = 56
-        versionName = "1.1.4"
+        versionCode = 57
+        versionName = "1.1.5"
         // 私信引入的融云 SDK 每个 ABI 都带一份 ~9MB 的 libRongIMLib.so；x86（32 位模拟器）
         // 没有真实设备，去掉省 9MB。arm64 + armeabi-v7a 覆盖真机，x86_64 覆盖模拟器。
         ndk {

@@ -1,5 +1,6 @@
 package com.lanhang.miuix.mine
 
+import com.lanhang.miuix.ui.miuix.showMiuixContent
 import com.lanhang.miuix.ui.miuix.pressableRow
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.foundation.background
@@ -41,7 +42,6 @@ import androidx.compose.ui.res.colorResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.window.Dialog
 import com.lanhang.miuix.R
 import com.lanhang.miuix.moments.UserInfoCache
 import com.lanhang.miuix.net.ContactsRepository
@@ -375,15 +375,22 @@ fun ContactsScreen(
 
     val member = detail
     if (member != null) {
-        MemberDialog(
-            member = member,
-            department = path.lastOrNull()?.name,
-            onDismiss = { detail = null },
-            onOpenProfile = {
-                detail = null
-                onOpenProfile(member.id)
-            },
-        )
+        // 成员卡不再是页面里的一张 Card，而是走统一弹窗（ui/miuix/MiuixDialog.kt）
+        val context = LocalContext.current
+        LaunchedEffect(member.id) {
+            val dialog = showMiuixContent(context) { dismiss ->
+                MemberCardBody(
+                    member = member,
+                    department = path.lastOrNull()?.name,
+                    onOpenProfile = {
+                        dismiss()
+                        onOpenProfile(member.id)
+                    },
+                    onDismiss = { dismiss() },
+                )
+            }
+            dialog.setOnDismissListener { detail = null }
+        }
     }
 }
 
@@ -676,7 +683,7 @@ private fun DeptGlyph() {
 /* ------------------------------------------------------------------ 成员卡 */
 
 @Composable
-private fun MemberDialog(
+private fun MemberCardBody(
     member: OrgEntry,
     department: String?,
     onDismiss: () -> Unit,
@@ -699,8 +706,6 @@ private fun MemberDialog(
     // 身份（学生 / 教师 …）部门成员接口自带，`/staffs/{id}` 里没有这个字段
     val duty = member.dutyName
 
-    Dialog(onDismissRequest = onDismiss) {
-        Card(modifier = Modifier.fillMaxWidth()) {
             Column(modifier = Modifier.padding(horizontal = 18.dp, vertical = 18.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     LanhangAvatar(
@@ -786,8 +791,6 @@ private fun MemberDialog(
                     )
                 }
             }
-        }
-    }
 }
 
 /** 成员卡里的一行「标签 …… 值」（学号 / 身份 / 手机号） */
