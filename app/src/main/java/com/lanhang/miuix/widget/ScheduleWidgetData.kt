@@ -184,7 +184,7 @@ object ScheduleWidgetData {
         val items = mutableListOf<CourseBlock>()
         for (period in day.periods.orEmpty()) {
             val number = period.periodName?.trim()?.toIntOrNull() ?: continue
-            if (number !in 1..11) continue
+            if (number !in 1..PeriodClock.count) continue
             for (course in period.courses.orEmpty()) {
                 if (!course.isWeekValid(week) || !course.isOddEvenValid(week)) continue
                 val name = course.name?.trim().orEmpty().ifEmpty {

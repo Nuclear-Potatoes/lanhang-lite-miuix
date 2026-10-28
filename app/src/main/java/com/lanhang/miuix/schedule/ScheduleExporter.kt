@@ -38,11 +38,12 @@ object ScheduleExporter {
     )
     /** 第三方课表 App（Sleepy 等）只认「周一」或 1-7，不认「星期一」 */
     private val weekDayNames = listOf("周一", "周二", "周三", "周四", "周五", "周六", "周日")
-    private val periodTimes = listOf(
-        "08:00" to "08:45", "08:55" to "09:40", "10:00" to "10:45", "10:55" to "11:40",
-        "14:00" to "14:45", "14:55" to "15:40", "16:00" to "16:45", "16:55" to "17:40",
-        "19:00" to "19:45", "19:55" to "20:40", "20:50" to "21:35"
-    )
+    // 节次时间统一取 [PeriodClock]，不再自己抄一份（历史上这里最容易漏加新节次）
+    private val periodTimes = (1..PeriodClock.count).map { p ->
+        val st = PeriodClock.start(p)!!
+        val en = PeriodClock.end(p)!!
+        "%02d:%02d".format(st.hour, st.minute) to "%02d:%02d".format(en.hour, en.minute)
+    }
     private val icsDate = DateTimeFormatter.ofPattern("yyyyMMdd", Locale.US)
     private val icsStamp = DateTimeFormatter.ofPattern("yyyyMMdd'T'HHmmss'Z'", Locale.US)
     private val fileDate = DateTimeFormatter.ofPattern("yyyyMMdd", Locale.US)
@@ -143,7 +144,7 @@ object ScheduleExporter {
                 val raw = mutableListOf<Occurrence>()
                 for (period in day.periods.orEmpty()) {
                     val node = period.periodName?.trim()?.toIntOrNull() ?: continue
-                    if (node !in 1..11) continue
+                    if (node !in 1..PeriodClock.count) continue
                     for (course in period.courses.orEmpty()) {
                         raw.add(
                             Occurrence(
@@ -200,7 +201,7 @@ object ScheduleExporter {
                 val raw = mutableListOf<Slot>()
                 for (period in day.periods.orEmpty()) {
                     val node = period.periodName?.trim()?.toIntOrNull() ?: continue
-                    if (node !in 1..11) continue
+                    if (node !in 1..PeriodClock.count) continue
                     for (course in period.courses.orEmpty()) {
                         raw.add(
                             Slot(

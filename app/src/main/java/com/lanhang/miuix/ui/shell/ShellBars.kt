@@ -11,7 +11,9 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -143,37 +145,10 @@ fun LanhangTopBar(state: ShellState, large: Boolean) {
     )
     // 目标：0 = 大标题形态，1 = 紧凑形态
     val target = if (large) 0f else 1f
-    // 初值 = 目标：首帧不播动画（「瞬时切换」这种档位靠初值就够，不需要额外枚举）
-    val morph = remember { Animatable(target, 1f) }
-    // 上一帧真正画出来的形态（0 = 大标题、1 = 紧凑）
-    val lastCollapse = remember { mutableFloatStateOf(target) }
-    LaunchedEffect(target) {
-        // 第十二轮（用户反馈）：一级页已经滚到顶栏收起，再点进二级页时，
-        // 目标形态虽然是「紧凑」，但 scroll 那一半（只有大标题形态才算）会瞬间归零，
-        // 于是顶栏先弹回大标题、再缩回去 —— 用户看到的就是「闪一下、放大再缩小」。
-        // 规则：**上一级已经收起的话就不再放大**，直接把进度钉在目标上，只让标题文字交叉淡化。
-        if (target >= 0.5f && lastCollapse.floatValue >= 0.995f) {
-            morph.snapTo(target)
-        } else {
-            morph.animateTo(target, tween(BarAnimation.DURATION_MS, easing = BarAnimation.Easing))
-        }
-    }
-    // 上一帧真正画出来的档位（1 = 已收起）
-    val latch = lastCollapse.floatValue
-    // 已经收起过的页面再往里进：**这一帧就直接画成紧凑态**。
-    // 第十二轮只写了 `LaunchedEffect { snapTo }`，不够 —— effect 要等这一帧画完才跑，
-    // 而这一帧里 `morph` 还是上一页的 0、scroll 项又随页面切换归零，于是正好闪一帧大标题
-    // （用户 2026-10-26：「标题依旧会突然放大一下再缩小」）。这里改成同帧判断。
-    // 形态档（0 = 大标题 / 1 = 紧凑）：从已经收起的一级页往里进，**同一帧**就按目标画，
-    // 不许等 effect，否则会闪一帧大标题（第十二/十三轮踩过两次）。
-    val shape = if (target >= 0.5f && latch >= 0.995f) target else morph.value
     // 滚动档：只有「大标题形态且没有返回键」的一级页才吃列表滚动
     val scrollTerm = if (spec.large && !spec.hasBack) ShellScroll.progress else 0f
-    // ★ 收放唯一入口（见文件下方 rememberBarCollapse 的注释）：
-    //   全应用所有「顶栏收缩/扩张」的场景——切 Tab、一级→二级、二级→一级、Tab 内滚动——
-    //   都只经过这一个函数，页面里不许再自己写任何收放动画。
-    val collapse = rememberBarCollapse(shape = shape, scroll = scrollTerm)
-    SideEffect { lastCollapse.floatValue = collapse }
+    // ★ 全应用唯一的顶栏收放实现（第四十五轮重写，见 rememberBarCollapse）
+    val collapse = rememberBarCollapse(target = target, scroll = scrollTerm)
     TopBar(
         spec = spec,
         collapse = collapse,
@@ -184,40 +159,55 @@ fun LanhangTopBar(state: ShellState, large: Boolean) {
 }
 
 /**
- * ★ 顶栏「收缩 / 扩张」的唯一实现（全应用只有这一份，2026-10-26 第十四轮固化）。
+ * ★ 顶栏「收缩 / 扩张」的唯一实现（全应用只有这一份）。
  *
- * 为什么要收成一个函数：顶栏的收放有四个来源，过去分散在多处、各有各的时长和曲线，
- * 于是同一个动作在不同页面观感不一样（用户：「切 tab 时字体变了、顶栏范围没变」「效果割裂」）。
- * 现在全部汇到这里：**输入两个档位，输出一个 0..1 的收放度**，顶栏本体只认这一个数
- * （高度、字号、副标题、按键、标题居中量全部由它插值）。
+ * **2026-10-28 第四十五轮重写**。用户两条反馈：
+ * 「浅色下顶栏处在中间态时进二级页，顶栏会先弹到完全展开再收缩」、
+ * 「深色下顶栏状态改变依旧有严重拖影，参照浅色逻辑重新设计所有顶栏动画，统一成一个实现」。
  *
- * @param shape  形态档：0 = 大标题，1 = 紧凑条。由页面形态决定（`target`），自带 300ms tween。
- * @param scroll 滚动档：一级页往下滚时收起的程度（0..1）。手指滚动是逐帧变化的。
+ * 旧实现有两份 `Animatable`（形态档 `morph` + 收放档），再取 `max(shape, scroll)`
+ * 拼出最终值，于是**进入二级页那一帧**：scroll 项瞬间归零、`morph` 还停在上一页的 0，
+ * 拼出来的值就是 0（完全展开）—— 无论上一页滚到哪里，都必须先弹回 96dp 再重收一遍。
+ * 这就是「中间态进二级页先放大再缩小」的物理来源。
  *
- * 三条硬规则（都是踩坑换来的，别改回去）：
- * 1. **手指滚动即时**：同一页里 `scroll` 每帧变化 → 直接 `snapTo`，不许补动画，否则顶栏跟不上手。
- * 2. **换 Tab 补同拍 tween**：切 Tab 时档位会整档跳变（上一页 1 → 新页 0），硬切就是「闪一下」；
- *    这里按 `ShellScroll.activeTab` 的变化补一段与页面转场同时长、同曲线的 tween，
- *    于是顶栏的高度、字号、内容区起点是**同一个数字**在同一条曲线上动，绝不会「字体动了、范围没动」。
- * 3. **不要用「动画进行中」布尔标志位分流**：effect 一旦被抢跑取消，标志没复位，
- *    之后所有 `snapTo` 都被跳过，顶栏永久不收（第十三轮实测踩到）。
- *    一个 `LaunchedEffect(shape, scroll, env)` 自带取消语义，安全。
+ * 现在只有**一个** `Animatable`，它直接就是画出来的收放度：
+ *  · 形态档（进/退二级页、切课表）变化 → 从**当前值** tween 到目标，绝不回 0 重来；
+ *  · 手指滚动 → 逐帧 `snapTo`，跟上手指（老规则 1，别改）；
+ *  · 换 Tab → 整档跳变，补一段与页面转场同拍的 tween（老规则 2，别改）。
+ *
+ * @param target 形态档：0 = 大标题，1 = 紧凑条
+ * @param scroll 滚动档：一级页往下滚时收起的程度（0..1），手指挥动时逐帧变化
  */
 @Composable
-fun rememberBarCollapse(shape: Float, scroll: Float): Float {
-    val goal = maxOf(shape, scroll)
-    val env = ShellScroll.activeTab
-    val anim = remember { Animatable(goal, 1f) }
-    var envSeen by remember { mutableStateOf(env) }
-    LaunchedEffect(shape, scroll, env) {
-        val g = maxOf(shape, scroll)
-        if (env != envSeen) {
-            // 换 Tab：整档跳变 → 与页面转场同拍的 tween
-            envSeen = env
-            anim.animateTo(g, tween(BarAnimation.DURATION_MS, easing = BarAnimation.Easing))
-        } else if (kotlin.math.abs(g - anim.value) > 0.002f) {
-            // 同一页：手指滚动 / 形态档自身已带 tween → 立刻跟上
-            anim.snapTo(g)
+fun rememberBarCollapse(target: Float, scroll: Float): Float {
+    val anim = remember { Animatable(target, 1f) }
+    var seenTarget by remember { mutableFloatStateOf(target) }
+    var seenEnv by remember { mutableIntStateOf(ShellScroll.activeTab) }
+    LaunchedEffect(target, scroll) {
+        val desired = maxOf(target, scroll)
+        val env = ShellScroll.activeTab
+        when {
+            env != seenEnv -> {
+                // 换 Tab：整档跳变 → 与页面转场同拍的 tween
+                seenEnv = env
+                seenTarget = target
+                if (kotlin.math.abs(anim.value - desired) > 0.002f) {
+                    anim.animateTo(desired, tween(BarAnimation.DURATION_MS, easing = BarAnimation.Easing))
+                }
+            }
+            target != seenTarget -> {
+                // 形态档变了：从**当前画出来的收放度**接着走（第四十五轮的核心改动）
+                seenTarget = target
+                if (kotlin.math.abs(anim.value - desired) < 0.002f) {
+                    anim.snapTo(desired)
+                } else {
+                    anim.animateTo(desired, tween(BarAnimation.DURATION_MS, easing = BarAnimation.Easing))
+                }
+            }
+            kotlin.math.abs(anim.value - desired) > 0.002f -> {
+                // 同一页的手指滚动：立刻跟上，不许补动画（否则顶栏跟不上手）
+                anim.snapTo(desired)
+            }
         }
     }
     return anim.value
@@ -240,7 +230,17 @@ private fun TopBar(
     val barHeight = lerp(BAR_LARGE_HEIGHT, BAR_SMALL_HEIGHT, collapse)
     val titleSize = lerp(TITLE_LARGE_SP, TITLE_SMALL_SP, collapse)
     // 上面留出状态栏（自绘顶栏不会自己加，否则大标题会压到状态栏时钟上）
-    BoxWithConstraints(modifier = Modifier.fillMaxWidth().statusBarsPadding().height(barHeight)) {
+    // clip：过渡期间这个 Box 比 56dp 还矮，子节点（56dp 高的按键行、按 96dp 算的标题位移）
+    // 会溢出边界；不裁的话溢出的像素会在深色底上留下一条白影 —— 即用户说的「拖影」。
+    // background：Compose 每帧把整块顶栏重画一遍，不依赖外层 View 的背景（那是按需失效的）。
+    BoxWithConstraints(
+        modifier = Modifier
+            .fillMaxWidth()
+            .statusBarsPadding()
+            .height(barHeight)
+            .background(MiuixTheme.colorScheme.background)
+            .graphicsLayer { clip = true }
+    ) {
         val totalW = with(density) { maxWidth.toPx() }
         // 左侧按键（首页 / 返回）：只在紧凑形态出现，跟着进度一起淡入淡出
         Row(

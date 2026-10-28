@@ -52,6 +52,7 @@ import com.lanhang.miuix.net.StaffInfo
 import com.lanhang.miuix.net.StaffSearchHit
 import com.lanhang.miuix.ui.miuix.LanhangAvatar
 import com.lanhang.miuix.ui.miuix.LanhangIcons
+import com.lanhang.miuix.ui.LoadingBlock
 import com.lanhang.miuix.ui.miuix.MiuiNavStack
 import com.lanhang.miuix.ui.miuix.PageListStates
 import com.lanhang.miuix.ui.miuix.rememberPageListStates
@@ -246,10 +247,11 @@ fun ContactsScreen(
                     action = stringResourceSafe(R.string.contacts_retry),
                 ) { state.reload++ }
 
-                tree == null -> ContactsStateBox(
-                    message = stringResourceSafe(R.string.contacts_loading),
-                    action = null,
-                ) {}
+                // 加载中就该看起来在加载（用户第 11 条）：以前只有一个通讯录图标 + 一行字，
+                // 看不出是在跑还是卡住了。统一走 LoadingBlock（转圈 + 文案）。
+                tree == null -> LoadingBlock(
+                    label = stringResourceSafe(R.string.contacts_loading),
+                )
 
                 query.isNotBlank() -> LazyColumn(modifier = Modifier.fillMaxSize()) {
                     val staffHits = state.staffHits

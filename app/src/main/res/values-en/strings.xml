@@ -201,6 +201,10 @@
     <string name="moments_action_failed">Action failed: %1$s</string>
     <string name="moments_publish_hint">Share something…</string>
     <string name="moments_add_image">+ Add photos</string>
+    <string name="moments_draft_title">Save as draft?</string>
+    <string name="moments_draft_message">Your text and pictures will be lost if you leave now.</string>
+    <string name="moments_draft_save">Save draft</string>
+    <string name="moments_draft_discard">Discard</string>
     <string name="moments_publish_tip">Up to 9 photos. Tap one to preview</string>
     <string name="moments_publish_title">New post</string>
     <string name="moments_publish_reorder_hint">Long-press a photo to drag and reorder</string>

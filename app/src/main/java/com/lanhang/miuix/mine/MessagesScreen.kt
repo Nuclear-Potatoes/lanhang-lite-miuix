@@ -46,6 +46,7 @@ import com.lanhang.miuix.moments.InteractionFilter
 import com.lanhang.miuix.ui.miuix.LanhangAvatar
 import com.lanhang.miuix.ui.miuix.LoadFailedHint
 import com.lanhang.miuix.ui.miuix.LanhangIcons
+import com.lanhang.miuix.ui.LoadingBlock
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import top.yukonga.miuix.kmp.basic.Card
@@ -106,6 +107,10 @@ fun MessagesScreen(
                 val unreadIds = runCatching {
                     MomentsApi.getUnreadMessages().map { it.messageId }.toSet()
                 }.getOrDefault(emptySet())
+                // 第四十五轮（用户第 4 条）：进到消息页就等于「全部已读」——
+                // 这里把服务端当前的未读 id 全记进本机台账，「我的」页的角标随之清零
+                // （列表里那几条未读高亮仍按 unreadIds 显示，是一次性的视觉提示，不影响角标）。
+                MessageReadStore.markSeen(unreadIds)
                 val kept = list.map { it.messageId }.toSet()
                 Loaded(
                     list, texts, unreadIds.filter { it in kept }.toSet(),
@@ -188,11 +193,12 @@ fun MessagesScreen(
                     LoadFailedHint(onRetry = { revision++ })
                 }
 
+                // 用户第 11 条：加载中统一成转圈 + 文案（原来只有图标和文字）
                 messages == null -> item("loading") {
-                    MessageStateBox(
-                        message = stringResourceSafe(R.string.messages_loading),
-                        action = null,
-                    ) {}
+                    LoadingBlock(
+                        modifier = Modifier.fillMaxWidth().height(240.dp),
+                        label = stringResourceSafe(R.string.messages_loading),
+                    )
                 }
 
                 shown.isEmpty() -> item("empty") {

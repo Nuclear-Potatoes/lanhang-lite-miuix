@@ -6,7 +6,10 @@ import android.graphics.Rect
 import android.graphics.RectF
 import android.graphics.drawable.ColorDrawable
 import android.os.Bundle
+import android.view.Gravity
 import android.view.ViewGroup
+import android.widget.FrameLayout
+import android.widget.ProgressBar
 import android.widget.TextView
 import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AppCompatActivity
@@ -90,7 +93,7 @@ class ImagePreviewActivity : AppCompatActivity() {
             }
         }
 
-        binding.pager.adapter = PreviewAdapter(urls) { closeSmoothly() }
+        binding.pager.adapter = PreviewAdapter(urls, onLoading = { busy -> showImageLoading(busy) }) { closeSmoothly() }
         binding.pager.setCurrentItem(
             intent.getIntExtra(EXTRA_INDEX, 0).coerceIn(0, urls.size - 1), false
         )
@@ -175,6 +178,33 @@ class ImagePreviewActivity : AppCompatActivity() {
 
     private fun updateIndex(position: Int) {
         binding.tvIndex.text = if (urls.size > 1) "${position + 1} / ${urls.size}" else ""
+    }
+
+    /**
+     * 全屏看图的「正在取图」指示（用户第 11 条）。
+     * 原来是纯黑一片等图片下载，图大或者网慢时看着像坏了；现在黑底中央有一个小转圈。
+     * 用代码 addView 而不是改 xml：DragDismissLayout 本身就是 FrameLayout，加一个居中的
+     * ProgressBar 不影响它自己的拖拽/手势逻辑。
+     */
+    private val loadingSpinner: ProgressBar by lazy {
+        ProgressBar(this).apply {
+            layoutParams = FrameLayout.LayoutParams(
+                (36 * resources.displayMetrics.density).toInt(),
+                (36 * resources.displayMetrics.density).toInt(),
+            ).apply { gravity = Gravity.CENTER }
+            indeterminateTintList = android.content.res.ColorStateList.valueOf(0xCCFFFFFF.toInt())
+            visibility = android.view.View.GONE
+        }
+    }
+
+    private var spinnerAdded = false
+
+    private fun showImageLoading(busy: Boolean) {
+        if (busy && !spinnerAdded) {
+            binding.root.addView(loadingSpinner)
+            spinnerAdded = true
+        }
+        loadingSpinner.visibility = if (busy) android.view.View.VISIBLE else android.view.View.GONE
     }
 
     private fun currentPageView(): ZoomImageView? {
@@ -448,6 +478,7 @@ class ImagePreviewActivity : AppCompatActivity() {
 
     private inner class PreviewAdapter(
         private val items: List<String>,
+        private val onLoading: (Boolean) -> Unit,
         private val onClose: () -> Unit
     ) : RecyclerView.Adapter<PreviewAdapter.VH>() {
 
@@ -470,8 +501,13 @@ class ImagePreviewActivity : AppCompatActivity() {
 
         override fun onBindViewHolder(holder: VH, position: Int) {
             val url = items[position]
+            onLoading(true)
             holder.iv.load(url) {
                 crossfade(150)
+                listener(
+                    onSuccess = { _, _ -> onLoading(false) },
+                    onError = { _, _ -> onLoading(false) },
+                )
             }
             // 长按 → 「是否保存图片」（用户第二十四轮第 2 条）
             holder.iv.onLongPress = { askSaveImage(url) }

@@ -34,10 +34,18 @@ object InteractionFilter {
         return raw.filter { it.feedId in mine }
     }
 
-    /** 未读数也按同一口径算，否则角标会比列表里能看到的条数多 */
-    fun unreadCountMine(unread: List<InteractionMessage>): Int {
-        if (unread.isEmpty()) return 0
+    /**
+     * 属于「我的帖子」的未读互动 id。
+     *
+     * 第四十五轮：角标要能「进过消息页就清零」，就必须有 id 而不是光有数量
+     * （见 [com.lanhang.miuix.mine.MessageReadStore]），所以这里把口径一次性摊开。
+     */
+    fun unreadIdsMine(unread: List<InteractionMessage>): List<String> {
+        if (unread.isEmpty()) return emptyList()
         val feeds = feedsOf(unread)
-        return keepMine(unread, feeds).size
+        return keepMine(unread, feeds).map { it.messageId }.filter { it.isNotBlank() }
     }
+
+    /** 未读数也按同一口径算，否则角标会比列表里能看到的条数多 */
+    fun unreadCountMine(unread: List<InteractionMessage>): Int = unreadIdsMine(unread).size
 }

@@ -195,6 +195,10 @@
     <string name="moments_publish_title">发表动态</string>
     <string name="moments_publish">发表</string>
     <string name="moments_publish_images">图片</string>
+    <string name="moments_draft_title">保存草稿？</string>
+    <string name="moments_draft_message">你已经输入了内容，返回后会丢失。要保存成草稿吗？</string>
+    <string name="moments_draft_save">保存草稿</string>
+    <string name="moments_draft_discard">不保存</string>
     <string name="moments_publish_tip">最多可添加 9 张图片，点击可预览大图</string>
     <string name="moments_publish_reorder_hint">长按图片可拖动排序，松手即生效</string>
     <string name="moments_publish_add_image">添加图片</string>

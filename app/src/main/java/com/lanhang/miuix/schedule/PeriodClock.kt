@@ -11,7 +11,7 @@ import java.time.LocalTime
  */
 object PeriodClock {
 
-    /** 11 节：08:00-08:45 … 20:50-21:35（第 4 节后午休、第 8 节后晚饭） */
+    /** 12 节：08:00-08:45 … 21:45-22:30（第 4 节后午休、第 8 节后晚饭） */
     private val ranges = listOf(
         LocalTime.of(8, 0) to LocalTime.of(8, 45),
         LocalTime.of(8, 55) to LocalTime.of(9, 40),
@@ -23,10 +23,12 @@ object PeriodClock {
         LocalTime.of(16, 55) to LocalTime.of(17, 40),
         LocalTime.of(19, 0) to LocalTime.of(19, 45),
         LocalTime.of(19, 55) to LocalTime.of(20, 40),
-        LocalTime.of(20, 50) to LocalTime.of(21, 35)
+        LocalTime.of(20, 50) to LocalTime.of(21, 35),
+        // 2026-10-28 用户：加第 12 节（21:45-22:30）
+        LocalTime.of(21, 45) to LocalTime.of(22, 30)
     )
 
-    /** 一天最多 11 节（课表网格 / 倒计时都按这个上限做边界判断） */
+    /** 一天最多 12 节（课表网格 / 倒计时 / 导出都按这个上限做边界判断） */
     val count: Int get() = ranges.size
 
     fun start(period: Int): LocalTime? = ranges.getOrNull(period - 1)?.first

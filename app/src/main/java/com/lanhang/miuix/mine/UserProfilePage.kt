@@ -91,6 +91,8 @@ fun UserProfilePage(
             )
         },
         showFab = false,
+        // 第四十五轮（用户第 7 条）：主页里长按动态 = 自由复制正文，不弹删除菜单
+        postMenuEnabled = false,
     )
 }
 

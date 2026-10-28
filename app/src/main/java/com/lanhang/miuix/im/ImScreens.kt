@@ -70,6 +70,7 @@ import com.lanhang.miuix.moments.UserInfoCache
 import com.lanhang.miuix.ui.MainActivity
 import com.lanhang.miuix.ui.miuix.LanhangAvatar
 import com.lanhang.miuix.ui.miuix.LanhangIcons
+import com.lanhang.miuix.ui.LoadingBlock
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.Icon
@@ -154,8 +155,12 @@ fun ImConversationsScreen(
 
         LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
             when {
+                // 用户第 11 条：私信列表加载中统一成转圈 + 文案
                 conversations.isEmpty() && ImRepository.loadingConversations -> item("loading") {
-                    ImStateBox(stringResource(R.string.im_loading), null) {}
+                    LoadingBlock(
+                        modifier = Modifier.fillMaxWidth().height(240.dp),
+                        label = stringResource(R.string.im_loading),
+                    )
                 }
 
                 conversations.isEmpty() -> item("empty") {

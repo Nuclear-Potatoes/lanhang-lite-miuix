@@ -63,6 +63,10 @@ import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import com.lanhang.miuix.ui.miuix.isNightMode
 import coil.compose.AsyncImage
+import coil.compose.AsyncImagePainter
+import coil.compose.SubcomposeAsyncImage
+import coil.compose.SubcomposeAsyncImageContent
+import com.lanhang.miuix.ui.ImageLoadingBox
 import com.lanhang.miuix.R
 import com.lanhang.miuix.net.cleanOrgName
 import com.lanhang.miuix.ui.miuix.LanhangAvatar
@@ -130,6 +134,15 @@ fun MomentsScreen(
     header: (@Composable () -> Unit)? = null,
     /** 右下角「发表」按钮：相册、个人主页里不显示 */
     showFab: Boolean = true,
+    /**
+     * 长按整张卡片是否弹「删除自己这条动态」。
+     *
+     * 第四十五轮（用户第 7 条）：「在自己的主页长按自己的动态，不应弹删除对话框，
+     * 应该进入自由复制」。个人主页传 false —— 那里的长按一律交给正文的
+     * [SelectionContainer]（可拖把手选任意段落、复制），不再被卡片级菜单抢走。
+     * 工作圈动态流保持 true。
+     */
+    postMenuEnabled: Boolean = true,
     /**
      * 动态流的滚动状态。**必须能从外面传进来**：工作圈进个人主页时整页会被
      * `AnimatedContent` 销毁重建，状态留在这里面就丢了，返回时会跳回顶部
@@ -285,6 +298,7 @@ fun MomentsScreen(
                                 onCommentDelete = { comment -> commentDeleteTarget = item to comment },
                                 onImage = onImage,
                                 onOpenProfile = onOpenProfile,
+                                postMenuEnabled = postMenuEnabled,
                             )
                             // 2026-10-25 用户要求：不同帖子之间加一条分隔线
                             if (index < items.lastIndex) {
@@ -465,6 +479,7 @@ private fun MomentCard(
     onOpenProfile: (String) -> Unit = {},
     onCommentDelete: (CommentEntry) -> Unit,
     onImage: (List<String>, Int, android.graphics.Rect?) -> Unit,
+    postMenuEnabled: Boolean = true,
 ) {
     // MomentItem.likes/comments 是普通可变列表（非 Compose 状态），
     // 靠 revision 变化时重新快照，才能让点赞/评论立刻反映到界面
@@ -483,12 +498,14 @@ private fun MomentCard(
     Card(
         modifier = Modifier
             .padding(horizontal = 12.dp, vertical = 6.dp)
-            // 长按卡片 = 我的动态菜单（删除自己发布的内容）；普通点击不拦截，图片/评论照旧
+            // 长按卡片 = 我的动态菜单（删除自己发布的内容）；普通点击不拦截，图片/评论照旧。
+            // 个人主页里 postMenuEnabled = false：长按整张卡片**什么都不做**，
+            // 手势落到正文的 SelectionContainer 上，就是用户要的「自由复制」。
             .combinedClickable(
                 interactionSource = remember { MutableInteractionSource() },
                 indication = null,
                 onClick = {},
-                onLongClick = { if (isMine) onDeletePost() },
+                onLongClick = { if (postMenuEnabled && isMine) onDeletePost() },
             ),
     ) {
         Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp)) {
@@ -783,7 +800,9 @@ internal fun MomentImageGrid(media: List<MediaItem>, onImage: (List<String>, Int
                     val index = rowIndex * 3 + colIndex
                     // 记录缩略图在窗口里的位置：预览页用它做「从缩略图放大 / 缩回原位」
                     var bounds by remember(index) { mutableStateOf<android.graphics.Rect?>(null) }
-                    AsyncImage(
+                    // 用户第 11 条：图片也要有加载界面 —— 取图期间画占位骨架，
+                    // 失败时也留着骨架（不再是一片透明，看着像图丢了）
+                    SubcomposeAsyncImage(
                         model = mediaItem.displayUrl,
                         contentDescription = null,
                         contentScale = ContentScale.Crop,
@@ -799,6 +818,14 @@ internal fun MomentImageGrid(media: List<MediaItem>, onImage: (List<String>, Int
                                 )
                             }
                             .clickable { onImage(urls, index, bounds) },
+                        // 取图中 / 取图失败：都画占位骨架，不给用户看透明空洞
+                        loading = {
+                            ImageLoadingBox(modifier = Modifier.fillMaxSize(), corner = 10.dp)
+                        },
+                        error = {
+                            ImageLoadingBox(modifier = Modifier.fillMaxSize(), corner = 10.dp)
+                        },
+                        success = { SubcomposeAsyncImageContent() },
                     )
                 }
                 repeat(3 - rowItems.size) { Spacer(Modifier.weight(1f)) }

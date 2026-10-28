@@ -197,11 +197,35 @@ object ImRepository {
     private var listenersReady = false
     private var connectStarted = false
 
+    /** 可恢复错误最多自动补连几次（IPC_DISCONNECT 这类瞬时错误） */
+    private const val MAX_AUTO_RETRY = 3
+
     /** 会话列表 / 聊天页都从这里取（Compose 里读它是可观察的） */
     // ---------------------------------------------------------------- 本地快照（2026-10-26 第七轮）
 
     /** 缓存只铺一次；连接成功后各条数据会自然覆盖掉它 */
     private var cachePrimed = false
+
+    // ---------------------------------------------------------------- 可恢复错误的重连（第四十五轮）
+    /** 自动重连次数（onSuccess 归零）。IPC_DISCONNECT 这类瞬时错误最多自动补 3 次 */
+    private var retryAttempt = 0
+    private var retryJob: kotlinx.coroutines.Job? = null
+
+    /**
+     * 这些错误是**瞬时**的：IPC 服务还没就绪、弱网、连不上导航服务器。
+     * 等一下重连就好，所以既不该弹给用户看，也不该把状态钉死在 FAILED。
+     * token / 配置类错误一律排除 —— 重连一百次也没用。
+     */
+    private fun isRecoverable(e: RongIMClient.ErrorCode?): Boolean {
+        val n = e?.name ?: return true
+        if (n.contains("TOKEN")) return false
+        return n.contains("IPC_DISCONNECT") ||
+            n.contains("NETWORK_UNAVAILABLE") ||
+            n.contains("TIMEOUT") ||
+            n.contains("CONNECT_NAVI") ||
+            n.contains("RC_CONN_") ||
+            n.contains("UNKNOWN")
+    }
 
     private fun primeCache() {
         if (cachePrimed) return
@@ -266,6 +290,8 @@ object ImRepository {
             else -> Unit
         }
         if (connectStarted && status == Status.CONNECTING) return
+        // 用户手动刷新（或重新进页面）= 愿意再试一次，把自动重连的次数归还
+        if (status == Status.FAILED) retryAttempt = 0
         connectStarted = true
         status = Status.CONNECTING
         error = null
@@ -323,6 +349,7 @@ object ImRepository {
                 android.util.Log.i(TAG, "connect ok userId=" + userId)
                 status = Status.CONNECTED
                 error = null
+                retryAttempt = 0
                 // 通知渠道先建好（没有授权时 showMessage 会自己跳过，不弹也不崩）
                 ImNotify.ensureChannel(AppContext.instance)
                 refreshConversations()
@@ -330,8 +357,29 @@ object ImRepository {
 
             override fun onError(e: RongIMClient.ErrorCode?) {
                 android.util.Log.w(TAG, "connect error " + e + " tokenLen=" + token.length)
+                // 第四十五轮（用户第 5 条：「私信列表经常加载失败，提示 ipc_disconnect」）：
+                // IPC_DISCONNECT 表示融云 SDK 与本机 IPC 服务**短时断开** —— 进程刚被系统回收、
+                // 刚强杀过 App、SDK 内部服务还在重启，都会碰到它。它本质是瞬时错误，
+                // 以前却直接 status = FAILED 并把裸错误码（IPC_DISCONNECT）当提示丢给用户，
+                // 看上去就像功能坏了。现在：可恢复错误自动退避重连（0.8s / 3.2s / 7.2s），
+                // 状态留在「连接中」，文案也换成中文；真的连不上才失败，并告诉用户可以点重试。
+                if (retryAttempt < MAX_AUTO_RETRY && isRecoverable(e)) {
+                    retryAttempt++
+                    status = Status.CONNECTING
+                    error = "正在重新连接聊天服务器（第 " + retryAttempt + " 次）"
+                    retryJob?.cancel()
+                    retryJob = scope.launch {
+                        kotlinx.coroutines.delay(800L * retryAttempt * retryAttempt)
+                        if (status != Status.CONNECTED) connectWith(token, allowTokenRefresh)
+                    }
+                    return
+                }
                 status = Status.FAILED
-                error = "IM 连接失败：" + (e?.name ?: "未知错误")
+                error = if (isRecoverable(e)) {
+                    "聊天服务器暂时连不上，点右上角刷新重试"
+                } else {
+                    "IM 连接失败：" + (e?.name ?: "未知错误")
+                }
             }
 
             /** 2.9 的 token 失效回调（5.x 合并成了 ErrorCode.RC_CONN_TOKEN_INCORRECT） */

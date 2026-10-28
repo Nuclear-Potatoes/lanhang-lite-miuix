@@ -24,6 +24,386 @@
 
 ---
 
+## 46. 第四十六轮（2026-10-28）：第 12 节课 + 课表行列自适应
+
+用户两条：①「给课表的时间安排加一个第 12 节课，时间为 21:45 到 22:30」；
+②「做一下自适应课表功能：若某一行/某一列没有课程安排，则自动隐藏这一行/这一列，
+剩下的行/列重新分配屏幕空间，以达到更高的屏幕空间利用率；注意不要破坏原本的泳道动画设计」。
+
+### 46.1 第 12 节：只改 PeriodClock，其余全部改成引用它
+
+`schedule/PeriodClock.kt` 的 `ranges` 末尾加 `21:45-22:30`（与第 11 节间隔 10 分钟，和其余节次节奏一致），
+`count` 自动变成 12。**不要再往别处抄时间表** —— 这次顺手把现存的两份副本都改成引用：
+
+| 文件 | 原来 | 现在 |
+| --- | --- | --- |
+| `ScheduleExporter.kt` | 自己一张 `periodTimes` 列表（11 项硬编码） | `(1..PeriodClock.count).map { ... PeriodClock.start/end ... }` |
+| `ScheduleExporter.kt` ×2 | `if (node !in 1..11) continue` | `if (node !in 1..PeriodClock.count) continue` |
+| `widget/ScheduleWidgetData.kt` | `if (number !in 1..11) continue` | `if (number !in 1..PeriodClock.count) continue` |
+| `ScheduleFragment.kt` | 自己一张 `periodTimes` map（11 项硬编码） | 直接用 `PeriodClock.rangeText(p, p)` |
+| `ScheduleWidgetRenderer.kt` | 早就用 `PeriodClock.count` | 不用改 |
+
+`ClassReminder.kt` 的边界闹钟段本来就是 `for (period in 1..12)`，第 12 节天然有槽位。
+
+### 46.2 行列自适应：只画「有课的」行列
+
+`ScheduleFragment#renderGrid` 以前是「一律画满 11 节 + 固定 7 列」，于是只要后半学期没早八、
+或者周末没课，屏幕就有一大片空气。改成先算两组「有课的索引」：
+
+```kotlin
+val rowOrder = (1..PeriodClock.count).filter { p ->
+    dayCourses.any { list -> list.any { ci -> ci.periodStart <= p && p <= ci.periodEnd } }
+}
+val colOrder = (0 until 7).filter { d -> dayCourses[d].isNotEmpty() }
+val rowIdx = IntArray(PeriodClock.count + 2) { -1 }   // 节次 -> 可见行序号
+val colIdx = IntArray(7) { -1 }                        // 星期 -> 可见列序号
+```
+
+然后所有几何全部按「可见序号」算，**不再出现节次号直接当行号**：
+
+- 行高 `usable / rowCount`（上限仍是 `dp(160) * textScale`）；
+- 列宽 `(availW - timeW - gapW * colCount - 1) / colCount`（以前是写死 `/ 7f`）；
+- 纵坐标 `yOfRow(i) = i * (rowH + gapH) + 上方休息带数 * bandH`；
+- 课程块：`startIdx/endIdx` = 起止节次映射到的可见行，高度按 `spanRows` 而不是「节次数」——
+  这样即使块中间有被隐藏的空行（正常数据不会出现，但兜底），块也不会画歪；
+- 表头/时间列/网格线/课程块全部只遍历 `colOrder` / `rowOrder`。
+
+**休息带（午休 4 之后、晚休 8 之后）**：只有「上方有可见行、下方也有可见行」时才画。
+否则会出现「第 1-3 节有课、第 5 节之后没课」却挂一个孤立「午休」胶囊在底部的怪东西。
+休息带自身的 y 取「k 之后第一个可见行的 y − bandH」，因为 k 这一行本身可能被隐藏。
+
+### 46.3 为什么不破坏泳道动画（必读）
+
+切周是三张静态位图跟手，位图按**整个内容层**尺寸拍（`capturePagerBase`）。
+行列自适应只改变「内容层内部的排布」，**不改内容层自身尺寸**（contentGrid 是 match_parent，
+行高变大就把内容填满、变小就留白，宽高都不外溢），所以：
+
+1. 位图尺寸 == LayoutParams 尺寸 的前提不变（见 §40.1 的教训）；
+2. 钉住时间轴的裁剪宽度 `gridAxisW = timeW + gapW` 与列数无关；
+3. `startPager` 拍旧周、`post` 里拍新周，两个位图各自反映各自的周次布局，
+   正好让「不同周行列数不同」的切换看起来是自然的重排，而不是错位。
+
+本轮实测 9 → 10 → 11 → 10 连续切周，无 `第 -1 周`、无残影、无跳帧。
+
+### 46.4 验证（模拟器 emulator-5554，1220×2656，深色）
+
+| 周次 | 有课的星期 | 有课的节次 | 结论 |
+| --- | --- | --- | --- |
+| 第 9 / 10 / 11 周 | 周一~周五（周六日隐藏） | 1~10（第 11、12 节隐藏） | 列变宽、行变高，课程名一行放得下 |
+| 第 6 周 | 周一、二、三、五（**周四隐藏**） | 1~10 | 4 列各占 1/4 宽，无空洞 |
+| 第 3 周 | 无 | 无 | 「本周无课」提示（新加的 `rowCount==0||colCount==0` 兜底分支） |
+
+### 46.5 踩坑：`input swipe` 的起止点必须落在 400~1100
+
+用 `input swipe 150 1500 1150 1500` / `1050→150` 试切周，**整次手势被系统边缘返回手势吃掉**：
+App 直接退到后台、前台变成桌面（`topResumedActivity=...googlequicksearchbox...MinusOneActivity`），
+随后所有 `uiautomator dump` 全空 —— 看起来像「App 崩了」，实际是坐标踩到边缘手势区（§38.1 同款坑，
+这次是两端都踩）。可复现的稳定区间：**`input swipe 1050 1500 450 1500 200`（下一周）/
+`input swipe 450 1500 1050 1500 200`（上一周）**。
+
+### 46.6 列表视图同步隐藏空日（用户追加要求）
+
+用户：「列表视图也可以隐藏掉，做完之后发版到 github 即可」。
+
+`renderWeekView` 先一次性把 7 天的课程算好：
+
+```kotlin
+val mergedByDay = (0 until 7).map { d -> mergeCourses(getCoursesForDay(data, d, week)) }
+val totalCourses = mergedByDay.count { it.isNotEmpty() }
+for (dayIdx in 0 until 7) {
+    val merged = mergedByDay[dayIdx]
+    if (merged.isEmpty()) continue   // 空日：摘要卡 + 课程卡整块不画
+    ...
+}
+```
+
+- 空日连**摘要卡**（`item_day_summary`）一起不画，日期条剩几天就几天，宽度自动均分；
+- 原来「周 X 没有课程」那行文案的整段 if/else 删掉（空日已经 continue）；
+- 一天课都没有时（`totalCourses == 0`）在列表流里补一条「本周无课」。
+
+实测：第 6 周列表只剩周一/二/三/五四张卡（周四整天消失），第 9 周全 5 天都在。
+
+### 46.7 坑：覆盖层空态 `tvEmpty` 会压在日程卡上
+
+`fragment_schedule.xml` 里 `tvEmpty`（`layout_gravity="center"`，文案「本周无课」）是
+`contentWeek` 上的**覆盖层**，一直是代码里点亮/熄灭它来表示「本周没课」。
+
+改成空日隐藏之后出现了很怪的现象：**第 6/7 周明明画出了 4 天课，「本周无课」却浮在周一日程卡中间**。
+排查过程（记下来，下次别再绕）：
+
+1. `renderWeekView` 结尾日志确认 `有课天数=4`、设的是 `View.GONE`（8），代码逻辑没问题；
+2. 静置后 `uiautomator dump` 里**查不到** `tvEmpty` 节点 —— 说明它多数时候确实是 GONE；
+3. 但 `screencap` 截图里它稳定可见，位置固定在 `[516,1398][704,1467]`（页面正中）。
+
+结论：它是覆盖层，**只要有任何一条路径把它点亮一次**（切周动画期间的空帧、`ensureContentNotEmpty`
+的兜底分支等），它就会浮在所有内容之上，而且因为它是 `wrap_content` + `center`，
+看起来「贴在某个卡片中间」而不是「页面空态」。我们 2 次尝试用条件收紧点亮逻辑都收不干净。
+
+最终办法是**从视图树里删掉它**（最省事也最彻底）：
+
+```kotlin
+tvEmpty = view.findViewById(R.id.tvEmpty)
+(tvEmpty.parent as? android.view.ViewGroup)?.removeView(tvEmpty)
+```
+
+空态改由 `renderWeekView` 在列表流里补 `noDataHint(R.string.schedule_week_no_course)`，
+路径只有一条：有课就啥都不加，没课就补一条居中文案。删掉之后截图立刻干净。
+
+**教训**：表示「空态」的元素不要做成覆盖层（`center` + `visibility`）——
+列表还没画出来时它一定会浮在上面；做成内容流里的一个普通节点，状态就自然跟着内容走。
+
+## 45. 第四十五轮（2026-10-28）：用户晚间 11 项清单（1.1.15 / versionCode 67）
+
+用户两条：①「浅色下顶栏处在中间态时进二级页，会先弹到完全展开再收缩，应以当前大小为初始逐渐收缩」；
+②「深色下顶栏状态改变依旧有严重拖影，参照浅色逻辑重新设计所有顶栏动画，统一成一个实现方式」。
+
+### 45.1 「先弹到完全展开」的物理来源：两个 Animatable 拼 max
+
+旧 `LanhangTopBar` 有两份动画状态：形态档 `morph`（0=大标题 96dp，1=紧凑 56dp）与滚动档
+`scrollTerm`，最终值是 `max(shape, scroll)`。进二级页那一帧：
+
+- `spec.hasBack` 变真 → `scrollTerm` 立刻归零（二级页不吃滚动）；
+- `morph` 还停在上一页的 0（它的 `LaunchedEffect` 要下一帧才跑，`snapTo` 也在下一帧）；
+- 拼出来 = `max(0, 0)` = **0 → 完全展开**。
+
+于是无论上一页滚到哪里，都必须先弹回 96dp 再重收一遍。上一轮（第十二/十三轮）只补了
+「已经收起到 0.995 以上就直接 snap」，中间态完全没覆盖。
+
+### 45.2 改法：一个 Animatable，它就是画出来的收放度
+
+`rememberBarCollapse(target, scroll)` 重写为单个 `Animatable`，三档分流（老规则全部保留）：
+
+| 情形 | 动作 |
+|---|---|
+| 换 Tab（`ShellScroll.activeTab` 变了） | 与页面转场同拍的 tween |
+| 形态档变了（进/退二级页、切课表） | **从当前值** tween 到目标，绝不回 0 重来 |
+| 同一页手指滚动 | `snapTo`，逐帧跟手 |
+
+进二级页时 `anim.value` 就是当前真实 0.5 之类 → 从 0.5 收到 1，不再经过 0。
+`morph` / `lastCollapse` / `latch` 三个中间变量全部删除，只剩这一个数。
+
+### 45.3 拖影：过渡期间子节点溢出 + 依赖外层 View 背景
+
+自绘顶栏是个 `BoxWithConstraints(height = lerp(96dp,56dp,collapse))`，而子节点尺寸是按两端
+**固定值**算的（按键行恒 56dp、标题位移按 96dp 推算）。过渡中 Box 比 56dp 还矮时，这些子节点
+的像素会溢出边界；顶层 ComposeView 的背景是 XML 里的 `@color/page_bg`，它只在这个 View
+被判定失效时重画 —— 溢出的白字/白块在深色底上残留一两帧，就是「拖影」。
+
+两条修法（都加在顶栏本体上）：
+
+```kotlin
+.height(barHeight)
+.background(MiuixTheme.colorScheme.background)   // Compose 每帧整块重画，不靠外层 View
+.graphicsLayer { clip = true }                    // 溢出像素一律裁掉
+```
+
+### 45.5 课表：快速连滑两次跳到「第 -1 周」（第三项）
+
+**已用 `adb shell input swipe` ×3 稳定复现**：第 9 周连滑三次左 → 周次栏显示「第 -1 周」，且再也回不来。
+
+真因是**多条收尾动画互相踩共享字段**。`finishPager` 的 `onAnimationEnd` 里直接读
+`pagerTarget` / `pagerBase`，而这两个字段会被下一段手势改写、或被 `cleanupPager` 复位成哨兵值
+**-1**；`ACTION_DOWN` 撞上上一段动画时走的是 `finishPager(false)`——那只是**又起一条** 210ms 动画，
+字段要等它结束才复位。于是新手势在「currentWeek 已改、pagerBase 还是旧值甚至 -1」的状态里起手，
+最终把 `currentWeek` 写成 -1。
+
+修法三条：
+1. 新增 `pagerSeq` 手势序号：`startPager` / `finishPager` / `abortPager` 各自 `++`，
+   `onAnimationEnd` 第一句 `if (seq != pagerSeq) return` —— 过期动画一个字段都不许写，
+   并且目标/基准/序号在起动画前**先快照**（`myTarget` / `myBase`），不再读共享字段；
+2. 新增 `abortPager()`：`ACTION_DOWN` 撞上未结束的切周时**同步**清场（取消动画、`cleanupPager`、
+   `currentWeek` 复原到手势开始的那一周、`renderAll`），不再等动画；所有写 `currentWeek`
+   的地方都夹 `if (base in startWeek..maxWeek)`；
+3. `startPager` 起手先 `pagerAnim?.cancel()`，`layer.post` 里也带 `seq != pagerSeq` 校验。
+
+复测：9 →（左×3）12 →（右×3）10 →（左×2）11，全部正确，再无 -1。
+
+### 45.6 课表：左滑时时间列一闪而过的拖影（第九项）
+
+`startPager` 原来是**等 `layer.post` 里拍完「新周」位图之后**才把真实内容藏起来。于是手势的
+第一帧是「没动的真实内容（自带一条时间列）+ 已经跟手的旧周位图（也自带一条时间列）」两份同屏，
+零点多秒就消失 —— 正是用户说的「极短时间的拖影」。
+
+修法：ghost 一拍好就立刻 `hideContentChildren(layer)`；`post` 里拍新周前
+`showContentChildren(layer)` 放出来、拍完马上再藏回去（两个函数互补，成对调用）。
+
+复测：20fps 抽帧看左边缘（时间列）四帧，每帧只有**一份** 5/6/7/8 节次列。
+
+### 45.7 课表：下拉刷新时周次栏闪回本周（第十项）
+
+`refresh()` 里 `applyWeekInfo(it)` 无条件 `currentWeek = it` **并顺手 `updateWeekPill()`**，
+刷新的第一帧周次栏先被改成本周（用户看到的闪一下），`refresh` 后面才 `currentWeek = browseWeek` 复原。
+
+修法：`applyWeekInfo(data, keepBrowseWeek: Boolean = false)` —— 刷新路径传 `true`，
+只更新 `actualCurrentWeek`（本学期第几周），不动浏览周，也不在里面刷胶囊。
+
+复测：先切到第 11 周，录屏 20fps 覆盖整次下拉刷新（圆环出现并旋转，已确认真的刷新了）——
+**周次栏全程没有任何一帧与末帧不同**，刷新前后都是「第 11 周」。
+
+### 45.4 本轮验证状态（诚实记账）
+
+- `assembleRelease` 通过。
+- 设备级逐帧验证**没做成**：用 `screenrecord` 录「我的（滚到中间态）→ 设置」，抽 20 帧测顶栏
+  文字框高度，前 16 帧完全静止（深像素数恒定 150990）、后 4 帧才开始变化 —— 说明抽帧窗口没盖住
+  真正的过渡段；且新加的 `background` 让「顶栏底色 vs 内容底色」不再有肉眼可见分界，
+  原来的「按行找色块边界」量法失效。下轮改用「录屏 + 逐帧求相邻帧差分的最大值出现在哪一帧」
+  来定位过渡段，再在过渡段内量标题字号。
+- 深色拖影只有结构性把握（clip + 每帧重画），没有逐帧对比图。
+
+### 45.14 页面级加载态统一 + 全项回归（第十一项收尾）
+
+上一轮只做了「图片类」加载态，页面级还有三处是「图标 + 一行字」——用户看不出是在跑还是卡死：
+
+| 屏 | 原状 | 现状 |
+| --- | --- | --- |
+| 通讯录 | `ContactsStateBox`（通讯录图标 +「加载中」） | `LoadingBlock(label=…)` 转圈 + 文案 |
+| 消息列表 | `MessageStateBox`（同上） | `LoadingBlock(Modifier.fillMaxWidth().height(240.dp))` |
+| 私信列表 | `ImStateBox`（同上） | `LoadingBlock(Modifier.fillMaxWidth().height(240.dp))` |
+
+**坑**：`LoadingBlock` 内部是 `fillMaxSize()`，放进 `LazyColumn` 的 `item {}` 里高度约束是无限的
+（会撑成 0 或吃掉整屏），必须给显式高度（240dp）。非 lazy 的 `when` 分支（通讯录）才能直接用。
+
+工作页的 `loading` 恒为 `false`（本地 `WorkCatalog`，进页面即有内容），不需要加载态 —— 这是设计而不是遗漏。
+
+### 45.15 第五轮全项回归（同一台模拟器，1220×2656，第 9 周）
+
+装包 `pm install -r` 后逐项过：
+
+| 项 | 结果 |
+| --- | --- |
+| 通讯录 / 消息 / 私信三页 | 全部正常渲染（`通讯录 → 组织架构 教职工 2368 人`、`消息 → 全部/评论/赞`、`私信 → 私信已连接 + 张敏佳会话`） |
+| 私信连接（第五项回归） | `私信已连接`，一次成功，仍无 `IPC_DISCONNECT` |
+| 课表连滑（第三项回归） | 9 →（左×2）11 →（左）11（已到学期末，到头不再前进）；→（右，起点 x=500）9 →（右）8，全程无「第 -1 周」 |
+| 切周右滑又踩了老坑 | 起点写 x=250 的那两次**只生效一次**——`AGENTS.md` §38.1 早就记过：x≈250 会被系统边缘返回手势接管。留证：起点改 x=500 后连续两次右滑 10→9→8 全对 |
+
+### 45.13 加载界面：图片占位 + 全屏看图转圈（第十一项）
+
+用户原话：「所有加载场景（工作圈图片、我的身份码等）都要有加载界面」。
+现状盘点：全项目只有 3 处 `CircularProgressIndicator`（成绩、身份码、工作圈列表），
+**图片这一整类完全没有加载态** —— 九宫格在取图期间是透明洞，全屏看图是纯黑一片。
+
+新增 `ui/LoadingUi.kt` 收敛成两个组件（新页面直接用，别再各画各的）：
+
+| 组件 | 用途 |
+| --- | --- |
+| `LoadingBlock(modifier, label)` | 整页/整块加载中：居中转圈 + 一行 `footnote1` 说明文字 |
+| `ImageLoadingBox(modifier, corner)` | 图片自己的骨架：圆角 `secondaryContainer` 浅色块 + 20dp 转圈 |
+
+两处接线：
+
+1. **工作圈九宫格**（`MomentsScreen.MomentImageGrid`）：`AsyncImage` 改成 `SubcomposeAsyncImage`，
+   用 `loading = { ImageLoadingBox(...) }` / `error = { ImageLoadingBox(...) }` /
+   `success = { SubcomposeAsyncImageContent() }`。取图中和取图失败都画骨架，
+   失败也**不留透明洞**（看着像图丢了）。
+   注意 coil 2.6 的 `SubcomposeAsyncImage` **没有** `content` lambda 这个重载，
+   只有 `loading` / `success` / `error` 三个槽 —— 第一版写成 `) { state -> ... }` 直接编译失败。
+2. **全屏看图**（`ImagePreviewActivity`）：图片 `load(url)` 有 `listener(onSuccess, onError)`，
+   用它在黑底中央显示/隐藏一个代码 addView 的 `ProgressBar`（`DragDismissLayout` 本身是
+   FrameLayout，加一个居中的子 View 不影响它自己的拖拽手势逻辑）。改成动 xml 会牵连
+   `binding` 与 `currentPageView()` 的强转，风险不值得。
+
+**验证**：装包后工作圈、个人主页、全屏查看器全部正常渲染（无崩溃、无空帧）；
+但**没能截到「加载中」那一帧** —— coil 磁盘缓存命中，配 `adb emu network speed gsm` 限速后
+1 秒内图就出完了，且 release 包不可 `run-as` 删缓存。所以占位骨架目前只有代码级 + 编译级把握。
+
+**还没覆盖的**（诚实记账）：通讯录、消息列表、私信、个人主页首次加载这类「页面级空白」仍各写各的
+（多数已有转圈，少数是空白）。下一步是把这些分支统一改成 `LoadingBlock`，并给身份码页
+「进页面到拿到 token」之间补一层骨架。
+
+### 45.12 课表字号与行高的大屏自适应（第六项）
+
+用户原话：「课表所有文字与 UI 自适应，平板字号略微放大」。
+
+**原来只朝一个方向自适应**：列宽/行高不够就按候选档降字号（`numSizeCandidates` 13/12/11、
+`timeSizeCandidates` 8/7.5/7），但候选档的**上限是写死的** —— 平板上格子又宽又高，字还是手机那么大，
+看着又小又空；行高上限也钉在 `dp(96)`，11 行铺不满就留下一大片空白。
+
+改法（新增 `ui/UiScale.kt`，只放大静态字号与上限，不碰「放不下就降档」的判定）：
+
+| 屏幕 | 系数 |
+| --- | --- |
+| 手机（`screenWidthDp` < 480） | 1.0 |
+| 大屏手机 / 折叠展开（≥ 480dp） | 1.08 |
+| 平板（`smallestScreenWidthDp` ≥ 600dp） | 1.15 |
+
+`ScheduleFragment` 里加 `textScale` + `ts(v)`，把 7 处写死的 `textSize = 9.5f/8.5f/12f/13f/9f/10f`
+与课程块 `nameSize` 三档全部过 `ts()`；两个候选数组整体乘系数、时间列量字宽也从 `8f` 换成 `ts(8f)`。
+xml 里写死的 sp（`item_day_summary` 13/10sp、`item_day_section` 14sp）用 `scaleXmlText()`
+在 inflate 之后递归乘一遍 —— **必须在设置代码字号之前调用**，否则会把后面显式设定的字号盖回去。
+
+行高上限：`dp(96)` → `dp(160) * textScale`。160dp 只是极端保护（竖着看 4:3 平板别把一行撑成广场），
+正常平板上 `usable / 11` 已经小于它，所以课表真正铺满到 tab 栏。
+
+**设备验证**（同一台模拟器，改 `wm size / wm density` 模拟平板）：
+
+- 平板 `1600x2560 @ density 200`（= 1280×2048dp，`smallestScreenWidthDp` ≥ 600 → 1.15）：
+  课名/节次/时间全部放大且不裁字，行高填满，底部空白从约 400px 收到约 60px；
+- 还原 `1220x2656 @ 468`：与改动前逐像素观感一致（`textScale == 1` 时 `ts()` 原样返回，无回归）。
+
+### 45.8 「我的」消息角标：进过消息页就清零（第四项）
+
+**现象**：我的页「消息」行右上角挂着数字点，点进去把消息看完、再退回我的页，数字还在。
+
+两个独立原因，都修了：
+
+1. **谁都不记账**：`GET /message/unread` 只是个查询，服务端没有「标记已读」的口子。
+   新增 `mine/MessageReadStore.kt`：把「进消息页时看到的 messageId」记在本机
+   （SharedPreferences，只留最近 500 条）。角标 = 当前未读 id − 已看过的 id。
+   于是新互动仍会亮（新 id），老互动不再亮，重启也不复活。
+   配套把 `InteractionFilter` 拆出 `unreadIdsMine()`（`unreadCountMine()` 改成它的 size），
+   因为**要 id 才能记账**，光有数量没用。
+2. **刷新时机不对**：`refreshUnread()` 只挂在 `MineFragment.onResume` 上，
+   而消息页是 Fragment 内的 Compose 二级页 —— 返回时 `onResume` 根本不会再来一次。
+   在 `goBack()` / `goRoot()` 退回根目录后补一次 `refreshUnread()`。
+
+实测：装包前「我的」页角标 2，进消息页再返回后角标消失（`uiautomator` 里「消息」行后不再有数字节点）。
+
+### 45.9 私信列表「ipc_disconnect」（第五项）
+
+`IPC_DISCONNECT` 是融云 SDK 与本机 IPC 服务**短时断开**：进程刚被系统回收、刚强杀过 App、
+SDK 内部服务还在重启，都会碰到。它本质是瞬时错误，而 `ImRepository.onError` 以前直接
+`status = FAILED` 并把裸错误码当提示丢给用户（「IM 连接失败：IPC_DISCONNECT」），看着就像坏了。
+
+现在：`isRecoverable()` 把 IPC_DISCONNECT / NETWORK_UNAVAILABLE / TIMEOUT / CONNECT_NAVI
+判为可恢复（**token 类错误一律排除**，重连没用），可恢复且未超 3 次就退避重连
+（0.8s / 3.2s / 7.2s），状态留在「连接中」，文案换成中文；`ensureStarted()` 在 FAILED 状态
+重新进页面时把重试次数归还。真的连不上才失败，并提示「点右上角刷新重试」。
+
+**未在本机复现**该错误（本次连接一次成功，logcat 是 `connect ok`），所以只有代码级把握。
+
+### 45.10 个人主页长按动态 = 自由复制（第七项）
+
+个人主页复用的是工作圈那张 `MomentCard`，卡片级 `combinedClickable.onLongClick` 会在
+`isMine` 时弹「删除这条动态」—— 在自己主页里长按自己的动态正好命中。
+
+给 `MomentsScreen` / `MomentCard` 加 `postMenuEnabled: Boolean = true`，
+`UserProfilePage` 传 `false`：主页里长按整张卡片什么都不做，手势落到正文的
+`SelectionContainer`（可拖把手选任意段落复制）。工作圈动态流仍是 true。
+
+**本轮未做设备验证**（时间预算用尽），只有编译级把握。
+
+### 45.11 发布工作圈：返回时询问保存草稿（第八项）
+
+新增 `moments/PublishDraftStore.kt`（文本 + 图片 Uri 字符串，图片换行分隔，不含 bitmap；
+恢复时逐条 `Uri.parse`，失效的直接跳过）。
+
+- `openPublish()` 回填草稿（图片按 `MAX_MOMENT_IMAGES` 上限收）；
+- `closePublish()` 在「有文字或有图片」时先弹「保存草稿？」，两个按钮各有行为：
+  **保存草稿** = 落盘后离开，**不保存** = 销毁后离开；点弹窗外什么都不做（内容还在，最安全）；
+- `publish()` 成功后 `PublishDraftStore.clear()`（草稿已用掉）。
+
+**踩坑**：第一版用了 `showMiuixConfirm`，它的 `dismissText` 按钮绑定的是**空动作** ——
+点「不保存」只关弹窗、留在发布页，草稿也还在。这类「两按钮都要有行为」的询问必须用
+`showMiuixDialog(MiuixDialogSpec(actions = listOf(a to {...}, b to {...})))`。
+
+实测（模拟器，未真发）：
+
+| 步骤 | 结果 |
+| --- | --- |
+| 发布页输入 `drafttest` → 返回 | 弹「保存草稿？/ 你已经输入了内容…」+ 不保存 / 保存草稿 |
+| 点「保存草稿」→ 重开（含重启 App） | 文本回填 `drafttest`、计数 9/2000 |
+| 再返回 → 点「不保存」 | 回工作圈列表；重开发布页 → `0/2000`、无图（草稿已销毁） |
+
 ## 44. 第四十四轮（2026-10-28）：小部件「N 分钟结束」不刷新（1.1.14 / versionCode 66）
 
 ### 44.1 现象与真因

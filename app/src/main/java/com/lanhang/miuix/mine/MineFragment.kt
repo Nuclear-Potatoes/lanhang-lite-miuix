@@ -417,6 +417,10 @@ class MineFragment : Fragment() {
         render()
         syncToolbar()
         onPageOpened(stack.last().page)
+        // 第四十五轮（用户第 4 条）：退回「我的」根目录时重算互动角标。
+        // refreshUnread 以前只挂在 onResume 上，而消息页是 Fragment 内的 Compose 二级页，
+        // 返回时 onResume 不会再来 —— 于是「进过消息页」这件事根本没机会反映到角标上。
+        if (stack.last().page == MinePage.ROOT) refreshUnread()
     }
 
     /** 一路退回「我的」根页（顶栏首页键 / 再点一次底栏「我的」共用） */
@@ -428,6 +432,8 @@ class MineFragment : Fragment() {
         applyEntry(stack.last())
         render()
         syncToolbar()
+        // 与 goBack 一致：回到根目录就重算角标（消息页刚被看过的那些不再计入）
+        refreshUnread()
     }
 
     /**
@@ -542,9 +548,11 @@ class MineFragment : Fragment() {
                 kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
                     // 第二十四轮第 4 条：角标也只看「我的帖子」上的互动，否则会出现
                     // 「角标 3、点进去什么都没有」（别人的帖子上的互动已经被过滤掉了）
-                    com.lanhang.miuix.moments.InteractionFilter.unreadCountMine(
+                    // 第四十五轮：再减去「已经在消息页看过」的那些 id（用户第 4 条）
+                    val ids = com.lanhang.miuix.moments.InteractionFilter.unreadIdsMine(
                         com.lanhang.miuix.net.MomentsApi.getUnreadMessages()
                     )
+                    MessageReadStore.unseenCount(ids)
                 }
             }.getOrDefault(0)
             if (count != uiState.unreadCount) uiState = uiState.copy(unreadCount = count)

@@ -401,8 +401,17 @@ class MomentsFragment : Fragment() {
     }
 
     private fun openPublish() {
-        publishText = ""
+        // 第四十五轮（用户第 8 条）：上次点了「保存草稿」的内容在这里回填，
+        // 图片 Uri 逐条 parse，失效的直接跳过（系统可能已收回图片权限）
+        val draft = PublishDraftStore.load()
+        publishText = draft?.text.orEmpty()
         pickedImages.clear()
+        draft?.images?.forEach { raw ->
+            val uri = runCatching { android.net.Uri.parse(raw) }.getOrNull() ?: return@forEach
+            if (pickedImages.size < MAX_MOMENT_IMAGES && pickedImages.none { it == uri }) {
+                pickedImages.add(uri)
+            }
+        }
         emptyText = null
         pageForward = true
         page = MomentPage.PUBLISH
@@ -429,9 +438,42 @@ class MomentsFragment : Fragment() {
 
     private fun closePublish() {
         if (page != MomentPage.PUBLISH) return
+        // 第四十五轮（用户第 8 条）：写了字或选了图就**先问**一句再走，
+        // 别让一次误触把整篇内容丢掉
+        if (publishText.isNotBlank() || pickedImages.isNotEmpty()) {
+            val ctx = context ?: return
+            // 注意：不能用 showMiuixConfirm —— 它的 dismiss 按钮绑定的是空动作，
+            // 点「不保存」只会关掉弹窗、留在发布页。这里两个按钮都要有自己的行为：
+            // 保存 = 落盘后离开；不保存 = 销毁后离开；点弹窗外 = 什么都不做（内容还在，最安全）。
+            com.lanhang.miuix.ui.miuix.showMiuixDialog(
+                ctx,
+                com.lanhang.miuix.ui.miuix.MiuixDialogSpec(
+                    title = getString(R.string.moments_draft_title),
+                    summary = getString(R.string.moments_draft_message),
+                    actions = listOf(
+                        getString(R.string.moments_draft_discard) to {
+                            PublishDraftStore.clear()
+                            leavePublish()
+                        },
+                        getString(R.string.moments_draft_save) to {
+                            PublishDraftStore.save(publishText, pickedImages.map { it.toString() })
+                            leavePublish()
+                        },
+                    ),
+                ),
+            )
+            return
+        }
+        leavePublish()
+    }
+
+    /** 真正离开发布页（已经问过、或者本来就没内容） */
+    private fun leavePublish() {
         pageForward = false
         page = MomentPage.LIST
         backCallback.isEnabled = false
+        publishText = ""
+        pickedImages.clear()
         syncToolbar()
     }
 
@@ -606,6 +648,8 @@ class MomentsFragment : Fragment() {
                 }
                 pickedImages.clear()
                 publishText = ""
+                // 发布成功 = 草稿已经用掉了，必须销毁（否则下次打开发布页又冒出上次的内容）
+                PublishDraftStore.clear()
                 toast(AppContext.instance.getString(R.string.moments_publish_done))
                 closePublish()
                 load(reset = true)
