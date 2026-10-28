@@ -24,6 +24,42 @@
 
 ---
 
+## 44. 第四十四轮（2026-10-28）：小部件「N 分钟结束」不刷新（1.1.14 / versionCode 66）
+
+### 44.1 现象与真因
+
+18:05 桌面 4×2「今日安排」还写着「思想道德与法治 · 5 分钟结束」，而课表上这节课 16:00-17:40。
+**下课时间没有算错**，是小部件没有被重绘 —— 它停在 17:35 那次渲染上。
+
+真因在 `ScheduleWidgetUpdater.refreshTick`（排「分钟心跳」的函数）第一段：
+
+```kotlin
+val ids = manager.getAppWidgetIds(ComponentName(app, ScheduleWidgetSmallProvider::class.java))
+if (ids == null || ids.isEmpty()) { cancelTick(app); return }   // ← 只认 2×2
+```
+
+只放了 **4×2** 的用户，`ids` 永远是空 → 直接 `cancelTick` → 分钟心跳根本不存在。
+小部件于是只在打开 App / 午夜闹钟 / 改尺寸时才重绘，课上完也不会自己消失。
+
+真机证据（`adb shell dumpsys alarm`）：修复前只有
+`*walarm*:com.lanhang.miuix.widget.ACTION_MIDNIGHT`，**没有任何 ACTION_TICK**；
+修复后装包即出现 `*alarm*:com.lanhang.miuix.widget.ACTION_TICK`，
+手动 `am broadcast` 一次也能立刻续上下一次（说明链式闹钟在跑）。
+
+### 44.2 改法
+
+- `refreshTick` 同时看 **2×2 与 4×2** 的实例：2×2 还要「翻到今天」才需要心跳，
+  4×2 只要有实例就需要（它显示今天/明天，今天才有倒计时）。周课表变体没有倒计时，不参与。
+- 兜底再上一层：两个带倒计时的小部件 xml 从 `updatePeriodMillis="0"` 改成 `1800000`（30 分钟）。
+  主力仍是自己的分钟心跳，但心跳链一旦被系统清掉 / 应用被强行停止，
+  系统这 30 分钟一次的 `onUpdate`（→ `updateAll`）能把「N 分钟结束」这种陈旧状态救回来。
+  注意：`updatePeriodMillis` 属性**不能**在 XML 属性列表里插注释（编译期 AAPT 会报错），说明写在根元素之前。
+
+### 44.3 教训
+
+- 「没有这个变体」和「这个变体不需要」是两回事：按变体取实例的地方，要写清它到底覆盖哪几个 Provider。
+- 任何依赖**链式闹钟**的 UI 刷新都要有一层系统级的兜底周期，否则一次丢链就静默停摆。
+
 ## 43. 第四十三轮（2026-10-28）：双击底栏回顶统一（1.1.13 / versionCode 65）
 
 ### 43.1 「一跳一跳」是分段 tween 造成的

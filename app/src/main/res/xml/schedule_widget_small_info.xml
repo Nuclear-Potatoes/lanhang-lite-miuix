@@ -1,4 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- updatePeriodMillis=30min 是兜底：主力是 ScheduleWidgetUpdater 的分钟心跳，
+     但它依赖链式闹钟；闹钟被系统清掉 / 应用被强行停止时，靠系统这 30 分钟一次
+     的 onUpdate 把「N 分钟结束」这类陈旧状态救回来。 -->
 <appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools"
     tools:ignore="UnusedAttribute"
@@ -13,5 +16,5 @@
     android:resizeMode="horizontal|vertical"
     android:targetCellHeight="2"
     android:targetCellWidth="2"
-    android:updatePeriodMillis="0"
+    android:updatePeriodMillis="1800000"
     android:widgetCategory="home_screen" />

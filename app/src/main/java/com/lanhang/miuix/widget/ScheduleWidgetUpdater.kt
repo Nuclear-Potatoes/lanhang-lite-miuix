@@ -102,7 +102,7 @@ object ScheduleWidgetUpdater {
      * 排下一次「分钟心跳」。
      *
      * 小部件不会自己重绘，而「剩 N 分」要跟着时钟走，所以用**链式单次闹钟**：
-     * - 没放今日小部件 / 没登录 / 实例都翻到了别的日期 → 取消，不空转
+     * - 没放会显示倒计时的小部件（2×2 今日课程 / 4×2 今日安排）或没登录 / 实例都翻到了别的日期 → 取消，不空转
      * - 正在上课 → 60s 后刷（到下课那一刻会精确触发一次：这一刷让上完的课消失、后面的课顶上）
      * - 还没上课 → 排到下一节上课时刻，顺便开始倒计时
      * - 今天全上完 → 取消
@@ -113,16 +113,26 @@ object ScheduleWidgetUpdater {
     fun refreshTick(context: Context) {
         val app = context.applicationContext
         val manager = AppWidgetManager.getInstance(app)
-        val ids = manager.getAppWidgetIds(
-            ComponentName(app, ScheduleWidgetSmallProvider::class.java)
-        )
-        if (ids == null || ids.isEmpty() || !Session.isLoggedIn) {
+        if (!Session.isLoggedIn) {
             cancelTick(app)
             return
         }
         val today = LocalDate.now()
         val now = LocalDateTime.now()
-        val showsToday = ids.any {
+        // 「还剩 N 分」只出现在两个变体上：2×2 今日课程（翻到今天时）和 4×2 今日安排（今天/明天，今天才有倒计时）。
+        // 第三十九轮之前这里只认 2×2 的实例 —— 只放了 4×2 的用户永远排不上分钟心跳，
+        // 小部件就停在最后一次渲染的那一刻（用户 2026-10-28 18:05 看到「5 分钟结束」实际 17:40 就下课了）。
+        val smallIds = manager.getAppWidgetIds(
+            ComponentName(app, ScheduleWidgetSmallProvider::class.java)
+        ) ?: IntArray(0)
+        val wideIds = manager.getAppWidgetIds(
+            ComponentName(app, ScheduleWidgetWideProvider::class.java)
+        ) ?: IntArray(0)
+        if (smallIds.isEmpty() && wideIds.isEmpty()) {
+            cancelTick(app)
+            return
+        }
+        val showsToday = wideIds.isNotEmpty() || smallIds.any {
             runCatching { TodayNavStore.target(app, it, today) }.getOrNull() == today
         }
         if (!showsToday) {
