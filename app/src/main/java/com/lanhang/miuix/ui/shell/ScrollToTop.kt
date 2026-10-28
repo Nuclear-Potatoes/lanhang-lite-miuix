@@ -1,6 +1,7 @@
 package com.lanhang.miuix.ui.shell
 
 import androidx.compose.foundation.gestures.animateScrollBy
+import kotlin.math.pow
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.setValue
@@ -33,39 +34,38 @@ object ScrollToTop {
 
 
 /**
- * 「慢慢滚回顶部」。
+ * 「慢慢滚回顶部」—— **四个 Tab 共用这一个实现**。
  *
- * `LazyListState.animateScrollToItem(0)` 只在首尾之间插值，列表一长就是「唰」地瞬移，
- * 用户明确说太快了。这里改成**按屏翻页**的滚动：一次滚过一个可见项的高度，
- * 段数随距离增长（越远每段略快），总时长控制在 0.4~0.9 秒，
- * 看起来像手指连着往上推了几屏，而不是瞬移。
+ * 节奏对齐课表页那条 View 版动画（`ScheduleFragment.scrollSlowly`）：
+ * 一次连续滚动、减速曲线、时长按距离 380~820ms。
+ *
+ * 为什么不再「按可见项一屏一屏地滚」（v1.0.x 的做法）：
+ * 那样每一屏都是一条独立 tween，屏与屏之间有停顿，列表项矮的页面（工作圈）看起来就是
+ * 「一跳一跳」地往上窜。用户 2026-10-28 明确指出要统一成我的页 / 课表页那种顺滑。
+ *
+ * 距离用「已过项数 × 可见项平均高度 + 当前偏移」估算：懒加载列表拿不到精确总高度，
+ * 但 `animateScrollBy` 滚过头会被夹在顶部，估大一点是安全的，估小了末尾补一次即可。
  */
 suspend fun androidx.compose.foundation.lazy.LazyListState.animateScrollToTopSlow() {
     if (firstVisibleItemIndex == 0 && firstVisibleItemScrollOffset == 0) return
-    val pages = firstVisibleItemIndex
-    val total = (420 + pages * 55).coerceIn(420, 900)
-    val perPage = (total / (pages + 1)).coerceIn(110, 320)
-    var guard = 0
-    while (firstVisibleItemIndex > 0 && guard++ < 80) {
-        val step = layoutInfo.visibleItemsInfo.firstOrNull()?.size ?: break
-        if (step <= 0) break
-        animateScrollBy(
-            -step.toFloat(),
-            androidx.compose.animation.core.tween(
-                durationMillis = perPage,
-                easing = androidx.compose.animation.core.FastOutSlowInEasing,
-            ),
-        )
+    val visible = layoutInfo.visibleItemsInfo
+    val avg = if (visible.isEmpty()) 0f else visible.sumOf { it.size }.toFloat() / visible.size
+    val distance = if (avg <= 0f) 0f else firstVisibleItemIndex * avg + firstVisibleItemScrollOffset
+    if (distance <= 1f) {
+        animateScrollToItem(0)
+        return
     }
-    if (firstVisibleItemScrollOffset > 0) {
-        animateScrollBy(
-            -firstVisibleItemScrollOffset.toFloat(),
-            androidx.compose.animation.core.tween(
-                durationMillis = (perPage + 80).coerceAtMost(320),
-                easing = androidx.compose.animation.core.FastOutSlowInEasing,
-            ),
-        )
-    }
-    // 兜底：可见项高度异常（0 / null）时仍然保证真的回到顶部
-    if (firstVisibleItemIndex > 0) animateScrollToItem(0)
+    val duration = (380 + (distance / 4f).toInt()).coerceIn(380, 820)
+    animateScrollBy(
+        -distance,
+        androidx.compose.animation.core.tween(
+            durationMillis = duration,
+            // DecelerateInterpolator(1.7) 的同一条曲线：1 - (1-t)^1.7
+            easing = androidx.compose.animation.core.Easing { t ->
+                1f - (1f - t).toFloat().pow(1.7f)
+            },
+        ),
+    )
+    // 估算偏小 / 滚动被夹住时的兜底：直接落到第 0 项
+    if (firstVisibleItemIndex > 0 || firstVisibleItemScrollOffset > 0) animateScrollToItem(0)
 }

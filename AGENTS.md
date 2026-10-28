@@ -24,6 +24,54 @@
 
 ---
 
+## 43. 第四十三轮（2026-10-28）：双击底栏回顶统一（1.1.13 / versionCode 65）
+
+### 43.1 「一跳一跳」是分段 tween 造成的
+
+`animateScrollToTopSlow()` 原来是**按可见项一屏一屏地 `animateScrollBy`**，每一屏一条独立 tween：
+
+```kotlin
+while (firstVisibleItemIndex > 0 && guard++ < 80) {
+    val step = layoutInfo.visibleItemsInfo.firstOrNull()?.size ?: break
+    animateScrollBy(-step.toFloat(), tween(perPage))   // ← 每屏重启一次动画
+}
+```
+
+项高的页面（我的）看不出问题，列表项矮的**工作圈**就成了「一跳一跳地往上窜」——
+屏与屏之间有停顿，每屏还要重新加速。
+
+改成**一次连续动画**，节奏对齐课表页的 `scrollSlowly`（ValueAnimator +
+`DecelerateInterpolator(1.7)`、时长 380~820ms 按距离）：
+
+```kotlin
+val distance = firstVisibleItemIndex * avgItemHeight + firstVisibleItemScrollOffset
+val duration = (380 + (distance / 4f).toInt()).coerceIn(380, 820)
+animateScrollBy(-distance, tween(duration, easing = Easing { t -> 1f - (1f - t).pow(1.7f) }))
+```
+
+距离靠「已过项数 × 可见项平均高度」估算：懒加载列表拿不到精确总高度，
+但 `animateScrollBy` 滚过头会被夹在顶部，估大安全；估小时末尾补一记 `animateScrollToItem(0)`。
+
+### 43.2 工作 Tab 双击没反应：Tab 常量写错了
+
+`WorkPage` 里写的是 `if (ScrollToTop.tab == ShellState.TAB_MINE)`（从我的页复制过来的），
+而工作页属于 `TAB_WORK`，所以工作 Tab 双击永远不满足条件。
+
+### 43.3 验证
+
+| 用例 | 结果 |
+| --- | --- |
+| 工作圈 滚动后双击 | 精确回到顶端（与全新打开顶部同帧，差异仅状态栏分钟数） |
+| 工作 滚动后双击 | `wk1 vs wk2 = 23.99`（确实滚过）、`wk0 vs wk2 = 0.00`（回到原位） |
+| 我的 滚动后双击 | 1.55（噪声级） |
+| 动画连续性 | 12fps 抽帧相相关：运动期间**每帧都有位移**，无中途 dy=0 的停顿 |
+
+### 43.4 教训
+
+- 「慢慢滚」不要用多次 `animateScrollBy` 拼：每次调用都是一条新动画，观感必然分段。
+  要一条曲线就一次性给足距离和时长。
+- 复制粘贴的 `LaunchedEffect` 里最容易漏改 Tab 常量 —— 它是编译期合法的死逻辑，不看根本发现不了。
+
 ## 42. 第四十二轮（2026-10-28）：连堂的下课时刻 + 岛副标题（1.1.12 / versionCode 64）
 
 ### 42.1 「一节课」不等于 45 分钟
