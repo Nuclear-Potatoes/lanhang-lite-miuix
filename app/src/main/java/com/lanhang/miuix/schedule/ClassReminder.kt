@@ -120,6 +120,20 @@ object ClassReminder {
         desired.forEachIndexed { index, slot -> setSlot(app, manager, index, slot) }
         armResync(app, manager)
         armNextDay(app, manager)
+        // 课中提醒 / 超级岛 / 自动勿扰全关时，之前排下的「上下课边界」闹钟必须撤掉：
+        // 否则它到点仍会触发 handleClassStarted，用户就会遇到
+        // 「课中提醒已经关掉了，课中还是有提醒」。
+        if (!ClassReminderStore.inClassEnabled &&
+            !ClassReminderStore.islandEnabled &&
+            !ClassReminderStore.autoDnd
+        ) {
+            for (period in 1..12) {
+                val rc = RC_BOUNDARY_BASE + (period - 1) * 2
+                runCatching { manager.cancel(boundaryPending(app, rc, ACTION_CLASS_STARTED, "")) }
+                runCatching { manager.cancel(boundaryPending(app, rc + 1, ACTION_CLASS_ENDED, "")) }
+                runCatching { manager.cancel(boundaryPending(app, RC_IN_CLASS_BASE + period, ACTION_CLASS_STARTED, "")) }
+            }
+        }
         Log.d(TAG, "armed ${desired.size} slots, advance=${ClassReminderStore.advanceMinutes}")
     }
 
@@ -288,8 +302,14 @@ object ClassReminder {
         val info = infoOf(app, slot)
         if (ClassReminderStore.autoDnd) ClassDnd.apply(app, ClassReminderStore.dndLevel)
         val inClass = ClassReminderStore.inClassEnabled
-        if (!inClass && !ClassReminderStore.islandEnabled) return
-        if (inClass && !ClassReminderStore.inClassFull) {
+        // 课中提醒关掉 = 课中彻底安静：不发通知，岛也不切到「已上课」，
+        // 顺手把上课前那条倒计时岛收掉（否则它会在课上一直挂着）。
+        if (!inClass) {
+            ClassReminderIsland.cancelAll(app)
+            runCatching { ClassReminderNotify.cancel(app, NOTIFY_ID_BASE + period) }
+            return
+        }
+        if (!ClassReminderStore.inClassFull) {
             val showFrom = info.endAt - ClassReminderStore.inClassBeforeEndMinutes * 60_000L
             if (System.currentTimeMillis() < showFrom) return
         }

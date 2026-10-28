@@ -351,7 +351,7 @@ class ScheduleFragment : Fragment() {
             isClickable = false
             isFocusable = false
         }
-        layer.addView(ghost, FrameLayout.LayoutParams(layer.width, layer.height))
+        layer.addView(ghost, overlayParams(layer, layer.width, layer.height))
         pagerGhost = ghost
 
         val axisW = (content.left + axisWidthPx()).coerceIn(0, layer.width / 2)
@@ -364,7 +364,7 @@ class ScheduleFragment : Fragment() {
                     isClickable = false
                     isFocusable = false
                 }
-                layer.addView(axis, FrameLayout.LayoutParams(axisW, layer.height))
+                layer.addView(axis, overlayParams(layer, axisW, layer.height))
                 pagerAxis = axis
             }
         }
@@ -395,7 +395,7 @@ class ScheduleFragment : Fragment() {
                     isClickable = false
                     isFocusable = false
                 }
-                layer.addView(view, FrameLayout.LayoutParams(colsW, h))
+                layer.addView(view, overlayParams(layer, colsW, h))
                 pagerNew = view
                 pagerAxis?.bringToFront() // 新图后加，默认会盖住时间轴，提上来
                 applyPagerDrag(pagerDx)
@@ -631,6 +631,19 @@ class ScheduleFragment : Fragment() {
             null
         }
     }
+
+    /**
+     * 叠加层（幽灵位图 / 时间轴条 / 新页位图）的 LayoutParams。
+     *
+     * 内容层是有 padding 的 FrameLayout（左 4dp、上 3dp），子 View 会被放在 padding 之内；
+     * 而这三个位图是**在屏幕坐标里整层拍的**，再被 padding 推一下就会整体右移 11px、下移 8px ——
+     * 用户看到的就是「切周时左侧时间轴往右伸展、日期行往下伸展」。用负 margin 抵掉。
+     */
+    private fun overlayParams(layer: FrameLayout, w: Int, h: Int): FrameLayout.LayoutParams =
+        FrameLayout.LayoutParams(w, h).apply {
+            leftMargin = -layer.paddingLeft
+            topMargin = -layer.paddingTop
+        }
 
     private fun opaqueCopy(src: Bitmap): Bitmap {
         val out = Bitmap.createBitmap(src.width, src.height, Bitmap.Config.ARGB_8888)

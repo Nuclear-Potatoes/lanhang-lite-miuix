@@ -24,6 +24,45 @@
 
 ---
 
+## 41. 第四十一轮（2026-10-28）：切周位移 + 课中提醒关不掉（1.1.11 / versionCode 63）
+
+### 41.1 「长按拖动时左侧时间轴向右伸展、周一到周日日期向下伸展」
+
+真因不是缩放，是**位移**：内容层 `contentGrid` 是有 padding 的 `FrameLayout`
+（`paddingHorizontal=4dp`、`paddingVertical=3dp` → 2.75 密度下 11px / 8px），
+子 View 会被放在 padding 之内。三个叠加位图（幽灵、时间轴条、新页）是**在屏幕坐标里整层拍的**
+（`capturePagerBase` 已经把 `content.left/top` 平移进去了），再被 padding 推一次 →
+整体右移 11px、下移 8px。看起来就是「时间轴往右伸、日期行往下伸」。
+
+实测证据：用户录屏里轴列 `08:00` 文字框 x0 = 32（静止）→ 45（拖动中），+13px；
+我们的设备上复现为 +12px。
+
+修法：新增 `overlayParams(layer, w, h)`，给三个叠加 ImageView 加
+`leftMargin = -layer.paddingLeft`、`topMargin = -layer.paddingTop`，把位图摆回内容层的 (0,0)。
+
+复测：`08:00` 文字框静止 `(29,955,55,51)`、拖动中 `(29,955,55,51)` —— 位置和尺寸完全一致。
+
+同一处顺带给 `weekScroll` / `gridScroll` 加 `android:overScrollMode="never"`：
+HyperOS 的 stretch 过滚动会缩放整块内容，是同一类「看着像放大」的观感来源。
+
+### 41.2 课中提醒关掉后仍有课中提醒
+
+`handleClassStarted` 原来是「课中提醒开着 **或者** 超级岛开着」就干活，
+所以只关课中提醒、岛还开着时，课上依旧会把岛切成「已上课」并挂着；
+另外 `rearm()` 只撤槽位闹钟，`RC_BOUNDARY_BASE` / `RC_IN_CLASS_BASE` 段落的边界闹钟会残留，
+到点照样触发一次。
+
+修法：
+1. `handleClassStarted` 里 `if (!inClass) { 收岛 + 取消课中通知 + return }` —— 课中提醒关掉就等于课中彻底安静；
+2. `rearm()` 里当「课中提醒 / 岛 / 自动勿扰」三者全关时，把边界闹钟整段撤掉。
+
+### 41.3 教训
+
+- 有 padding 的容器里摆「整层截图」，一定要用负 margin 抵消 padding，
+  否则就是几像素的整体位移 —— 用户会形容成「伸展」。
+- 开关语义要问「关掉它等于什么」，而不是「哪个变量控制它」：
+  课中提醒关掉，岛、通知、残留闹钟三处都得跟着停。
+
 ## 40. 第四十轮（2026-10-28）：切周「放大一下」+ 底部留白（1.1.10 / versionCode 62）
 
 ### 40.1 「按住课表滑动时课表被放大一下，松手又缩回去」
