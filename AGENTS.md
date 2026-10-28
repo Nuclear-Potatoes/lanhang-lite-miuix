@@ -24,6 +24,41 @@
 
 ---
 
+## 40. 第四十轮（2026-10-28）：切周「放大一下」+ 底部留白（1.1.10 / versionCode 62）
+
+### 40.1 「按住课表滑动时课表被放大一下，松手又缩回去」
+
+真因：位图**按滚动容器尺寸拍**（`gridScroll` 1864px 高），却塞进
+`FrameLayout.LayoutParams(layer.width, layer.height)`（内容层 1900px 高）+ `FIT_XY`，
+两者差 2%，整页被拉长——肉眼看就是「课表被放大」。
+
+实测证据：在 x=1100 一列上找行分隔线，静止时间距 142px，拖动中 145px（+2.1%）。
+
+修法：新增 `capturePagerBase(layer, content)`，位图**永远按内容层尺寸**创建、
+先铺 `page_bg`，再把滚动容器按它自己的 `left/top` 平移后画进去。位图尺寸 ==
+LayoutParams 尺寸，`FIT_XY` 不再产生任何缩放。时间轴裁剪宽度同步改成
+`content.left + axisWidthPx()`（内容层坐标）。
+
+复测：静止 149px，拖动中 149px —— 完全一致；顶栏区域在拖动中与静止帧**逐像素相同**
+（差异采样点 0），所以「顶栏闪动」是同一个拉伸引起的，一并消失。
+
+### 40.2 时间表底端下移，贴近 tab 栏
+
+原状：`gridContent` 底 2297，tab 栏顶 2397 —— 空了 100px。两个来源：
+1. `renderGrid` 的 `panelPad = dp(22)` 是估算值，实际面板上下内边距只有 ~dp(9)，
+   多留的 52px 让 11 节永远排不满；
+2. 布局里 `contentGrid` 的 `marginBottom=8dp` + `paddingVertical=6dp` +
+   `gridScroll` 的 `paddingBottom=2dp` 又是一层空白。
+
+修法：`panelPad → dp(9)`、行高上限 `dp(56) → dp(96)`（高屏真的能撑满）、
+`marginBottom → 2dp`、`paddingVertical → 3dp`、`gridScroll paddingBottom → 0`。
+复测：`gridContent` 底 2365，tab 栏顶 2397，只剩 12dp 呼吸位。
+
+### 40.3 教训
+
+- 位图的 `LayoutParams` 必须等于**位图自身尺寸**；FIT_XY + 不匹配的尺寸 = 隐性拉伸。
+- 「预留常量」不要写估算值（`dp(22)`），量不到就量不到，估出来的空白用户一眼就看见。
+
 ## 39. 第三十九轮（2026-10-28）：切周三个真 bug（1.1.9 / versionCode 61）
 
 用户反馈「不同周的课表叠加在一起，且左侧时间轴会跟着课表一起移动」。逐帧放大后定位到三处：

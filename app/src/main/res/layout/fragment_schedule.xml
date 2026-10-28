@@ -80,17 +80,17 @@
                 android:layout_weight="1"
                 android:layout_marginHorizontal="2dp"
                 android:layout_marginTop="2dp"
-                android:layout_marginBottom="8dp"
+                android:layout_marginBottom="2dp"
                 android:background="@android:color/transparent"
                 android:paddingHorizontal="4dp"
-                android:paddingVertical="6dp">
+                android:paddingVertical="3dp">
 
                 <androidx.core.widget.NestedScrollView
                     android:id="@+id/gridScroll"
                     android:layout_width="match_parent"
                     android:layout_height="match_parent"
                     android:clipToPadding="false"
-                    android:paddingBottom="2dp"
+                    android:paddingBottom="0dp"
                     android:scrollbars="none">
 
                     <LinearLayout

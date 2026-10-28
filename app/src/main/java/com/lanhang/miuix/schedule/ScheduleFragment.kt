@@ -338,7 +338,7 @@ class ScheduleFragment : Fragment() {
         val layer = activeContentLayer()
         if (layer.width <= 0 || layer.height <= 0) return
         val content = activeContentScroll() ?: return
-        val oldBmp = captureSnapshot(content)?.let { opaqueCopy(it) } ?: return
+        val oldBmp = capturePagerBase(layer, content) ?: return
         pagerBase = currentWeek
         pagerTarget = target
         pagerDx = 0f
@@ -354,7 +354,7 @@ class ScheduleFragment : Fragment() {
         layer.addView(ghost, FrameLayout.LayoutParams(layer.width, layer.height))
         pagerGhost = ghost
 
-        val axisW = axisWidthPx().coerceIn(0, layer.width / 2)
+        val axisW = (content.left + axisWidthPx()).coerceIn(0, layer.width / 2)
         runCatching {
             if (axisW > 0) {
                 val strip = Bitmap.createBitmap(oldBmp, 0, 0, axisW, oldBmp.height)
@@ -378,7 +378,7 @@ class ScheduleFragment : Fragment() {
             val axisVis = pagerAxis?.visibility
             pagerGhost?.visibility = View.INVISIBLE
             pagerAxis?.visibility = View.INVISIBLE
-            val newBmp = captureSnapshot(content)?.let { opaqueCopy(it) }
+            val newBmp = capturePagerBase(layer, content)
             pagerGhost?.visibility = ghostVis ?: View.VISIBLE
             pagerAxis?.visibility = axisVis ?: View.VISIBLE
             // 拍照完成，内容层藏起来：之后无论谁触发重绘都插不进手势里
@@ -607,6 +607,31 @@ class ScheduleFragment : Fragment() {
      * `View.draw()` 画出来的位图背景是透明的，两张透明位图叠在一起会互相透出来，
      * 屏幕上就是「两周课表叠加」。铺垫底色后每张图都是实心的。
      */
+    /**
+     * 按**内容层**尺寸拍一张不透明的整页位图。
+     *
+     * 关键：位图尺寸必须等于 `layer.width x layer.height`，并且把滚动容器按它自己的
+     * 偏移（padding）画进去。以前按滚动容器尺寸拍、再用 `FIT_XY` 塞进内容层，
+     * 两者高度差 2%，于是整页被拉伸 —— 用户看到「按住切周时课表放大一下，松手缩回去」。
+     */
+    private fun capturePagerBase(layer: FrameLayout, content: View): Bitmap? {
+        if (layer.width <= 0 || layer.height <= 0) return null
+        return try {
+            val bmp = Bitmap.createBitmap(layer.width, layer.height, Bitmap.Config.ARGB_8888)
+            val canvas = android.graphics.Canvas(bmp)
+            canvas.drawColor(
+                androidx.core.content.ContextCompat.getColor(requireContext(), R.color.page_bg)
+            )
+            canvas.save()
+            canvas.translate(content.left.toFloat(), content.top.toFloat())
+            content.draw(canvas)
+            canvas.restore()
+            bmp
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
     private fun opaqueCopy(src: Bitmap): Bitmap {
         val out = Bitmap.createBitmap(src.width, src.height, Bitmap.Config.ARGB_8888)
         val canvas = android.graphics.Canvas(out)
@@ -1075,7 +1100,7 @@ class ScheduleFragment : Fragment() {
             ?: (resources.displayMetrics.widthPixels - dp(2 * 2 + 2 * 4))
         val bandH = dp(18)
         val headerRowH = dp(46)
-        val panelPad = dp(22)   // 面板上下内边距 + 表头下方 2px 间隔的总预留
+        val panelPad = dp(9)    // 面板上下内边距（3dp×2）+ 表头下方 2px 的真实预留
         val availH = gridScroll.height
         // 只在「完全没量到高度」（首帧）时补一次重绘；量到高度后无论多小都不再重排，
         // 否则可视区高度真的偏小时会自己触发自己（死循环）。
@@ -1087,7 +1112,7 @@ class ScheduleFragment : Fragment() {
             }
         }
         val usable = availH - panelPad - headerRowH - bandH * 2 - gapH * 10
-        val rowH = (usable / 11).coerceIn(dp(32), dp(56))
+        val rowH = (usable / 11).coerceIn(dp(32), dp(96))
 
         // ===== 宽度自适应（2026-10-27 第二十轮用户反馈：窄屏上「最左侧的时间被挡住」）=====
         // 以前的写法是「时间列固定 44dp + 列宽夹到至少 30dp」，窄屏里两者一起把总宽顶出容器，
