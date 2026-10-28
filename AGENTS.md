@@ -24,6 +24,43 @@
 
 ---
 
+## 39. 第三十九轮（2026-10-28）：切周三个真 bug（1.1.9 / versionCode 61）
+
+用户反馈「不同周的课表叠加在一起，且左侧时间轴会跟着课表一起移动」。逐帧放大后定位到三处：
+
+1. **拍错对象**：`startPager` 先把「旧周位图」加进内容层，之后才 `post` 去拍「新周」——
+   而拍的是外层 `FrameLayout`，于是**旧周位图被拍进了新周那张图里**，滑进来的那一页
+   自带旧周的像素和一条偏移的时间轴 → 两周叠加。
+   修法：新增 `activeContentScroll()`，位图**只拍滚动容器**（`gridScroll` / `weekScroll`），
+   拍之前还把旧周位图临时 `INVISIBLE` 做双保险。
+2. **透明底互相透出来**：`View.draw()` 得到的位图背景是透明的，两张图边缘叠在一起时
+   能互相看见 → 更重的「叠加」观感。修法：`opaqueCopy()` 先铺 `page_bg` 再画内容。
+3. **z 序**：新周那张图是 `post` 里最后 `addView` 的，默认压在时间轴之上；overdrag 时
+   它还会盖住时间轴。修法：插入后 `pagerAxis?.bringToFront()`。
+
+## 39.1 结论
+
+切周现在是**三张实心位图**：钉住的时间轴（`[0, axisW)`，`translationX` 恒 0，永远最上层）
++ 旧周整页（跟手）+ 新周（从 `axisW` 起裁，不含轴）。手势期间内容层全部 `INVISIBLE`，
+不重绘、不测量。
+
+## 39.3 第四个 bug：手势起手点落在课程块上就滑不动
+
+`OnTouchListener` 挂在 `gridScroll` 上时，手指落在课程块（可点击的 View）上，
+事件被课程块消费，监听器根本收不到 —— 只有落在空白处才切得动周，
+而且左右两侧空白位置不同，看起来像「往回切周随机失效」。
+
+修法：新增 `SwipePagerLayout extends FrameLayout`（课表内容层容器，见 `fragment_schedule.xml`
+的 `contentWeek` / `contentGrid`），在 `dispatchTouchEvent` 里**先于子 View** 拿到事件：
+`pagerTouch` 返回 true 就吃掉后续事件，并给子 View 补一个 `ACTION_CANCEL` 复位按下态。
+`ACTION_DOWN` 一律不消费，所以课程块点击、竖向滚动都照常。
+
+## 39.2 教训（写死在这里，别再犯）
+
+- 拍位图**只拍真正装内容的那一层**；任何覆盖物（ghost / overlay / shadow）都会被拍进去。
+- 位图做动画前必须**垫不透明底色**，否则透明区域会互相透出。
+- 手动 `addView` 的覆盖层，z 序要靠 `bringToFront()` 保证，不要依赖添加顺序跨帧成立。
+
 ## 38. 第三十八轮（2026-10-28）：切周定稿为「静态三图跟手」（1.1.8 / versionCode 60）
 
 用户第三次反馈「闪动 + 拖影 + 颤动」。上一版（1.1.7）虽然去掉了强制测量，但手势期间

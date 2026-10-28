@@ -114,9 +114,9 @@ class ScheduleFragment : Fragment() {
         }
         swipeRefresh.setOnRefreshListener { refresh() }
         val weekScroll = view.findViewById<androidx.core.widget.NestedScrollView>(R.id.weekScroll)
-        installWeekSwipe(weekScroll)
+        installWeekSwipe(view.findViewById(R.id.contentWeek))
         gridScroll = view.findViewById(R.id.gridScroll)
-        installWeekSwipe(gridScroll)
+        installWeekSwipe(view.findViewById(R.id.contentGrid))
 
         // 2026-10-25 用户要求：课表也要像工作圈那样，往下滚时顶栏跟着收起/展开。
         // 工作圈/成绩/设置是 Compose 列表，用 ReportListScroll 上报；课表是自绘网格 +
@@ -234,13 +234,13 @@ class ScheduleFragment : Fragment() {
     private var pagerDx = 0f
     private var pagerChromeOff = false
 
-    private fun installWeekSwipe(target: View) {
+    private fun installWeekSwipe(target: SwipePagerLayout) {
         val touchSlop = ViewConfiguration.get(requireContext()).scaledTouchSlop
         var downX = 0f
         var downY = 0f
         var horizontal = false
 
-        target.setOnTouchListener { _, event ->
+        target.pagerTouch = { event ->
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
                     if (pagerTarget >= 0) finishPager(false)
@@ -337,7 +337,8 @@ class ScheduleFragment : Fragment() {
     private fun startPager(target: Int) {
         val layer = activeContentLayer()
         if (layer.width <= 0 || layer.height <= 0) return
-        val oldBmp = captureSnapshot(layer) ?: return
+        val content = activeContentScroll() ?: return
+        val oldBmp = captureSnapshot(content)?.let { opaqueCopy(it) } ?: return
         pagerBase = currentWeek
         pagerTarget = target
         pagerDx = 0f
@@ -373,7 +374,13 @@ class ScheduleFragment : Fragment() {
             val w = layer.width
             val h = layer.height
             if (w <= 0 || h <= 0) return@post
-            val newBmp = captureSnapshot(layer)
+            val ghostVis = pagerGhost?.visibility
+            val axisVis = pagerAxis?.visibility
+            pagerGhost?.visibility = View.INVISIBLE
+            pagerAxis?.visibility = View.INVISIBLE
+            val newBmp = captureSnapshot(content)?.let { opaqueCopy(it) }
+            pagerGhost?.visibility = ghostVis ?: View.VISIBLE
+            pagerAxis?.visibility = axisVis ?: View.VISIBLE
             // 拍照完成，内容层藏起来：之后无论谁触发重绘都插不进手势里
             for (i in 0 until layer.childCount) {
                 val child = layer.getChildAt(i)
@@ -390,6 +397,7 @@ class ScheduleFragment : Fragment() {
                 }
                 layer.addView(view, FrameLayout.LayoutParams(colsW, h))
                 pagerNew = view
+                pagerAxis?.bringToFront() // 新图后加，默认会盖住时间轴，提上来
                 applyPagerDrag(pagerDx)
             }
         }
@@ -582,6 +590,32 @@ class ScheduleFragment : Fragment() {
     /** 当前可见的内容层（网格或周视图），两者都是 FrameLayout */
     private fun activeContentLayer(): FrameLayout =
         (if (showingGrid) contentGrid else contentWeek) as FrameLayout
+
+    /**
+     * 当前视图真正装课表的滚动容器。
+     *
+     * 切周的位图**必须只拍它**：拍外层 FrameLayout 会把「盖在上面的旧周位图」和
+     * 「钉住的时间轴」一起拍进去，新周那张图里就混进旧周的像素和多出来的一条时间轴。
+     */
+    private fun activeContentScroll(): View? = runCatching {
+        requireView().findViewById<View>(if (showingGrid) R.id.gridScroll else R.id.weekScroll)
+    }.getOrNull()
+
+    /**
+     * 给位图垫一层不透明底色（`page_bg`）。
+     *
+     * `View.draw()` 画出来的位图背景是透明的，两张透明位图叠在一起会互相透出来，
+     * 屏幕上就是「两周课表叠加」。铺垫底色后每张图都是实心的。
+     */
+    private fun opaqueCopy(src: Bitmap): Bitmap {
+        val out = Bitmap.createBitmap(src.width, src.height, Bitmap.Config.ARGB_8888)
+        val canvas = android.graphics.Canvas(out)
+        canvas.drawColor(
+            androidx.core.content.ContextCompat.getColor(requireContext(), R.color.page_bg)
+        )
+        canvas.drawBitmap(src, 0f, 0f, null)
+        return out
+    }
 
     /** 把当前内容画进位图，做「旧内容滑出」的那一层 */
     private fun captureSnapshot(view: View): Bitmap? {
