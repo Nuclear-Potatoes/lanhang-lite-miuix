@@ -24,6 +24,39 @@
 
 ---
 
+## 42. 第四十二轮（2026-10-28）：连堂的下课时刻 + 岛副标题（1.1.12 / versionCode 64）
+
+### 42.1 「一节课」不等于 45 分钟
+
+作息是 45+10+45（08:00-08:45 / 08:55-09:40），连堂就是 45+10+45+10+45。
+课表数据把连堂合并成一条 `CourseBlock(start..end)`（见 `ScheduleWidgetData`），
+但 `ClassReminder.infoOf` 原来写的是：
+
+```kotlin
+val endAt = PeriodClock.end(slot.period)   // ← 只取起始那一节，45 分钟后就「下课」了
+```
+
+后果：连堂的「距下课 N 分钟」提前约一小时响，超级岛倒计时也提前一小时归零，
+课中勿扰在课间就被恢复。
+
+修法：`lastPeriod = slot.courses.maxOf { it.end }.coerceAtLeast(slot.period)`，
+`endAt` 取 `PeriodClock.end(lastPeriod)`；节次文案在 `lastPeriod > period` 时用新增的
+`class_reminder_period_range`（「第 3-4 节」），否则仍是「第 3 节」。
+`armBoundaries` 的下课边界闹钟、课中提醒阈值、岛倒计时全部走同一个 `info.endAt`，改一处全对。
+
+小组件那一侧本来就用的是 `course.end`（`PeriodClock.endMinute(it.end)`），不受影响 —— 只有提醒这条链路错了。
+
+### 42.2 超级岛副标题
+
+`bigIslandArea.imageTextInfoLeft.textInfo.content` 原来是空串。现在填
+「第 N-M 节 ｜ 教室 ｜ 教师」（`subtitleOf`：左侧设置成「地点」时不重复教室）。
+注意：**收起的胶囊态只画标题 + 倒计时**，副标题要展开岛才看得到，这是系统模板决定的，改不了。
+
+### 42.3 教训
+
+- 时间类逻辑只有一个「唯一的作息来源」还不够，还要问一句「这个节次字段代表的是起点还是整段」。
+- `Slot` 只带起始节次时，凡是要「结束时刻」的地方都得回到 `CourseBlock.end`。
+
 ## 41. 第四十一轮（2026-10-28）：切周位移 + 课中提醒关不掉（1.1.11 / versionCode 63）
 
 ### 41.1 「长按拖动时左侧时间轴向右伸展、周一到周日日期向下伸展」

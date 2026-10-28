@@ -230,12 +230,22 @@ object ClassReminder {
         val teacher = slot.courses.mapNotNull { it.teacher.takeIf { t -> t.isNotBlank() } }
             .distinct().joinToString(" / ")
         val zone = ZoneId.systemDefault()
-        val endAt = PeriodClock.end(slot.period)
+        // 课表里的「一节」可能是一整段连堂：3-4 节 = 45+10+45，7-9 节 = 45+10+45+10+45。
+        // 课表数据已经把连堂合并成一条 CourseBlock(start..end)，所以下课时刻必须取 end 那一节，
+        // 不能一律按「一节 45 分钟」算 —— 否则「距下课 N 分钟」会提前一小时响、倒计时也是错的。
+        val lastPeriod = slot.courses.maxOfOrNull { it.end }
+            ?.coerceAtLeast(slot.period)
+            ?: slot.period
+        val endAt = PeriodClock.end(lastPeriod)
             ?.let { slot.date.atTime(it).atZone(zone).toInstant().toEpochMilli() }
             ?: (slot.startAt + 45 * 60_000L)
         return SlotInfo(
             courseName = courseName,
-            section = context.getString(R.string.class_reminder_period, slot.period),
+            section = if (lastPeriod > slot.period) {
+                context.getString(R.string.class_reminder_period_range, slot.period, lastPeriod)
+            } else {
+                context.getString(R.string.class_reminder_period, slot.period)
+            },
             room = room,
             teacher = teacher,
             startAt = slot.startAt,

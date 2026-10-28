@@ -99,6 +99,7 @@ object ClassReminderIsland {
             timerWhen = startMillis,
             now = now,
             islandLeft = leftOf(courseName, room),
+            subtitle = subtitleOf(section, room, teacher),
             aodTitle = aodOf(courseName, room),
         )
         return post(app, id, title, content, json)
@@ -132,6 +133,7 @@ object ClassReminderIsland {
             timerWhen = if (remain) endMillis else 0L,
             now = now,
             islandLeft = leftOf(courseName, room),
+            subtitle = subtitleOf(section, room, teacher),
             aodTitle = aodOf(courseName, room),
         )
         // 课前那条先撤掉，免得两张卡同时在岛里排队
@@ -172,6 +174,14 @@ object ClassReminderIsland {
     /** 正文：节次 ｜ 地点 ｜ 教师，缺哪段就不拼哪段 */
     private fun contentOf(section: String, room: String, teacher: String): String =
         listOf(section, room, teacher).filter { it.isNotBlank() }.joinToString(" ｜ ")
+
+    /**
+     * 岛上的副标题（课程名下面那一行）：第 N 节 ｜ 教室 ｜ 教师。
+     *
+     * 「超级岛左侧」选了「地点」时，教室已经在标题里了，这里就不再重复。
+     */
+    private fun subtitleOf(section: String, room: String, teacher: String): String =
+        contentOf(section, if (ClassReminderStore.islandLeft == "room") "" else room, teacher)
 
     /** 缩略态放不下完整课名，取前 6 个字（和 Nexio 一致的做法） */
     private fun shortOf(name: String): String = if (name.length <= 6) name else name.take(6)
@@ -256,6 +266,7 @@ object ClassReminderIsland {
         timerWhen: Long,
         now: Long,
         islandLeft: String,
+        subtitle: String,
         aodTitle: String,
     ): String {
         val paramV2 = JSONObject().apply {
@@ -351,7 +362,8 @@ object ClassReminderIsland {
                                         "textInfo",
                                         JSONObject().apply {
                                             put("title", islandLeft)
-                                            put("content", "")
+                                            // 副标题：第 N 节 ｜ 教室 ｜ 教师（用户 2026-10-28 要求，参考通知卡片的信息层次）
+                                            put("content", subtitle)
                                             put("showHighlightColor", false)
                                             put("narrowFont", false)
                                         }

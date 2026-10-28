@@ -678,6 +678,8 @@
     <string name="class_reminder_island_unsupported">当前设备不支持超级岛，会使用普通通知</string>
     <string name="class_reminder_island_channel">上课提醒（超级岛）</string>
     <string name="class_reminder_period">第 %1$d 节</string>
+    <!-- 连堂（3-4 节一起上）时的节次文案 -->
+    <string name="class_reminder_period_range">第 %1$d-%2$d 节</string>
     <string name="class_reminder_test_room">测试教室</string>
     <string name="class_reminder_footer">提醒只在本机排定，不上传任何数据。关机或错过的提醒不会补发。</string>
     <string name="class_reminder_section_in_class">课中提醒</string>
