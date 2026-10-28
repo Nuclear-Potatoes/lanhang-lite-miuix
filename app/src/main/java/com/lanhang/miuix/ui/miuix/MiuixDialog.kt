@@ -451,13 +451,18 @@ fun showMiuixInput(
     val host = resolveDialogHost(context)
     val dialog = Dialog(host ?: context)
     dialog.requestWindowFeature(Window.FEATURE_NO_TITLE)
-    var text = ""
     val view = ComposeView(context).apply {
         setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnDetachedFromWindow)
         installViewTreeOwners(host ?: context)
         setContent {
             LanhangMiuixTheme(darkTheme = (host ?: context).isNightMode()) {
                 var visible by remember { mutableStateOf(false) }
+                // 2026-10-29 修「评论/回复输入框打字不显示、发出去变成最后一次输入的内容」：
+                // 原来 text 是 setContent 外的一个普通 var，TextField 的 onValueChange 虽然改了它，
+                // 但它不是 Compose State，值变不触发重组 → 打的字屏幕上永远不更新；只有点「发送」
+                // 那一刻才把累积值一次性取走，看起来就是「输入的不显示、发的是最后一次输入的」。
+                // 改成 remember + mutableStateOf，TextField 的 value / onValueChange 才真正生效。
+                var text by remember { mutableStateOf("") }
                 val dimHolder = remember { floatArrayOf(0f) }
                 var dimAnim by remember { mutableStateOf<android.animation.ValueAnimator?>(null) }
                 // 对话框被销毁（切主题 recreate、页面回收）时立刻停掉遮罩动画

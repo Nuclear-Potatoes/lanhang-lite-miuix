@@ -24,6 +24,70 @@
 
 ---
 
+## 47. 第四十七轮（2026-10-29）：评论输入框 / 深浅配色 / 课表自适应「至少保证表头」
+
+用户三条：①深浅模式配色不对（深色顶栏与工作圈应纯黑、评论区灰；浅色顶栏与内容应淡灰、评论区更深）；
+②工作圈回复别人时输入的内容不显示、也发不出去，「只有最后一次输入的内容才会被发送」；
+③自适应课表要**至少保证**行标题周一~周五、列标题 1~10 节完整（即使某天/某节没课），
+只有周末有课或 11/12 节有课才追加并重新分配空间，别破坏泳道设计。
+
+### 47.1 评论/回复输入框「打字不显示、发出去是最后一次」的真因
+
+`ui/miuix/MiuixDialog.kt` 的 `showMiuixInput`，`text` 原来是 `setContent` 外的一个普通 `var`：
+
+```kotlin
+var text = ""          // ← Compose 外的普通变量
+setContent { TextField(value = text, onValueChange = { text = it }, ...) }
+```
+
+`TextField` 的 `value`/`onValueChange` 确实改了它，但它**不是 Compose State**，值变不触发重组——
+于是打的字屏幕上永远不更新；只有点「发送」那一刻 `text.trim()` 才把累积值一次性取走。
+用户看到的就是「输入的不显示、发出去变成最后一次输入的那份」。
+
+修法：把 `text` 移进 `setContent`，改成 `var text by remember { mutableStateOf("") }`。
+
+**教训**：任何喂给 Compose 组件做 `value` 的变量都必须是 `MutableState`；
+Compose 外的普通 `var` 当 `value` 传进去，等于给组件一个永不更新的快照。
+
+### 47.2 深浅配色：顶栏/内容区同色，评论区分层
+
+顶栏（`ShellBars`）与各页面内容区都用 `MiuixTheme.colorScheme.background`，
+工作圈评论区用 `surfaceContainerHigh`。改一处色板就全覆盖（`ui/miuix/LanhangMiuix.kt`）：
+
+| 模式 | background（顶栏 + 内容区） | surfaceContainerHigh（评论区） | surfaceContainerHighest |
+| --- | --- | --- | --- |
+| 深色 | `Color.Black`（纯黑） | `0xFF242424`（灰，比纯黑高一档） | `0xFF2D2D2D` |
+| 浅色 | `0xFFF5F5F5`（淡灰） | `0xFFE4E4E4`（比淡灰更深） | `0xFFDCDCDC` |
+
+深色=顶栏/内容纯黑、评论区灰；浅色=顶栏/内容淡灰一致、评论区更深一档拉对比。
+
+### 47.3 课表自适应改成「至少保证表头完整」
+
+上一轮（§46.2）是「只画有课的行列」——上半学期没早八、周末没课就砍行/砍列，表头跟着缺。
+这次改成**保底 + 追加**：
+
+```kotlin
+val rowOrder = (1..PeriodClock.count).filter { p ->
+    p <= 10 || dayCourses.any { list -> list.any { ci -> ci.periodStart <= p && p <= ci.periodEnd } }
+}
+val colOrder = (0 until 7).filter { d -> d < 5 || dayCourses[d].isNotEmpty() }
+```
+
+节次行至少画满 1~10、星期列至少画满周一~周五；只有 11/12 节、周六/周日真的有课才追加，
+再按可见序号重新分配行高/列宽。行列自适应只改内部排布、不改内容层尺寸（§46.3），泳道三图跟手不变。
+
+### 47.4 本轮验证状态（诚实记账）
+
+- ✅ 评论输入框：输入 `hello123test` **即时回显**（修复前不显示）；发送取同一 State 故内容随之正确（未真发评论）。
+- ✅ 深色配色：课表 + 工作圈顶栏/内容纯黑、评论区灰（截图 c1/c2）。
+- ✅ 课表自适应：第 9 周显示周一~周五 × 1~10 节，表头完整（截图 c1）。
+- ⚠️ 浅色配色：色值已改，**代码级确定**；但 `adb shell cmd uimode night no` 未能把 App 切到浅色，
+  未拿到浅色设备截图。下次进 App 设置 → 外观 → 亮色 再截确认。
+
+本轮未发版（用户未要求 push）。
+
+---
+
 ## 46. 第四十六轮（2026-10-28）：第 12 节课 + 课表行列自适应
 
 用户两条：①「给课表的时间安排加一个第 12 节课，时间为 21:45 到 22:30」；

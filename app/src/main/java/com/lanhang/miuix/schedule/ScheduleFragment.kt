@@ -1185,14 +1185,20 @@ class ScheduleFragment : Fragment() {
         //
         // 以前「一律画满 11 节」，只要后半段没课下半屏就是空气；周末没课也照样占 2 列。
         // 现在只画「真的被课程覆盖到的节次」与「真的有课的星期」，行高/列宽按数量反推：
-        //   rowOrder：有课的节次（升序）。连堂块覆盖到的节次全部在内，所以块仍然连续；
-        //   colOrder：有课的星期（升序）。
+        //   rowOrder：节次（升序）。连堂块覆盖到的节次全部在内，所以块仍然连续；
+        //   colOrder：星期（升序）。
         // 切周动画（三张位图跟手）拍的是「整个内容层」，而行列自适应只改内部排布、
         // 不改内容层尺寸，所以泳道动画的位图尺寸假设不受影响。
+        //
+        // 2026-10-29 用户要求（改自「只画有课的行列」）：至少要保证**表头完整**——
+        //   节次行至少画满 1~10 节（即使某节没课），星期列至少画满周一~周五（即使某天没课）；
+        //   只有第 11/12 节、周六/周日真的有课时才追加进来，再重新分配行高/列宽。
+        // 于是「上半学期没早八」「周末没课」不再凭空砍掉整行/整列导致表头缺失，
+        // 真的排到 11/12 节、真的排到周末课，才把它们画出来。
         val rowOrder = (1..PeriodClock.count).filter { p ->
-            dayCourses.any { list -> list.any { ci -> ci.periodStart <= p && p <= ci.periodEnd } }
+            p <= 10 || dayCourses.any { list -> list.any { ci -> ci.periodStart <= p && p <= ci.periodEnd } }
         }
-        val colOrder = (0 until 7).filter { d -> dayCourses[d].isNotEmpty() }
+        val colOrder = (0 until 7).filter { d -> d < 5 || dayCourses[d].isNotEmpty() }
         val rowCount = rowOrder.size
         val colCount = colOrder.size
         if (rowCount == 0 || colCount == 0) {

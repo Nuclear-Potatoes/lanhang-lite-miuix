@@ -77,6 +77,10 @@ fun LanhangMiuixTheme(
 ) {
     val colors = remember(darkTheme) {
         if (darkTheme) {
+            // 2026-10-29 用户要求深色配色：所有顶栏与工作圈内容区都是纯黑（不是灰），
+            // 只有评论区是灰。顶栏(ShellBars)与页面内容区都用 colorScheme.background，
+            // 评论区用 surfaceContainerHigh —— 所以 background=纯黑、surfaceContainerHigh=灰，
+            // 就把「顶栏/内容区纯黑 + 评论区灰」一次铺到位。
             darkColorScheme(
                 primary = DarkPrimary,
                 onPrimary = Color.White,
@@ -84,9 +88,18 @@ fun LanhangMiuixTheme(
                 onPrimaryVariant = Color.White,
                 primaryContainer = DarkPrimaryContainer,
                 onPrimaryContainer = DarkOnPrimaryContainer,
+                background = Color.Black,
+                surfaceContainerHigh = Color(0xFF242424),
+                surfaceContainerHighest = Color(0xFF2D2D2D),
             )
         } else {
-            lightColorScheme()
+            // 2026-10-29 用户要求浅色配色：所有顶栏与工作圈内容区都是淡灰（彼此一致），
+            // 评论区比淡灰更深一档以拉出对比度。同样是 background=淡灰、surfaceContainerHigh=更深灰。
+            lightColorScheme(
+                background = Color(0xFFF5F5F5),
+                surfaceContainerHigh = Color(0xFFE4E4E4),
+                surfaceContainerHighest = Color(0xFFDCDCDC),
+            )
         }
     }
     // Miuix 的 OverlayDialog 内部用 NavigationBackHandler 接返回键；Fragment 里的 ComposeView
