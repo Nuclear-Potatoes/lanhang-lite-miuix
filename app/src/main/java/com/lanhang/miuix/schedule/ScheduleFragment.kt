@@ -202,28 +202,29 @@ class ScheduleFragment : Fragment() {
     }
 
     /**
-     * 横向跟手切周（第三十四轮，用户：「参考 nexio 课程表的周次课表切换效果，做到无极跟手切换，
-     * 而非每次滑动一段时间后才切换」）。
+     * 第三十六轮（用户录屏反馈「依旧严重闪动、拖影，两周的课表叠成一个反复切换」）。
      *
-     * 第三十五轮用户反馈：「左滑右滑效果非常诡异，拖影严重，也没有做到无极切换」。
+     * 把录屏逐帧拆开看出来的真凶有两个：
+     *  1. **横向拖动时 SwipeRefreshLayout 被拉起来了** —— 圆环指示器正好出现在「第 N 周」胶囊上，
+     *     它一边转圈一边触发刷新重绘，内容既被手指平移、又被刷新反复重画，就是「两周叠着乱闪」；
+     *  2. `ACTION_CANCEL`（父控件把手势抢走时发的）被当成正常松手处理，`event.x` 归零后
+     *     算出巨大位移，直接判成切周 —— 于是内容停在半路，周次和内容对不上。
      *
-     * 上一版把**整个内容层**整体平移，而松手时又用 `slideSwap` 再在层内部平移子 View，
-     * 两套位移叠在一起 —— 旧内容的幽灵快照跟着层一起动、新内容又自己滑入，
-     * 于是看到的就是「两张课表叠着抖」的拖影，且手势与内容不是 1:1。
-     *
-     * 现在照 app 里 HorizontalPager（MainActivity 底栏那种泳道分页）的模型重写成两页跟手：
-     *  · 手指一过 touchSlop，把旧内容拍成一张快照塞进内容层（盖在最上面）；
-     *  · 同时把目标周真正渲染进内容层，并整体挪到隔壁屏（`dx ± 屏宽`）；
-     *  · 拖动时快照与内容**各自**跟手移动（快照在 0，新内容在 ±屏宽），层本身不动 —— 不再叠影；
-     *  · 到头（第一周/最后一周）只按 0.35 阻尼，绝不渲染不存在的周；
-     *  · 松手过 20% 屏宽就顺势完成这次翻页，否则回弹。
+     * 现在三条硬改动：
+     *  1. DOWN 就 `requestDisallowInterceptTouchEvent(true)` 占住手势，只有判定为**竖向**
+     *     才交还给父控件（下拉刷新照旧可用）；判定为横向时顺手把 `swipeRefresh` 关掉；
+     *  2. 整个手势期间只跟**两张静态位图**（旧周 + 新周）走，内容层子 View 全程 INVISIBLE：
+     *     任何重绘都插不进动画中间，结构上不可能再叠影/闪动；
+     *  3. `ACTION_CANCEL` 一律回弹、绝不切周；判过不过阈值只用最后一帧 MOVE 的位移。
      */
 
     /** 跟手切周的现场 */
-    private var swipeGhost: ImageView? = null
-    private var swipeBaseWeek = -1
-    private var swipeTarget = -1
-    private var swipeDx = 0f
+    private var pagerOld: ImageView? = null
+    private var pagerNew: ImageView? = null
+    private var pagerBase = -1
+    private var pagerTarget = -1
+    private var pagerDx = 0f
+    private var pagerChromeOff = false
 
     private fun installWeekSwipe(target: View) {
         val touchSlop = ViewConfiguration.get(requireContext()).scaledTouchSlop
@@ -231,53 +232,72 @@ class ScheduleFragment : Fragment() {
         var downY = 0f
         var horizontal = false
 
-        target.setOnTouchListener { touchedView, event ->
+        target.setOnTouchListener { _, event ->
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
+                    if (pagerTarget >= 0) finishPager(false)
                     downX = event.x
                     downY = event.y
                     horizontal = false
-                    activeContentLayer().animate().cancel()
+                    pagerDx = 0f
+                    // 先占住手势：不许 SwipeRefreshLayout 半路把它抢走
+                    activeContentLayer().parent?.requestDisallowInterceptTouchEvent(true)
                     false
                 }
 
                 MotionEvent.ACTION_MOVE -> {
                     val dx = event.x - downX
                     val dy = event.y - downY
-                    if (!horizontal && abs(dx) > touchSlop && abs(dx) > abs(dy)) {
-                        horizontal = true
-                        touchedView.parent?.requestDisallowInterceptTouchEvent(true)
+                    if (!horizontal) {
+                        if (abs(dx) > touchSlop && abs(dx) > abs(dy)) {
+                            horizontal = true
+                            activeContentLayer().parent?.requestDisallowInterceptTouchEvent(true)
+                            if (swipeRefresh.isEnabled) {
+                                swipeRefresh.isEnabled = false
+                                pagerChromeOff = true
+                            }
+                            val want = if (dx < 0f) currentWeek + 1 else currentWeek - 1
+                            if (want in startWeek..maxWeek) startPager(want)
+                        } else if (abs(dy) > touchSlop && abs(dy) > abs(dx)) {
+                            // 竖向：交还手势，下拉刷新与列表滚动照旧
+                            activeContentLayer().parent?.requestDisallowInterceptTouchEvent(false)
+                        }
                     }
                     if (horizontal) {
-                        swipeDx = dx
-                        if (swipeTarget < 0) {
-                            val want = if (dx < 0f) currentWeek + 1 else currentWeek - 1
-                            // 到头：只有阻尼，不渲染邻居
-                            if (want in startWeek..maxWeek) beginWeekDrag(want)
-                        }
-                        if (swipeTarget >= 0) applyWeekDrag(dx) else applyBoundaryDrag(dx)
+                        pagerDx = dx
+                        if (pagerTarget >= 0) applyPagerDrag(dx) else applyPagerDamp(dx)
                     }
-                    false
+                    // 横向时必须吃掉事件：否则被压在下面的 ScrollView 会自己去横向滚动，
+                    // 于是「位图在动 + 内容也在动」，就是用户看到的拖影与错位
+                    horizontal
                 }
 
-                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                    val dx = event.x - downX
-                    val dy = event.y - downY
-                    val width = (activeContentLayer().width.takeIf { it > 0 } ?: 1).toFloat()
+                MotionEvent.ACTION_UP -> {
                     val wasHorizontal = horizontal
                     horizontal = false
-                    // 判据只看松手位移：快速一甩系统可能只发一两个 MOVE，
-                    // 不能依赖 MOVE 里是否置过 horizontal
-                    val isPass = abs(dx) > width * 0.2f && abs(dx) > abs(dy) * 1.2f
-                    if (swipeTarget < 0) {
-                        if (wasHorizontal) applyBoundaryDrag(0f)
-                        false
-                    } else {
-                        val commit = isPass &&
-                            (if (dx < 0f) swipeTarget > swipeBaseWeek else swipeTarget < swipeBaseWeek)
-                        endWeekDrag(commit)
+                    if (pagerTarget >= 0) {
+                        val width = (activeContentLayer().width.takeIf { it > 0 } ?: 1).toFloat()
+                        // 快速一甩时 UP 的 event.x 不可靠，优先用最后一帧 MOVE 的位移
+                        val dx = if (pagerDx != 0f) pagerDx else event.x - downX
+                        val dy = event.y - downY
+                        val pass = abs(dx) > width * 0.2f && abs(dx) > abs(dy) * 1.2f
+                        val forward =
+                            if (dx < 0f) pagerTarget > pagerBase else pagerTarget < pagerBase
+                        finishPager(pass && forward)
                         true
+                    } else {
+                        if (wasHorizontal) applyPagerDamp(0f)
+                        restorePagerChrome()
+                        wasHorizontal
                     }
+                }
+
+                MotionEvent.ACTION_CANCEL -> {
+                    // 被父控件抢走手势：只回弹，绝不切周
+                    horizontal = false
+                    if (pagerTarget >= 0) finishPager(false) else applyPagerDamp(0f)
+                    restorePagerChrome()
+                    true
                 }
 
                 else -> false
@@ -285,96 +305,156 @@ class ScheduleFragment : Fragment() {
         }
     }
 
-    /** 拖动开始：快照旧内容 + 把目标周渲染进层里并挪到隔壁屏 */
-    private fun beginWeekDrag(target: Int) {
+    /** 手动量一次，保证 renderAll 之后立刻能拍到正确的内容（不然拍到空白） */
+    private fun forceLayout(v: View) {
+        if (v.width <= 0 || v.height <= 0) return
+        v.measure(
+            View.MeasureSpec.makeMeasureSpec(v.width, View.MeasureSpec.EXACTLY),
+            View.MeasureSpec.makeMeasureSpec(v.height, View.MeasureSpec.EXACTLY),
+        )
+        v.layout(v.left, v.top, v.right, v.bottom)
+    }
+
+    /** 拖动开始：拍「旧周」和「新周」两张图，然后把内容层藏起来，只让两张图跟手 */
+    private fun startPager(target: Int) {
         val layer = activeContentLayer()
-        if (layer.width <= 0) return
-        val bmp = captureSnapshot(layer) ?: return
-        swipeBaseWeek = currentWeek
-        swipeTarget = target
-        swipeDx = 0f
+        if (layer.width <= 0 || layer.height <= 0) return
+        forceLayout(layer)
+        val oldBmp = captureSnapshot(layer) ?: return
+        val base = currentWeek
         currentWeek = target
         renderAll()
-        val ghost = ImageView(requireContext()).apply {
-            setImageBitmap(bmp)
+        forceLayout(layer)
+        val newBmp = captureSnapshot(layer)
+        // 立刻恢复成原周：没过阈值回弹时内容还得是原来那一周
+        currentWeek = base
+        renderAll()
+        forceLayout(layer)
+        if (newBmp == null) return
+
+        pagerBase = base
+        pagerTarget = target
+        pagerDx = 0f
+        for (i in 0 until layer.childCount) layer.getChildAt(i).visibility = View.INVISIBLE
+        val dir = if (target > base) 1f else -1f
+        val w = layer.width
+        val h = layer.height
+        val oldIv = ImageView(requireContext()).apply {
+            setImageBitmap(oldBmp)
             scaleType = ImageView.ScaleType.FIT_XY
             isClickable = false
             isFocusable = false
         }
-        layer.addView(
-            ghost,
-            FrameLayout.LayoutParams(layer.width, layer.height),
-        )
-        swipeGhost = ghost
-        applyWeekDrag(0f)
+        val newIv = ImageView(requireContext()).apply {
+            setImageBitmap(newBmp)
+            scaleType = ImageView.ScaleType.FIT_XY
+            isClickable = false
+            isFocusable = false
+            translationX = dir * w
+        }
+        layer.addView(oldIv, FrameLayout.LayoutParams(w, h))
+        layer.addView(newIv, FrameLayout.LayoutParams(w, h))
+        pagerOld = oldIv
+        pagerNew = newIv
     }
 
-    /** 跟手位移：快照留在 0 附近跟手，新内容在隔壁屏跟手 */
-    private fun applyWeekDrag(dx: Float) {
+    /** 跟手：旧图跟着手指走，新图从隔壁屏跟着走进来 */
+    private fun applyPagerDrag(dx: Float) {
         val layer = activeContentLayer()
-        val ghost = swipeGhost ?: return
-        val width = layer.width.toFloat().takeIf { it > 0f } ?: return
-        val dir = if (swipeTarget > swipeBaseWeek) 1f else -1f
-        for (i in 0 until layer.childCount) {
-            val child = layer.getChildAt(i)
-            child.translationX = if (child === ghost) dx else dx + dir * width
+        val oldIv = pagerOld ?: return
+        val newIv = pagerNew ?: return
+        val dir = if (pagerTarget > pagerBase) 1f else -1f
+        val w = layer.width.toFloat()
+        oldIv.translationX = dx
+        newIv.translationX = dx + dir * w
+    }
+
+    /** 到头：只给一点阻尼，明确告诉用户「没有下一周了」 */
+    private fun applyPagerDamp(dx: Float) {
+        val layer = activeContentLayer()
+        val oldIv = pagerOld
+        val newIv = pagerNew
+        if (oldIv != null && newIv != null) {
+            val dir = if (pagerTarget > pagerBase) 1f else -1f
+            oldIv.translationX = dx * 0.35f
+            newIv.translationX = dx * 0.35f + dir * layer.width
+        } else {
+            for (i in 0 until layer.childCount) {
+                layer.getChildAt(i).translationX = dx * 0.35f
+            }
         }
     }
 
-    /** 到头：只让内容跟着手指阻尼一下，不换周 */
-    private fun applyBoundaryDrag(dx: Float) {
+    /** 松手：完成或回弹 */
+    private fun finishPager(commit: Boolean) {
         val layer = activeContentLayer()
-        for (i in 0 until layer.childCount) {
-            layer.getChildAt(i).translationX = dx * 0.35f
+        val oldIv = pagerOld
+        val newIv = pagerNew
+        if (oldIv == null || newIv == null) {
+            cleanupPager()
+            restorePagerChrome()
+            pagerTarget = -1
+            pagerBase = -1
+            return
         }
-    }
-
-    /** 松手：完成或回弹，然后清场 */
-    private fun endWeekDrag(commit: Boolean) {
-        val layer = activeContentLayer()
-        val ghost = swipeGhost
-        val target = swipeTarget
-        val base = swipeBaseWeek
-        val width = layer.width.toFloat().takeIf { it > 0f } ?: 1f
-        val dir = if (target > base) 1f else -1f
-        val ghostFrom = swipeDx
-        val contentFrom = swipeDx + dir * width
-        val ghostTo = if (commit) -dir * width else 0f
-        val contentTo = if (commit) 0f else dir * width
+        val w = (layer.width.takeIf { it > 0 } ?: 1).toFloat()
+        val dir = if (pagerTarget > pagerBase) 1f else -1f
+        val oldFrom = oldIv.translationX
+        val newFrom = newIv.translationX
+        val oldTo = if (commit) -dir * w else 0f
+        val newTo = if (commit) 0f else dir * w
         val anim = android.animation.ValueAnimator.ofFloat(0f, 1f)
-        anim.duration = if (commit) 180L else 200L
-        anim.interpolator = android.view.animation.DecelerateInterpolator(1.6f)
+        anim.duration = if (commit) 190L else 210L
+        anim.interpolator = android.view.animation.DecelerateInterpolator(1.7f)
         anim.addUpdateListener { va ->
             val f = va.animatedValue as Float
-            val gx = ghostFrom + (ghostTo - ghostFrom) * f
-            val cx = contentFrom + (contentTo - contentFrom) * f
-            for (i in 0 until layer.childCount) {
-                val child = layer.getChildAt(i)
-                child.translationX = if (child === ghost) gx else cx
-            }
+            oldIv.translationX = oldFrom + (oldTo - oldFrom) * f
+            newIv.translationX = newFrom + (newTo - newFrom) * f
         }
         anim.addListener(object : android.animation.AnimatorListenerAdapter() {
             override fun onAnimationEnd(animation: android.animation.Animator) {
-                swipeGhost?.let { runCatching { layer.removeView(it) } }
-                swipeGhost = null
-                for (i in 0 until layer.childCount) {
-                    layer.getChildAt(i).translationX = 0f
-                }
-                swipeTarget = -1
-                swipeDx = 0f
+                val target = pagerTarget
+                val base = pagerBase
+                cleanupPager()
                 if (commit) {
+                    currentWeek = target
                     updateWeekPill()
                     renderAll()
                     ensureWeekData(target)
                 } else {
                     currentWeek = base
                     renderAll()
-                    updateWeekPill()
                 }
-                swipeBaseWeek = -1
+                pagerTarget = -1
+                pagerBase = -1
+                pagerDx = 0f
+                restorePagerChrome()
             }
         })
         anim.start()
+    }
+
+    /** 清场：去掉两张图，把内容层子 View 恢复显示并归零位移 */
+    private fun cleanupPager() {
+        val layer = activeContentLayer()
+        pagerOld?.let { runCatching { layer.removeView(it) } }
+        pagerNew?.let { runCatching { layer.removeView(it) } }
+        pagerOld = null
+        pagerNew = null
+        for (i in 0 until layer.childCount) {
+            val child = layer.getChildAt(i)
+            child.translationX = 0f
+            child.visibility = View.VISIBLE
+        }
+    }
+
+    /** 把临时关掉的下拉刷新 / 父控件拦截开关恢复 */
+    private fun restorePagerChrome() {
+        if (pagerChromeOff) {
+            swipeRefresh.isEnabled = true
+            pagerChromeOff = false
+        }
+        activeContentLayer().parent?.requestDisallowInterceptTouchEvent(false)
     }
 
     /** 数据固定在本地：有缓存直接显示，不自动联网；只有手动下拉刷新才重新拉取覆盖 */
