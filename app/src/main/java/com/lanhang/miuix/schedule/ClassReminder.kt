@@ -73,6 +73,16 @@ object ClassReminder {
     /** 上课 / 下课边界闹钟的 requestCode 段（与 5000 槽位段、4500 小组件段都不重叠） */
     private const val RC_BOUNDARY_BASE = 5300
 
+    /** 课中提醒「距下课 N 分钟」那一条的 requestCode 段（与 5300 段的上下课边界错开） */
+    private const val RC_IN_CLASS_BASE = 5600
+
+    /** 次日课程提醒（每晚固定时间）的 requestCode */
+    private const val RC_NEXT_DAY = 5450
+
+    const val ACTION_NEXT_DAY = "com.lanhang.miuix.schedule.CLASS_REMINDER_NEXT_DAY"
+
+    private const val NEXT_DAY_NOTIFICATION_ID = 4710
+
     /** 普通通知的 id 段（超级岛用的是 5003 / 5004，别撞） */
     private const val NOTIFY_ID_BASE = 4600
 
@@ -94,6 +104,7 @@ object ClassReminder {
         ClassReminderNotify.ensureChannel(app)
         if (!ClassReminderStore.enabled || !Session.isLoggedIn || !ClassReminderNotify.canNotify(app)) {
             cancelArmed(app, manager)
+            runCatching { manager.cancel(nextDayPending(app)) }
             return
         }
         val desired = ClassReminderPlan.upcoming(
@@ -106,6 +117,7 @@ object ClassReminder {
         }
         desired.forEachIndexed { index, slot -> setSlot(app, manager, index, slot) }
         armResync(app, manager)
+        armNextDay(app, manager)
         Log.d(TAG, "armed ${desired.size} slots, advance=${ClassReminderStore.advanceMinutes}")
     }
 
@@ -115,6 +127,8 @@ object ClassReminder {
         val manager = app.getSystemService(AlarmManager::class.java) ?: return
         cancelArmed(app, manager)
         runCatching { manager.cancel(resyncPending(app)) }
+        runCatching { manager.cancel(nextDayPending(app)) }
+        ClassDnd.restore(app)
     }
 
     /**
@@ -229,25 +243,54 @@ object ClassReminder {
         }
     }
 
-    /** 上课 / 下课两个边界闹钟（只在岛模式下有意义，普通通知下它们也不会造成副作用） */
+    /**
+     * 上课 / 下课两个边界闹钟。
+     *
+     * 第三十三轮：不再只服务于超级岛 —— 课中提醒与上课自动勿扰也依赖这两个时刻，
+     * 所以条件放宽成「三者任一开启就排」。多排两个闹钟没有副作用（到点了不满足条件也只是空转）。
+     */
     private fun armBoundaries(app: Context, slot: ClassReminderPlan.Slot) {
-        if (!ClassReminderStore.islandEnabled) return
+        if (!ClassReminderStore.islandEnabled &&
+            !ClassReminderStore.inClassEnabled &&
+            !ClassReminderStore.autoDnd
+        ) {
+            return
+        }
         val manager = app.getSystemService(AlarmManager::class.java) ?: return
         val info = infoOf(app, slot)
         val rc = RC_BOUNDARY_BASE + (slot.period - 1) * 2
         setAlarm(app, manager, rc, info.startAt, boundaryPending(app, rc, ACTION_CLASS_STARTED, slot.key))
         setAlarm(app, manager, rc + 1, info.endAt, boundaryPending(app, rc + 1, ACTION_CLASS_ENDED, slot.key))
+        // 课中选择「距下课 N 分钟」时，再补一条，到点把课中提醒/岛亮出来
+        if (ClassReminderStore.inClassEnabled && !ClassReminderStore.inClassFull) {
+            val at = info.endAt - ClassReminderStore.inClassBeforeEndMinutes * 60_000L
+            if (at > System.currentTimeMillis()) {
+                val rcIn = RC_IN_CLASS_BASE + slot.period
+                setAlarm(app, manager, rcIn, at, boundaryPending(app, rcIn, ACTION_CLASS_STARTED, slot.key))
+            }
+        }
     }
 
-    /** 到点了：岛从「倒计时」换成「已上课」 */
+    /**
+     * 上课那一刻：开勿扰 → 岛从「倒计时」换成「已上课」→ 没有岛就发课中通知。
+     *
+     * 「提醒时机 = 距下课 N 分钟」时，这条广播会由两次闹钟触发（上课时刻 + 下课前的时刻），
+     * 早于「下课 - N」的那一次直接返回，所以同一段逻辑不需要两条链路。
+     */
     fun handleClassStarted(context: Context, key: String?) {
         val app = context.applicationContext
-        if (!ClassReminderStore.islandEnabled) return
         val parsed = key?.let(ClassReminderPlan::parseKey) ?: return
         val (date, period) = parsed
         val slot = ClassReminderPlan.slotsOn(date, 0).firstOrNull { it.period == period } ?: return
         val info = infoOf(app, slot)
-        ClassReminderIsland.notifyStarted(
+        if (ClassReminderStore.autoDnd) ClassDnd.apply(app, ClassReminderStore.dndLevel)
+        val inClass = ClassReminderStore.inClassEnabled
+        if (!inClass && !ClassReminderStore.islandEnabled) return
+        if (inClass && !ClassReminderStore.inClassFull) {
+            val showFrom = info.endAt - ClassReminderStore.inClassBeforeEndMinutes * 60_000L
+            if (System.currentTimeMillis() < showFrom) return
+        }
+        val island = ClassReminderStore.islandEnabled && ClassReminderIsland.notifyStarted(
             context = app,
             courseName = info.courseName,
             section = info.section,
@@ -256,13 +299,73 @@ object ClassReminder {
             startMillis = info.startAt,
             endMillis = info.endAt,
         )
+        if (!island && inClass) {
+            ClassReminderNotify.show(
+                app,
+                NOTIFY_ID_BASE + period,
+                info.courseName,
+                app.getString(R.string.class_reminder_in_class_body, info.room.ifBlank { info.section }),
+            )
+        }
     }
 
-    /** 下课：把岛收起来 */
+    /** 下课：收起岛、恢复上课前的勿扰档位 */
     fun handleClassEnded(context: Context, key: String?) {
         val app = context.applicationContext
-        if (!ClassReminderStore.islandEnabled) return
+        if (ClassReminderStore.autoDnd) ClassDnd.restore(app)
+        if (!ClassReminderStore.islandEnabled && !ClassReminderStore.inClassEnabled) return
         ClassReminderIsland.cancelAll(app)
+        runCatching { ClassReminderNotify.cancel(app, NOTIFY_ID_BASE + (key?.let(ClassReminderPlan::parseKey)?.second ?: 0)) }
+    }
+
+    // ------------------------------------------------------------------ 次日课程提醒
+
+    private fun nextDayPending(app: Context): PendingIntent =
+        PendingIntent.getBroadcast(
+            app,
+            RC_NEXT_DAY,
+            Intent(app, ClassReminderReceiver::class.java).setAction(ACTION_NEXT_DAY),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+
+    private fun nextDayAt(now: Long): Long {
+        val zone = ZoneId.systemDefault()
+        val today = Instant.ofEpochMilli(now).atZone(zone).toLocalDate()
+        val target = today.atTime(ClassReminderStore.nextDayHour, 0).atZone(zone).toInstant().toEpochMilli()
+        return if (target > now) target
+        else today.plusDays(1).atTime(ClassReminderStore.nextDayHour, 0).atZone(zone).toInstant().toEpochMilli()
+    }
+
+    private fun armNextDay(app: Context, manager: AlarmManager) {
+        val pending = nextDayPending(app)
+        if (!ClassReminderStore.nextDayEnabled) {
+            runCatching { manager.cancel(pending) }
+            return
+        }
+        setAlarm(app, manager, RC_NEXT_DAY, nextDayAt(System.currentTimeMillis()), pending)
+    }
+
+    /** 每天固定时间提醒第二天的课（[ACTION_NEXT_DAY] 广播与「立即预览」都走这里） */
+    fun showNextDayNow(context: Context) {
+        val app = context.applicationContext
+        if (!ClassReminderStore.nextDayEnabled) return
+        ClassReminderNotify.ensureChannel(app)
+        val tomorrow = Instant.now().atZone(ZoneId.systemDefault()).toLocalDate().plusDays(1)
+        val slot = ClassReminderPlan.slotsOn(tomorrow, 0).firstOrNull()
+        val title = app.getString(R.string.class_reminder_next_day_notify_title)
+        val body = if (slot == null) {
+            app.getString(R.string.class_reminder_next_day_none)
+        } else {
+            val info = infoOf(app, slot)
+            app.getString(
+                R.string.class_reminder_next_day_notify_body,
+                info.courseName,
+                slot.period,
+                info.room.ifBlank { info.section },
+            )
+        }
+        ClassReminderNotify.show(app, NEXT_DAY_NOTIFICATION_ID, title, body)
+        app.getSystemService(AlarmManager::class.java)?.let { armNextDay(app, it) }
     }
 
     private fun boundaryPending(app: Context, rc: Int, action: String, key: String): PendingIntent =
@@ -409,6 +512,11 @@ object ClassReminderNotify {
             .build()
         runCatching { NotificationManagerCompat.from(context).notify(id, notification) }
     }
+
+    /** 撤掉一条已发布的提醒（课中提醒在下课时就该消失，不该留到第二天） */
+    fun cancel(context: Context, id: Int) {
+        runCatching { NotificationManagerCompat.from(context).cancel(id) }
+    }
 }
 
 /**
@@ -435,6 +543,7 @@ class ClassReminderReceiver : BroadcastReceiver() {
                 ClassReminder.handleClassStarted(app, intent.getStringExtra(ClassReminder.EXTRA_KEY))
             ClassReminder.ACTION_CLASS_ENDED ->
                 ClassReminder.handleClassEnded(app, intent.getStringExtra(ClassReminder.EXTRA_KEY))
+            ClassReminder.ACTION_NEXT_DAY -> ClassReminder.showNextDayNow(app)
             ClassReminder.ACTION_RESYNC -> ClassReminder.rearm(app)
             Intent.ACTION_BOOT_COMPLETED,
             Intent.ACTION_MY_PACKAGE_REPLACED,

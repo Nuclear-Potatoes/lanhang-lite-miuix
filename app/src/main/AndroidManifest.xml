@@ -10,6 +10,8 @@
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <!-- 私信的新消息用系统通知提示（im/ImNotify.kt），Android 13+ 需要运行时授权 -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- 上课自动勿扰：系统的勿扰权限只能由用户手动授予（ACCESS_NOTIFICATION_POLICY） -->
+    <uses-permission android:name="android.permission.ACCESS_NOTIFICATION_POLICY" />
     <!-- 上课提醒要准点响（第三十一轮）：Android 12+ 精确闹钟需要单独声明，
          没有授权时退回 setAndAllowWhileIdle，只会晚几分钟 -->
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />

@@ -96,10 +96,10 @@ object ClassReminderIsland {
             courseName = courseName,
             content = content,
             room = room,
-            startMillis = startMillis,
+            timerWhen = startMillis,
             now = now,
-            islandLeft = courseName,
-            aodTitle = shortOf(courseName),
+            islandLeft = leftOf(courseName, room),
+            aodTitle = aodOf(courseName, room),
         )
         return post(app, id, title, content, json)
     }
@@ -122,15 +122,17 @@ object ClassReminderIsland {
         val now = System.currentTimeMillis()
         val content = contentOf(section, room, teacher)
         val id = if (test) ID_STARTED + 100 else ID_STARTED
+        // 课中岛：右侧可以选「距下课倒计时」（倒计时到 endMillis）或什么都不显示
+        val remain = ClassReminderStore.inClassRight == "remain"
         val json = buildParams(
-            counting = false,
+            counting = remain,
             courseName = courseName,
             content = content,
             room = room,
-            startMillis = startMillis,
+            timerWhen = if (remain) endMillis else 0L,
             now = now,
-            islandLeft = courseName,
-            aodTitle = shortOf(courseName),
+            islandLeft = leftOf(courseName, room),
+            aodTitle = aodOf(courseName, room),
         )
         // 课前那条先撤掉，免得两张卡同时在岛里排队
         runCatching { nm(app)?.cancel(if (test) ID_COUNTDOWN + 100 else ID_COUNTDOWN) }
@@ -173,6 +175,35 @@ object ClassReminderIsland {
 
     /** 缩略态放不下完整课名，取前 6 个字（和 Nexio 一致的做法） */
     private fun shortOf(name: String): String = if (name.length <= 6) name else name.take(6)
+
+    /** 岛的左侧内容：按设置显示课程名或地点（第三十三轮新增，照 Nexio 的「超级岛左侧」） */
+    private fun leftOf(courseName: String, room: String): String =
+        if (ClassReminderStore.islandLeft == "room" && room.isNotBlank()) room else courseName
+
+    /**
+     * 息屏显示用的短标题。
+     *
+     * 「缩略态精简」照着 Nexio 给四档：原始 / 精简地点 / 精简课程 / 两者。
+     * 精简不调用任何模型，只用确定性规则（去楼栋前缀、取尾号），可复现、可解释。
+     */
+    private fun aodOf(courseName: String, room: String): String {
+        if (!ClassReminderStore.islandAod) return ""
+        return when (ClassReminderStore.thumbScope) {
+            ClassReminderStore.ThumbScope.ORIGINAL -> shortOf(courseName)
+            ClassReminderStore.ThumbScope.ROOM -> shortOf(abbreviate(room))
+            ClassReminderStore.ThumbScope.COURSE -> shortOf(abbreviate(courseName))
+            ClassReminderStore.ThumbScope.BOTH -> shortOf(abbreviate(courseName) + " " + abbreviate(room))
+        }
+    }
+
+    /** 确定性精简：「综合楼南310」→「综南310」，「明德楼A栋-A200」→「明德A200」 */
+    private fun abbreviate(text: String): String {
+        var out = text
+        listOf("教学楼", "综合楼", "实验楼", "图书馆", "体育馆", "阶梯教室", "多媒体教室", "教室")
+            .forEach { out = out.replace(it, it.take(1)) }
+        out = out.replace("-", "").replace("栋", "").replace(" ", "")
+        return out.ifBlank { text }
+    }
 
     private fun post(context: Context, id: Int, title: String, content: String, param: String): Boolean {
         ensureChannel(context)
@@ -222,7 +253,7 @@ object ClassReminderIsland {
         courseName: String,
         content: String,
         room: String,
-        startMillis: Long,
+        timerWhen: Long,
         now: Long,
         islandLeft: String,
         aodTitle: String,
@@ -281,7 +312,7 @@ object ClassReminderIsland {
                             if (counting) {
                                 // -1 = 倒计时到 timerWhen；正计时用 0
                                 put("timerType", -1)
-                                put("timerWhen", startMillis)
+                                put("timerWhen", timerWhen)
                                 put("timerTotal", 0L)
                                 put("timerSystemCurrent", now)
                             } else {
@@ -340,7 +371,7 @@ object ClassReminderIsland {
                                             "timerInfo",
                                             JSONObject().apply {
                                                 put("timerType", -1)
-                                                put("timerWhen", startMillis)
+                                                put("timerWhen", timerWhen)
                                                 put("timerTotal", 0L)
                                                 put("timerSystemCurrent", now)
                                             }

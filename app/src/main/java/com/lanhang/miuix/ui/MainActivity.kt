@@ -248,6 +248,16 @@ class MainActivity : AppCompatActivity() {
         val tab = pendingTab
         if (tab < 0) return
         pendingTab = -1
+        // 第三十三轮：进场前把容器里可能残留的位移动画（Tab 左右滑、转场被打断）
+        // 就地归零，否则新旧两帧会错位叠在一起，看着像「整页画了两遍」。
+        binding.fragmentContainer.animate().cancel()
+        for (i in 0 until binding.fragmentContainer.childCount) {
+            val child = binding.fragmentContainer.getChildAt(i)
+            child.animate().cancel()
+            if (child.translationX != 0f) child.translationX = 0f
+            if (child.translationY != 0f) child.translationY = 0f
+            if (child.alpha != 1f) child.alpha = 1f
+        }
         val wasRestoring = restoring
         restoring = true
         switchTab(tab)

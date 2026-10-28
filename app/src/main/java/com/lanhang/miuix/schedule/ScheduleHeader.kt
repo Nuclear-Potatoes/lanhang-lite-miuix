@@ -22,6 +22,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.lanhang.miuix.R
+import com.lanhang.miuix.ui.miuix.accentColor
 import com.lanhang.miuix.ui.miuix.isDarkTheme
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.IconButton
@@ -68,6 +69,10 @@ fun ScheduleHeader(
 ) {
     val scheme = MiuixTheme.colorScheme
     val accent = state.accent ?: scheme.primary
+    // 2026-10-28 第三十三轮（用户：「第 N 周的标记非常不明显」）：
+    // 深色下 primary 直接当文字色压在 32% 的同色底上，亮度差不够，看着像灰的。
+    // 文字色统一走 accentColor()（深色自动提亮一档），底色仍是同色淡铺。
+    val accentInk = accentColor(accent)
     val onContainer = state.onContainer ?: scheme.onSurface
     // 图标不能用 container(chipFill)：那是近白的胶囊底色，画在浅色页面上等于隐形
     // （用户 2026-10-24：翻周箭头和视图切换按钮「和白色背景融为一体」）。
@@ -126,7 +131,7 @@ fun ScheduleHeader(
                 style = MiuixTheme.textStyles.title4,
                 fontWeight = FontWeight.SemiBold,
                 // 本周 = 强调色；其他周 = 普通正文色（黑/白，跟随主题）
-                color = if (state.isCurrentWeek) accent else onContainer,
+                color = if (state.isCurrentWeek) accentInk else onContainer,
             )
         }
         IconButton(onClick = onNext, minWidth = 30.dp, minHeight = 30.dp, cornerRadius = 50.dp) {

@@ -14,7 +14,7 @@ import com.lanhang.miuix.R
 object ClassReminderStore {
 
     /** 提前量选项（分钟）。0 = 上课那一刻提醒，只给「就在教学楼上课」的人用，所以不做默认 */
-    val ADVANCE_OPTIONS = listOf(0, 5, 10, 15, 20, 30)
+    val ADVANCE_OPTIONS = listOf(0, 5, 10, 15, 20, 30, 45, 60)
 
     private const val DEFAULT_ADVANCE = 15
 
@@ -57,6 +57,85 @@ object ClassReminderStore {
         set(value) {
             sp?.edit()?.putBoolean("island_enabled", value)?.apply()
         }
+
+    /** 次日课程提醒的提醒整点（24 小时制） */
+    val NEXT_DAY_HOURS = listOf(19, 20, 21, 22, 23)
+
+    /** 课中提醒「距下课 N 分钟开始」的 N */
+    val BEFORE_END_OPTIONS = listOf(5, 10, 15)
+
+    /** 上课勿扰档位（照 Nexio 的三档，filter 用系统的 INTERRUPTION_FILTER_*） */
+    enum class DndLevel(val key: String, val filter: Int) {
+        SILENT("silent", 4),      // INTERRUPTION_FILTER_ALARMS
+        PRIORITY("priority", 2),  // INTERRUPTION_FILTER_PRIORITY
+        TOTAL("total", 3),        // INTERRUPTION_FILTER_NONE
+    }
+
+    /** 缩略态精简口径 */
+    enum class ThumbScope(val key: String) { ORIGINAL("original"), ROOM("room"), COURSE("course"), BOTH("both") }
+
+    private fun bool(key: String, def: Boolean) = sp?.getBoolean(key, def) ?: def
+    private fun putBool(key: String, value: Boolean) { sp?.edit()?.putBoolean(key, value)?.apply() }
+    private fun str(key: String, def: String) = sp?.getString(key, def) ?: def
+    private fun putStr(key: String, value: String) { sp?.edit()?.putString(key, value)?.apply() }
+
+    /** 课中提醒：上课中在通知 / 超级岛里显示距下课的时间 */
+    var inClassEnabled: Boolean
+        get() = bool("in_class", true)
+        set(value) = putBool("in_class", value)
+
+    /** 课中提醒时机：true = 全程，false = 距下课 N 分钟才开始显示 */
+    var inClassFull: Boolean
+        get() = bool("in_class_full", true)
+        set(value) = putBool("in_class_full", value)
+
+    var inClassBeforeEndMinutes: Int
+        get() = sp?.getInt("in_class_before_end", 10) ?: 10
+        set(value) { sp?.edit()?.putInt("in_class_before_end", value.coerceIn(1, 30))?.apply() }
+
+    /** 次日课程提醒（每晚固定时间提示第二天的课） */
+    var nextDayEnabled: Boolean
+        get() = bool("next_day", false)
+        set(value) = putBool("next_day", value)
+
+    var nextDayHour: Int
+        get() = sp?.getInt("next_day_hour", 21) ?: 21
+        set(value) { sp?.edit()?.putInt("next_day_hour", value.coerceIn(0, 23))?.apply() }
+
+    /** 上课自动勿扰 */
+    var autoDnd: Boolean
+        get() = bool("auto_dnd", false)
+        set(value) = putBool("auto_dnd", value)
+
+    var dndLevel: DndLevel
+        get() {
+            val raw = str("dnd_level", DndLevel.SILENT.key)
+            return DndLevel.entries.firstOrNull { it.key == raw } ?: DndLevel.SILENT
+        }
+        set(value) = putStr("dnd_level", value.key)
+
+    /** 超级岛左侧内容：course / room */
+    var islandLeft: String
+        get() = str("island_left", "course")
+        set(value) = putStr("island_left", value)
+
+    /** 课中岛右侧：remain = 距下课倒计时，none = 不显示 */
+    var inClassRight: String
+        get() = str("island_in_class_right", "remain")
+        set(value) = putStr("island_in_class_right", value)
+
+    /** 息屏显示（aodTitle） */
+    var islandAod: Boolean
+        get() = bool("island_aod", true)
+        set(value) = putBool("island_aod", value)
+
+    /** 缩略态精简口径 */
+    var thumbScope: ThumbScope
+        get() {
+            val raw = str("thumb_scope", ThumbScope.ORIGINAL.key)
+            return ThumbScope.entries.firstOrNull { it.key == raw } ?: ThumbScope.ORIGINAL
+        }
+        set(value) = putStr("thumb_scope", value.key)
 
     /** 是否已经跳过一次精确闹钟授权页（避免每次进页面都把用户弹出去） */
     var exactAsked: Boolean

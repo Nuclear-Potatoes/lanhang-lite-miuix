@@ -474,8 +474,11 @@ class ScheduleFragment : Fragment() {
         contentGrid.visibility = if (showingGrid) View.VISIBLE else View.GONE
         headerState.showingGrid = showingGrid
         swipeRefresh.isRefreshing = false
-        renderAll()
-        // 渲染完自检一次：内容层还是空的就补一次，别把白屏留给用户
+        // 2026-10-28 第三十三轮（用户：「从小组件进来课表会闪动一下」）：
+        // 原来是**无条件** renderAll()，于是每次切回课表（包括从桌面小组件进来）
+        // 都把整张网格 removeAllViews 再重建 —— 中间那一帧是空的，深浅色都能看见「闪一下」。
+        // 现在只在内容层真的空了才重画；有内容就原样复用，只做一次自检。
+        if (contentFilled() == 0) renderAll()
         view?.post { ensureContentNotEmpty() }
     }
 
@@ -485,6 +488,16 @@ class ScheduleFragment : Fragment() {
      * 「切走再回来课表一片空白」这类问题不该靠用户反馈才发现，所以这里每次切回本页都查一遍，
      * 并把当时的真实状态打进 logcat（tag [TAG]），下次再有线索直接看日志即可。
      */
+    /** 当前可见内容层里有多少个子 View（0 = 空的，需要重画） */
+    private fun contentFilled(): Int {
+        if (!isAdded || view == null) return 0
+        return if (showingGrid) {
+            view?.findViewById<LinearLayout>(R.id.gridContent)?.childCount ?: 0
+        } else {
+            dayStrip.childCount + daySections.childCount
+        }
+    }
+
     private fun ensureContentNotEmpty() {
         if (!isAdded || view == null) return
         val filled = if (showingGrid) {

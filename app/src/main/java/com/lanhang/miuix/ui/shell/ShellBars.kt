@@ -292,10 +292,20 @@ private fun TopBar(
             // 动画一旦被打断就两份同时可见，屏幕上就是「课表」和「工作圈」叠成一团。
             // 现在**组合里只存在一个 Text**：字符串直接换代，只对这一个节点的字色做一次淡入。
             // 不再有第二份标题，叠加在结构上就不可能发生（深浅色都一样）。
+            // 2026-10-28 第三十三轮（用户：「深色下从小组件进来课表会闪动一下」）：
+            // 上面这次淡入在**首次组合**时也会跑一遍 —— 进页面第一帧标题只有 25% 不透明度，
+            // 然后 220ms 亮回来，看起来就是顶栏「闪了一下」。首帧直接给满值，
+            // 只有标题真的被改写（切 Tab / 进二级页）时才做淡入。
             val titleFade = remember { Animatable(1f) }
+            var titleSeen by remember { mutableStateOf(false) }
             LaunchedEffect(spec.title) {
-                titleFade.snapTo(0.25f)
-                titleFade.animateTo(1f, tween(BarAnimation.DURATION_MS, easing = BarAnimation.Easing))
+                if (!titleSeen) {
+                    titleSeen = true
+                    titleFade.snapTo(1f)
+                } else {
+                    titleFade.snapTo(0.25f)
+                    titleFade.animateTo(1f, tween(BarAnimation.DURATION_MS, easing = BarAnimation.Easing))
+                }
             }
             Text(
                 text = spec.title,
