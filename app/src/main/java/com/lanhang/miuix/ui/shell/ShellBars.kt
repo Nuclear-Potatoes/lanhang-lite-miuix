@@ -285,35 +285,26 @@ private fun TopBar(
                     }
                 },
         ) {
-            AnimatedContent(
-                targetState = spec.title,
-                transitionSpec = {
-                    // 2026-10-28 第三十一轮（用户：「从桌面小组件进入后再点别的 tab，顶栏叠加到一起」）：
-                    // 原来是「同进同出」的交叉淡化 —— 旧标题还没淡完，新标题已经淡上来，
-                    // 两个标题在同一位置同时可见，观感就是「叠字 / 重影」。
-                    // 现在改成**先后**：旧标题用前半段淡出，新标题延后半段淡入，
-                    // 任何一帧都最多只有一个标题，叠加在原理上就不可能发生。
-                    fadeIn(
-                        tween(
-                            BarAnimation.DURATION_MS / 2,
-                            delayMillis = BarAnimation.DURATION_MS / 2,
-                            easing = BarAnimation.Easing,
-                        )
-                    ) togetherWith fadeOut(
-                        tween(BarAnimation.DURATION_MS / 2, easing = BarAnimation.Easing)
-                    )
-                },
-                label = "barTitle",
-            ) { title ->
-                Text(
-                    text = title,
-                    fontSize = titleSize,
-                    fontWeight = FontWeight.Bold,
-                    color = MiuixTheme.colorScheme.onBackground,
-                    maxLines = 1,
-                    softWrap = false,
-                )
+            // 2026-10-28 第三十二轮（用户：「深色下工作圈看图返回 → 桌面 → 小组件进来，
+            // 顶栏还是叠加在一起，而且所有顶栏都显示异常」）：
+            // 这里原来是 AnimatedContent。标题被连续改写时（课表 → 工作圈 → 课表），
+            // 它会同时保留「出场」和「入场」两份内容，两份都是同一个坐标上的 Text ——
+            // 动画一旦被打断就两份同时可见，屏幕上就是「课表」和「工作圈」叠成一团。
+            // 现在**组合里只存在一个 Text**：字符串直接换代，只对这一个节点的字色做一次淡入。
+            // 不再有第二份标题，叠加在结构上就不可能发生（深浅色都一样）。
+            val titleFade = remember { Animatable(1f) }
+            LaunchedEffect(spec.title) {
+                titleFade.snapTo(0.25f)
+                titleFade.animateTo(1f, tween(BarAnimation.DURATION_MS, easing = BarAnimation.Easing))
             }
+            Text(
+                text = spec.title,
+                fontSize = titleSize,
+                fontWeight = FontWeight.Bold,
+                color = MiuixTheme.colorScheme.onBackground.copy(alpha = titleFade.value),
+                maxLines = 1,
+                softWrap = false,
+            )
             if (spec.subtitle.isNotBlank()) {
                 Spacer(Modifier.height(lerp(4.dp, 0.dp, collapse)))
                 Box(

@@ -24,6 +24,110 @@
 
 ---
 
+## 32. 第三十二轮（2026-10-28）：工作圈搜索展示整条动态 · 头像/蓝色姓名统一进主页 · 测试提醒立刻弹出 · 移植小米超级岛 · 顶栏单节点（1.1.2 / versionCode 54，已发版）
+
+### 32.1 工作圈搜索结果 = 整条动态，不是一段文字
+
+用户原话：「工作圈搜索功能应展示搜索出动态的全部内容，而非只展示动态中的文本部分」。
+
+第三十一轮的首版搜索结果是「头像 + 姓名 + 4 行高亮摘要」，信息不全，看着像另一个 App 的列表。这一轮改成
+**和动态流里那张卡同构**：40dp 头像、蓝色姓名 + 院系、右上时间、全文（不截断）、九宫格图片、赞/评论计数、
+右下角蓝色「查看」。
+
+- 版式来源：`moments/MomentSearchScreen.kt` 的 `SearchResultCard`（重写整个文件）。
+- 九宫格复用 `moments/MomentsScreen.kt` 的 `MomentImageGrid` —— 因此把它的可见性从 `private` 提到 `internal`。
+  **不要复制一份新的九宫格**：三张/四张/九张的排布规则（行数、末行宽度、圆角、间距）只该有一处。
+  `onImage` 依旧透传到 `ImagePreviewActivity`，搜索结果里的图能直接全屏看。
+- 点卡片本体 → `onOpenPost(item)`：清空 `searchQuery`、把 `focusFeedId` 设成这条的 `feed_id`、`closeSearch()`
+  退回动态流，由既有 `focusFeedId` 机制滚到那条并闪一次背景。赞/评论/删除**只在动态流里做**，
+  搜索页不摆假按钮（`赞 0`/`评论 0` 只是计数，和动态流里那张卡的计数显示一致）。
+- 命中片段仍用 `MomentTextMatcher.hits` 铺主题色 28% 底；匹配口径（全角转半角、多词 AND、也匹配作者名）
+  与「工作圈过滤」共用同一套函数，没有第二份实现。
+
+### 32.2 头像与蓝色姓名 = 进个人主页（全应用统一）
+
+用户原话：「点击动态发送者的头像与姓名也应该跳转到他的个人主页，以后所有涉及到头像以及蓝色姓名的场景都这样处理」。
+
+这一轮把「可点」变成默认约定：
+
+| 位置 | 状态 |
+|---|---|
+| 动态流卡片作者头像 / 姓名 | ✅ 第三十一轮已有 |
+| 动态评论区头像 / 姓名、`@` 提及、回复对象 | ✅ 第三十一轮已有 |
+| **工作圈搜索结果**头像 / 蓝色姓名 | ✅ 本轮新增（走 `onOpenProfile`） |
+| 消息列表（赞/评论通知）头像 / 姓名 | ✅ 已有（`mine/MessagesScreen.kt` 的 `onOpenProfile`） |
+| 私信会话列表与会话内头像 | 见 32.6 遗留 |
+
+硬规则：**新写任何头像/姓名行，都必须接一个 `onOpenProfile: (String) -> Unit`**，
+`LanhangAvatar` 与姓名 `Text` 各自 `.clickable`（整行不要包 clickable，否则卡片内的行点击会吃掉
+图片/姓名自己的点击）。自己（`userId == Session.userId`）交给「我的」Tab，不压自己的主页。
+
+### 32.3 「发一条测试提醒」立刻弹
+
+用户原话：「上课提醒功能点击发一条测试提醒之后应立即弹出测试通知」。
+
+旧实现是「排一个 60 秒后的闹钟 → 闹钟响 → 广播发通知」，点完 60 秒内毫无反馈，用户以为坏了。
+现在 `ClassReminder.scheduleTest()` 直接调 `showTestNow()`：走和真实提醒**完全相同**的发布路径
+（有岛进岛，没岛普通通知），内容换成「上课提醒（测试）」，不再经过闹钟。
+`ACTION_TEST` 广播保留（外部可触发），耗时 0。
+
+### 32.4 移植 Nexio 的小米超级岛（HyperOS 焦点通知）
+
+新增 `schedule/ClassReminderIsland.kt`，移植 `HaoZai000/NexioSchedule` 的
+`reminder/IslandNotificationHelper.kt` 中上课提醒真正用到的部分。机制（真机验证过的写法，不要「优化」）：
+
+1. 一条普通 `Notification`（channel `class_reminder_island`）；
+2. `notification.extras.putString("miui.focus.param", json)` —— JSON 描述卡片：
+   `param_v2.business="course_reminder"`、`protocol=1`、`enableFloat`、`islandFirstFloat`、`updatable`、
+   `sequence`（单调递增）、`aodTitle`、`baseInfo{type:2,title,content,…配色}`、
+   `picInfo`、`hintInfo{type:2, timerInfo{timerType:-1 倒计时 / 0 正计时, timerWhen, timerTotal, timerSystemCurrent}}`、
+   `param_island{islandProperty:1, islandTimeout:3600, bigIslandArea{templateNo:2, imageTextInfoLeft, sameWidthDigitInfo}, smallIslandArea{picInfo{pic:"miui.focus.pic_small"}}}`
+3. `addExtras(Bundle{"miui.focus.pics": Bundle{miui.focus.pic_app_icon(_dark), miui.focus.pic_small(_dark): Icon}})` ——
+   JSON 里 `"pic": "miui.focus.pic_small"` 是按这几个 key 去取图的；
+4. 倒计时**不自己刷**，交给系统 Chronometer（`timerType=-1` + `timerWhen=上课时刻`）。
+
+三个时间点：
+- 课前（提前量到点）→ `notifyPreClass` 发 `ID_COUNTDOWN`；
+- 上课那一刻 → 边界闹钟 `ACTION_CLASS_STARTED` → `notifyStarted` 发**另一个 id** `ID_STARTED`
+  并撤掉倒计时那条（同 id 更新会把 Chronometer 卡在 00:00）；
+- 下课那一刻 → `ACTION_CLASS_ENDED` → `cancelAll()` 收起。边界闹钟在课前那次发布时一起挂上
+  （`RC_BOUNDARY_BASE=5300`，与 5000 槽位段、4500 小组件段不重叠）。
+
+可用性判断：`ClassReminderIsland.isSupported()` 反射读 `persist.sys.feature.island`，
+读不到＝不支持，`showSlot()` 自动回落 `ClassReminderNotify` 普通通知（**这是模拟器/非 HyperOS 机的常态**，
+设置页会写「当前设备不支持超级岛，会使用普通通知」）。开关 `ClassReminderStore.islandEnabled` 默认开。
+
+**没有移植**（并在设置页保持沉默，不摆空壳）：课中提醒、免打扰（需要通知策略权限）、教室标签、
+假日数据、分享卡片、Shizuku 旁路。原因：它们要么依赖 Nexio 自己的账号/数据，要么需要额外系统权限，
+在这个 App 里没有真实数据源，做出来就是假功能。
+
+### 32.5 顶栏「叠加 / 全部异常」：单节点标题 + singleTask
+
+两条改动：
+
+1. `ui/shell/ShellBars.kt` 的标题原来是 `AnimatedContent(targetState = spec.title)` ——
+   **同一时刻存在两份标题内容层**（进出各一份、互相叠着淡入淡出）。改成单个 `Text`，
+   标题变化时只做一次 `Animatable` 颜色淡入（`snapTo(0.25f)` → `animateTo(1f)`，时长/曲线仍取
+   `BarAnimation`）。物理上不可能再出现两个标题节点。
+2. `MainActivity` 加 `android:launchMode="singleTask"`。小组件的 `PendingIntent` 是
+   `getActivity(NEW_TASK|CLEAR_TOP|SINGLE_TOP)`，`standard` 模式下「任务里已有实例但不在栈顶/被
+   `ImagePreviewActivity` 顶过」时仍可能**再建一个新实例**，两个实例各有一套 shell + 顶栏 → 叠加。
+   `singleTask` 让任何入口（小组件 / 通知 / 分享 / 桌面图标）都必定复用同一个实例、只走 `onNewIntent`。
+
+验证（模拟器，深色）：工作圈 → 点图片（`ImagePreviewActivity`）→ 返回 → 桌面 → 点小组件 →
+顶栏只有一个「课表」、只有一个「第 9 周」胶囊、周课表只有一份。
+
+**模拟器陷阱（务必先排除再怀疑代码）**：`debug.hwui.renderer` 默认 `skiagl` 时，这一路径会把
+**整页**画成两份错位叠影（顶栏、周次胶囊、表头、课程块全部双份，且 uiautomator 里只有一份语义节点）。
+`adb shell setprop debug.hwui.renderer skiavk` 后立刻干净 —— 即纯渲染器 bug。真机上看到的
+「标题叠成一团」才是 32.5 那两条要修的。
+
+### 32.6 遗留 / 未做
+
+- 私信（`im/ImScreens.kt`）的头像与对话标题还没接 `onOpenProfile`（该文件是第三方 IM UI 移植，改动面大，
+  下一轮单独做）。
+- 超级岛只在真 HyperOS 上真正可见；模拟器上只能验「不支持时回落普通通知」+「测试通知立刻出现」。
+
 ## 31. 第二十九轮（2026-10-28）：顶栏叠加修复 · 工作圈搜索/关键词过滤 · 深色评论区阴影 · 长按复制与评论删除 · 上课提醒（1.1.1 / versionCode 53，已发版）
 
 用户五条原话：「从桌面小组件进入后再点击别的 tab，会出现顶栏叠加到一起的情况」/「工作圈搜索、工作圈过滤功能，移植过来，其中工作圈过滤功能放到设置里，工作圈搜索在顶栏加一个搜索按钮。遵照 miuix 设计规范」/「深色模式下工作圈评论区的阴影丢失」/「给工作圈加一个长按文字自由复制的功能，将评论的删除功能做到评论的左下角，蓝色字体，点击后询问是否删除，可以参考工作圈帖子删除的实现逻辑」/「上课提醒功能，也一并放到设置中」。

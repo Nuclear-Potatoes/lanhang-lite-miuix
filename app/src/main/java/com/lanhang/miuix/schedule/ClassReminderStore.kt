@@ -46,6 +46,18 @@ object ClassReminderStore {
             sp?.edit()?.putInt("advance_minutes", value.coerceIn(0, 60))?.apply()
         }
 
+    /**
+     * 超级岛提醒（HyperOS 焦点通知）。
+     *
+     * 默认**开**：本机不支持时 [ClassReminderIsland.isSupported] 会把它挡掉，
+     * 走普通通知，不会因为「开了但机器不认」而丢提醒。
+     */
+    var islandEnabled: Boolean
+        get() = sp?.getBoolean("island_enabled", true) ?: true
+        set(value) {
+            sp?.edit()?.putBoolean("island_enabled", value)?.apply()
+        }
+
     /** 是否已经跳过一次精确闹钟授权页（避免每次进页面都把用户弹出去） */
     var exactAsked: Boolean
         get() = sp?.getBoolean("exact_asked", false) ?: false

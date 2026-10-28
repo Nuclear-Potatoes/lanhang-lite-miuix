@@ -774,7 +774,7 @@ private fun MomentCard(
 }
 
 @Composable
-private fun MomentImageGrid(media: List<MediaItem>, onImage: (List<String>, Int, android.graphics.Rect?) -> Unit) {
+internal fun MomentImageGrid(media: List<MediaItem>, onImage: (List<String>, Int, android.graphics.Rect?) -> Unit) {
     val urls = media.map { it.url?.takeIf { u -> u.isNotBlank() } ?: it.displayUrl.orEmpty() }
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         media.chunked(3).forEachIndexed { rowIndex, rowItems ->

@@ -276,6 +276,18 @@ class MomentsFragment : Fragment() {
                             query = searchQuery,
                             onQueryChange = { searchQuery = it },
                             onOpenProfile = { openProfile(it) },
+                            // 第三十二轮：搜索结果展示的是完整动态。点卡片本体 → 回动态流并定位到这条，
+                            // 赞和评论都在动态流里做（搜索页不摆假按钮）。
+                            onOpenPost = { item ->
+                                val id = item.feed.feed_id
+                                searchQuery = ""
+                                if (id != null) focusFeedId = id
+                                closeSearch()
+                            },
+                            // 搜索结果里的图片照样能点开全屏预览
+                            onImage = { urls, index, rect ->
+                                ImagePreviewActivity.start(requireContext(), urls, index, rect)
+                            },
                         )
 
                         else -> MomentsScreen(

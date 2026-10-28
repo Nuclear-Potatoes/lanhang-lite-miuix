@@ -70,6 +70,10 @@ fun ClassReminderScreen(
     var advance by remember { mutableIntStateOf(ClassReminderStore.advanceMinutes) }
     var notice by remember { mutableStateOf<String?>(null) }
 
+    // 超级岛（HyperOS 焦点通知）：本机不支持就置灰，并说明会用普通通知
+    val islandSupported = remember { ClassReminderIsland.isSupported() }
+    var islandOn by remember { mutableStateOf(ClassReminderStore.islandEnabled) }
+
     val canNotify = remember(enabled) { ClassReminderNotify.canNotify(context) }
     // 开关关着也照常算一遍：这一行是「打开后会收到什么」的预览。
     // 之前返回 null，页面就显示「最近 7 天没有课」—— 明明有课却说过没有，是明确的错误信息。
@@ -118,6 +122,46 @@ fun ClassReminderScreen(
                             notice = null
                             // 关 → 立即撤销全部闹钟；开 → 立即排好未来 7 天
                             ClassReminder.rearm(context)
+                        },
+                    )
+                }
+            }
+        }
+
+        item("island") {
+            FilterSectionLabel(stringResource(R.string.class_reminder_section_style))
+            Card(modifier = Modifier.padding(horizontal = 12.dp)) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 13.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            text = stringResource(R.string.class_reminder_island),
+                            style = MiuixTheme.textStyles.body1,
+                            color = MiuixTheme.colorScheme.onSurface,
+                        )
+                        Text(
+                            text = if (islandSupported) {
+                                stringResource(R.string.class_reminder_island_summary)
+                            } else {
+                                stringResource(R.string.class_reminder_island_unsupported)
+                            },
+                            style = MiuixTheme.textStyles.footnote1,
+                            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                            modifier = Modifier.padding(top = 2.dp),
+                        )
+                    }
+                    Spacer(Modifier.width(12.dp))
+                    Switch(
+                        checked = islandOn && islandSupported,
+                        enabled = islandSupported,
+                        onCheckedChange = { on ->
+                            islandOn = on
+                            ClassReminderStore.islandEnabled = on
+                            if (!on) ClassReminderIsland.cancelAll(context)
                         },
                     )
                 }

@@ -585,6 +585,7 @@
     <string name="moments_search_empty">No matching posts</string>
     <string name="moments_search_count">%1$d matches</string>
     <string name="moments_search_scope">Only the %1$d loaded posts are searched; scroll to load more and search again</string>
+    <string name="moments_search_open_post">View</string>
 
     <string name="moments_filter_title">Moments filter</string>
     <string name="moments_filter_summary_off">Off</string>
@@ -630,11 +631,18 @@
     <string name="class_reminder_no_exact">The "Alarms &amp; reminders" permission is missing; reminders may arrive a few minutes late.</string>
     <string name="class_reminder_open_settings">Open system settings</string>
     <string name="class_reminder_test">Send a test reminder</string>
-    <string name="class_reminder_test_hint">Tap once and a real-style notification arrives in 60 seconds</string>
-    <string name="class_reminder_test_done">Scheduled: test notification in 60 seconds</string>
+    <string name="class_reminder_test_hint">Tap to get a test notification right away, exactly like a real one</string>
+    <string name="class_reminder_test_done">Test notification sent</string>
     <string name="class_reminder_test_title">Class reminder (test)</string>
     <string name="class_reminder_test_body">This is a test notification. Real reminders follow your lead-time setting.</string>
     <string name="class_reminder_channel">Class reminders</string>
     <string name="class_reminder_channel_desc">Reminders before each class</string>
+    <string name="class_reminder_section_style">Reminder style</string>
+    <string name="class_reminder_island">Super Island</string>
+    <string name="class_reminder_island_summary">Show a countdown in Xiaomi Super Island, then switch to \"in class\"</string>
+    <string name="class_reminder_island_unsupported">This device does not support Super Island; a normal notification is used</string>
+    <string name="class_reminder_island_channel">Class reminder (Super Island)</string>
+    <string name="class_reminder_period">Period %1$d</string>
+    <string name="class_reminder_test_room">Test room</string>
     <string name="class_reminder_footer">Reminders are scheduled on this device only; nothing is uploaded. Missed reminders are not replayed.</string>
 </resources>

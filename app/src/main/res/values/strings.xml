@@ -620,6 +620,7 @@
     <string name="moments_search_empty">没有匹配的动态</string>
     <string name="moments_search_count">共 %1$d 条匹配</string>
     <string name="moments_search_scope">只在已加载的 %1$d 条动态里搜索，继续下滑加载后再搜</string>
+    <string name="moments_search_open_post">查看</string>
 
     <string name="moments_filter_title">工作圈过滤</string>
     <string name="moments_filter_summary_off">已关闭</string>
@@ -665,11 +666,18 @@
     <string name="class_reminder_no_exact">未授予「闹钟和提醒」权限，提醒可能晚几分钟。</string>
     <string name="class_reminder_open_settings">去系统设置</string>
     <string name="class_reminder_test">发一条测试提醒</string>
-    <string name="class_reminder_test_hint">点一下，60 秒后会收到一条和真实提醒完全一样的通知</string>
-    <string name="class_reminder_test_done">已排定：60 秒后收到测试通知</string>
+    <string name="class_reminder_test_hint">点一下立刻收到一条和真实提醒完全一样的通知（有超级岛时直接进岛）</string>
+    <string name="class_reminder_test_done">已发出测试通知</string>
     <string name="class_reminder_test_title">上课提醒（测试）</string>
     <string name="class_reminder_test_body">这是一条测试通知。真实提醒会按你设置的提前时间发出。</string>
     <string name="class_reminder_channel">上课提醒</string>
     <string name="class_reminder_channel_desc">每节课开始前的提醒</string>
+    <string name="class_reminder_section_style">提醒样式</string>
+    <string name="class_reminder_island">超级岛提醒</string>
+    <string name="class_reminder_island_summary">在小米超级岛里显示倒计时，上课后自动变成「已上课」</string>
+    <string name="class_reminder_island_unsupported">当前设备不支持超级岛，会使用普通通知</string>
+    <string name="class_reminder_island_channel">上课提醒（超级岛）</string>
+    <string name="class_reminder_period">第 %1$d 节</string>
+    <string name="class_reminder_test_room">测试教室</string>
     <string name="class_reminder_footer">提醒只在本机排定，不上传任何数据。关机或错过的提醒不会补发。</string>
 </resources>
