@@ -86,6 +86,42 @@ val colOrder = (0 until 7).filter { d -> d < 5 || dayCourses[d].isNotEmpty() }
 
 本轮未发版（用户未要求 push）。
 
+### 47.5 进他人个人主页返回丢滚动位置（本轮补充修复）
+
+用户：「工作圈或我的-相册里点击帖子别人的头像或名字进入别人的个人主页后，再返回没有回到帖子的原位置，
+而是直接滚动到页面顶端」。
+
+根因：进他人主页是页面级导航（工作圈 `page=PROFILE` / 相册 `MinePage.PROFILE_OTHER`），源列表页的组合被
+**销毁重建**，`LazyListState` 虽是 sticky 对象（`rememberStickyListState` / `PageListStates.of` 跨组合保留），
+但列表「先变空再填满」时下标会被夹走。工作圈已有 `feedRestoreIndex` save/restore（`MomentsFragment` 里、
+`MiuiNavStack` 组合外，`LaunchedEffect` 存「下标+偏移」、返回且数据到位后 `scrollToItem` 补回）；
+**相册 / 自己主页此前只有 `pageLists.of(key)` 拿 listState、没有 save/restore** → 返回跳顶。
+
+修法（照通讯录 `ContactsScreen` L423-428）：在 `MineScreen` 的 `MinePage.ALBUM` / `MinePage.PROFILE` 分支：
+
+```kotlin
+val albumListState = pageLists.of(MinePage.ALBUM)
+DisposableEffect(Unit) {
+    onDispose { pageLists.savePosition(MinePage.ALBUM, albumListState) }
+}
+LaunchedEffect(state.selfItems.size) {
+    if (state.selfItems.isNotEmpty()) pageLists.restorePosition(MinePage.ALBUM, albumListState)
+}
+```
+
+`restorePosition` 内部 `savedPositions.remove(key)` 一次性补回；`items.isNotEmpty()` 才恢复（列表先空后满时
+把存档留到数据回来再补，否则空列表 `scrollToItem` 会被夹到 0）。
+
+设备实测（模拟器 emulator-5554）：
+- 我的→相册 滚到评论区（张嘉辉/冯雅涵）→ 点张嘉辉头像 → 他人主页 → 返回 → **回到评论区**
+  （图片重新加载但位置补回，m3/m5 一致）✓。
+- 工作圈 滚到中段（阳圣骐/王梓歆/田雨潇）→ 点阳圣骐头像 → 主页 → 返回 → **回到原位置**（w2/w4 一致）✓
+  —— 工作圈既有 `feedRestoreIndex` 生效。
+
+**教训**：页面级导航（进/退二级页会销毁重建源列表页组合）的列表，滚动位置不能只靠 sticky 的 `LazyListState`
+对象——「列表先空后满」会把下标夹走；必须显式「离开存下标+偏移、数据回来补回」（`PageListStates.savePosition`/
+`restorePosition` 或等价手动变量），且恢复要等 `items` 非空。
+
 ---
 
 ## 46. 第四十六轮（2026-10-28）：第 12 节课 + 课表行列自适应

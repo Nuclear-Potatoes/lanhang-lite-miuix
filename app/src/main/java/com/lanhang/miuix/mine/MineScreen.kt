@@ -21,6 +21,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -276,6 +277,18 @@ fun MineScreen(
 
         when (page) {
             MinePage.ALBUM -> Box(pageModifier) {
+                // 点别人头像/名字进他人主页再返回：这一页的组合会被销毁重建，滚动位置要留住。
+                // 与通讯录同款（ContactsScreen）：离开时存「下标+偏移」，等数据回来再补回去
+                // —— 列表先变空再填满会把 LazyListState 的下标夹走，光靠状态对象本身不够。
+                val albumListState = pageLists.of(MinePage.ALBUM)
+                DisposableEffect(Unit) {
+                    onDispose { pageLists.savePosition(MinePage.ALBUM, albumListState) }
+                }
+                LaunchedEffect(state.selfItems.size) {
+                    if (state.selfItems.isNotEmpty()) {
+                        pageLists.restorePosition(MinePage.ALBUM, albumListState)
+                    }
+                }
                 MomentsScreen(
                     items = state.selfItems,
                     loading = state.selfLoading,
@@ -298,11 +311,21 @@ fun MineScreen(
                         else onOpenOtherProfile(id)
                     },
                     showFab = false,
-                    listState = pageLists.of(MinePage.ALBUM),
+                    listState = albumListState,
                 )
             }
 
             MinePage.PROFILE -> Box(pageModifier) {
+                // 自己主页里点别人头像 → 他人主页 → 返回：同样要留住滚动位置（同相册）。
+                val profileListState = pageLists.of(MinePage.PROFILE)
+                DisposableEffect(Unit) {
+                    onDispose { pageLists.savePosition(MinePage.PROFILE, profileListState) }
+                }
+                LaunchedEffect(state.selfItems.size) {
+                    if (state.selfItems.isNotEmpty()) {
+                        pageLists.restorePosition(MinePage.PROFILE, profileListState)
+                    }
+                }
                 UserProfilePage(
                     staff = state.selfStaff,
                     userId = "",
@@ -323,7 +346,7 @@ fun MineScreen(
                     onOpenProfile = { id ->
                         if (id.isNotBlank() && id != Session.userId) onOpenOtherProfile(id)
                     },
-                    listState = pageLists.of(MinePage.PROFILE),
+                    listState = profileListState,
                 )
             }
 
