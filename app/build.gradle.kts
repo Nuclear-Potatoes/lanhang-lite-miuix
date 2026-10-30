@@ -23,8 +23,8 @@ android {
         applicationId = "com.lanhang.miuix"
         minSdk = 26
         targetSdk = 35
-        versionCode = 71
-        versionName = "1.1.19"
+        versionCode = 72
+        versionName = "1.1.20"
         // 私信引入的融云 SDK 每个 ABI 都带一份 ~9MB 的 libRongIMLib.so；x86（32 位模拟器）
         // 没有真实设备，去掉省 9MB。arm64 + armeabi-v7a 覆盖真机，x86_64 覆盖模拟器。
         ndk {
@@ -85,6 +85,12 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("com.google.code.gson:gson:2.11.0")
+    // 闭源协议层（第五十一轮）：域名、接口路径清单、RSA 公钥加密、Cookie/会话、协议模型
+    // 全部编进 engine.aar，App 侧只剩二进制引用 —— 公开源码里看不到接口面。
+    // 源码在仓库的 :engine 模块；改完执行
+    //   gradle :engine:assembleRelease
+    // 再把这个 aar 覆盖到 app/libs/ 下即可（版本号一变就该重编）。
+    implementation(files("libs/engine.aar"))
     implementation("io.coil-kt:coil:2.6.0")
     implementation("androidx.viewpager2:viewpager2:1.1.0")
 

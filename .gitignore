@@ -50,6 +50,11 @@ _pd_nav.json
 _pocketdiary/
 _backdrop/
 
+# 闭源协议层源码（第五十一轮）：网络传输 / 加密 / 接口清单的 Kotlin 源码只留在本地，
+# 公开仓库里只有编好的二进制 app/libs/engine.aar（app 模块直接引用它）。
+# 想让源码也公开，把下面这行删掉即可 —— settings.gradle.kts 是条件 include，目录在就自动成为 :engine 模块。
+engine/
+
 # 本地调试工作区（截图/临时脚本/笔记，含真机界面上的个人数据）
 # 约定：一切测试/调试产物只放 .workbuddy/tmp/，仓库根目录不留临时文件
 .workbuddy/

@@ -938,8 +938,13 @@ private fun MessageBubble(
     val senderId = message.senderId.takeIf { it.isNotBlank() } ?: peerId
     UserInfoCache.revision
     val brief = if (mine) null else UserInfoCache.get(senderId)
+    // 第五十一轮：StaffBrief 已搬进 :engine（aar）。**跨模块的 val 属性不能被 smart cast**，
+    // 所以 `brief?.name?.isNotBlank() == true -> brief.name` 不再能推断出非空，
+    // 下游 LanhangAvatar(name=) / Text(text=) 会一起报类型不匹配。
+    // 先把可能为空的属性落到局部变量，smart cast 就回到局部作用域里，语义与之前完全一致。
+    val briefName = brief?.name
     val name = when {
-        brief?.name?.isNotBlank() == true -> brief.name
+        briefName != null && briefName.isNotBlank() -> briefName
         // 群里查不到名字时**不要**拿群名当人名（会显示成「群聊 · xxxx 说：」）
         isGroup -> if (senderId.length > 4) "成员 · ${senderId.takeLast(4)}" else "群成员"
         peerName.isNotBlank() -> peerName

@@ -24,6 +24,131 @@
 
 ---
 
+## 51. 第五十一轮（2026-10-30）：后端与接口代码闭源搬进 aar（1.1.20 / versionCode 72）
+
+用户原话：「进行问题 4 的处理，push 并触发 release」——问题 4 即第 48 轮列的第 ④ 项
+「把后端与接口代码全部闭源搬进 aar」。本轮把**主 API 协议层整体搬出 app 源码树**。
+
+### 51.1 方案：独立 `:engine` Android Library + 预编译 aar
+
+```
+engine/                                   ← 只在本地，.gitignore 已排除
+  build.gradle.kts                        namespace = "com.lanhang.engine"
+  consumer-rules.pro                      Gson 反射模型的 keep 规则
+  src/main/AndroidManifest.xml            空 manifest（纯类库）
+  src/main/res/values/strings.xml         协议层自己要抛的 10 条错误文案
+  src/main/java/com/lanhang/miuix/{net,core,session,moments,schedule}/…
+app/libs/engine.aar                       ← 提交进仓库的二进制（169 KB）
+```
+
+**关键设计（省掉了 24 个文件的 import 改动）**：Gradle 的 `namespace` 只决定 R / BuildConfig
+的包名，**与 Kotlin 源码的 `package` 完全独立**。所以 engine 里 `namespace = "com.lanhang.engine"`，
+而源文件仍声明 `package com.lanhang.miuix.net`（原样不动）→ app 侧所有
+`import com.lanhang.miuix.net.ApiClient` 一个字都不用改。engine 内部三处
+`import com.lanhang.miuix.R` 改成 `import com.lanhang.engine.R`，用自己的 R。
+
+搬走的 15 个文件（app 侧全部删除，否则重复类冲突）：
+
+| 目录 | 文件 | 说明 |
+| --- | --- | --- |
+| `net/` 整个目录 | `ApiClient`（域名 `nginx-1.app.nchu.edu.cn` + `/api` 前缀）、`RceApi`、`MiniappApi`、`MomentsApi`、`ContactsRepository`、`Security`（RSA 公钥）、`Models`、`WorkModels`、`ContactsModels` | 接口清单的唯一持有者 |
+| `core/` 整个目录 | `ApiException`、`TextRef`、`Errors` | 协议层错误载体 |
+| `session/Session.kt` | 登录态 / token / 各服务地址 | |
+| `moments/MomentModels.kt` | 工作圈协议模型（`MomentFeed` 等 8 个类） | |
+| `schedule/AppContext.kt` | **本轮新抽出来的**（原来定义在 `ScheduleRepository.kt` 第 139 行） | 协议层要 Context，但不能反向依赖业务源码 |
+
+`app/build.gradle.kts` 依赖改成：
+
+```kotlin
+implementation(files("libs/engine.aar"))   // 本地 aar 不传递依赖，所以 okhttp/gson/coroutines 仍要 app 自带
+```
+
+根 `build.gradle.kts` 补 `id("com.android.library") version "8.13.2" apply false`。
+
+### 51.2 闭源落点：源码不入库，条件 include
+
+`settings.gradle.kts` 改成**条件 include**：
+
+```kotlin
+if (file("engine").exists()) { include(":engine") }
+```
+
+`.gitignore` 加 `engine/`。于是：本地有源码（可维护、可重编），公开仓库里只有
+`app/libs/engine.aar`（app 源码树里看不到任何接口面），CI 上目录不存在就跳过该模块、
+直接用已提交的 aar —— 两边都能构建。
+
+**重建 aar**（每次改协议层）：
+
+```
+gradle :engine:assembleRelease        # 产物 engine/build/outputs/aar/engine-release.aar
+copy engine\build\outputs\aar\engine-release.aar app\libs\engine.aar
+```
+
+若哪天想让源码也公开：删掉 `.gitignore` 里那行 `engine/` 即可（条件 include 会自动接上）。
+
+### 51.3 踩坑：跨模块的 `val` 属性不能 smart cast
+
+构建 app 时报两处（`im/ImScreens.kt:959 / 975`）：
+
+```
+e: Argument type mismatch: actual type is 'String?', but 'String' was expected.
+```
+
+根因不是搬迁本身，而是**类型换了模块**：
+
+```kotlin
+val briefName = brief?.name
+val name = when {
+    brief?.name?.isNotBlank() == true -> brief.name   // ← 同模块时 smart cast 成 String
+```
+`StaffBrief` 从「同模块的 app 源码」变成「aar 里的外部模块」后，Kotlin **不再对跨模块的
+`val` 属性做 smart cast**（外部模块的属性视为可能被重写/有 getter 副作用），于是
+`brief.name` 退回 `String?`，`when` 的整体类型变成 `String?`，下游
+`LanhangAvatar(name=String)` / `Text(text=String)` 一起报错。
+
+修法：把可能为空的属性先落到**局部变量**，smart cast 就回到局部作用域里：
+
+```kotlin
+val briefName = brief?.name
+val name = when {
+    briefName != null && briefName.isNotBlank() -> briefName
+    isGroup -> …
+    peerName.isNotBlank() -> peerName
+    else -> stringResource(R.string.moments_anonymous)
+}
+```
+
+**教训**：搬模块前先 `grep` 一遍「对搬走的类的属性做 smart cast」的写法
+（`x?.a?.isNotBlank() == true -> x.a`、`if (x.a != null) x.a.foo()`），它们会在搬迁后集体失效；
+编译器会一次性报全，改起来很快，但别误判成逻辑 bug。
+
+### 51.4 验证
+
+| 项 | 结果 |
+| --- | --- |
+| `:engine:assembleRelease` | ✅ `BUILD SUCCESSFUL in 27s`，产物 169,385 字节 |
+| aar 内容 | ✅ `classes.jar` + `R.txt` + `res/values/values.xml` + `proguard.txt` |
+| app `assembleRelease` | ✅ `BUILD SUCCESSFUL in 1m 55s`（修掉 smart cast 后） |
+| 装机 | ✅ `install -r` 输出 `Success`（未截断，§50.8 的教训） |
+| 课表渲染 | ✅ 第 9 周网格、时间列、周次栏全部正常（`Session` 从 aar 读登录态成功） |
+| 工作圈联网 | ✅ logcat `MomentsApi: GET /timeline?from_feed_id=&size=10 -> 200`，动态列表渲染出真实内容 → **协议层从 aar 端到端可用** |
+| 闭源效果 | ✅ `app/src/main/java` 下 `nginx-1.app.nchu.edu.cn` / `/api` / `/staffs/*` / `/message/*` / `/moments/api` 命中数为 **0**（仅剩若干注释里的路径描述与门户网页地址） |
+
+**仍然公开的部分**（诚实记账）：`campusnet/SrunApi`（校园网认证站点）、`library/LibrarySeatApi`
+（图书馆座位站点）、`work/WorkCatalog`（办事大厅网页入口，30 多个 `go.nchu.edu.cn/?id=` 之类
+的**网页**地址）、`ui/OaWebViewActivity` 的 host 判断 —— 这些是各自独立子系统的站点地址，
+不涉及主 API 协议；要一并搬需要另开一轮（它们和 UI/WebView 耦合更紧）。
+
+### 51.5 本轮踩坑
+
+- **同步脚本不能带 `/PURGE`，但删文件必须显式删**：robocopy `/E` 只加不减，dev 树里删掉的
+  `net/`、`core/` 在 repo 里仍在，`git status` 一片平静 —— 必须 `git rm -r` 显式删掉，
+  否则 CI 上 aar + 源码两份同名类直接重复类失败。
+- **`.gitignore` 只影响 git，不影响 robocopy**：`engine/` 被忽略不等于不会被同步过去，
+  必须在 `/XD` 列表里也加上 `engine`。
+
+---
+
 ## 50. 第五十轮（2026-10-30）：深浅色真机切换 / 双击回顶 / 添加页转场与周次交互 / 叠加块翻转（1.1.19 / versionCode 71）
 
 用户五条（按原话）：①「切换深浅色模式时，app 没有正确切换深浅色」；②「双击滚到页面顶部后，再次滚到页面下部，

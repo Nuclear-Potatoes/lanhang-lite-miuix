@@ -135,12 +135,6 @@ object ScheduleRepository {
     }
 }
 
-/** 供 Repository 获取全局 Context（App 初始化时注入） */
-object AppContext {
-    lateinit var instance: Context
-        private set
-
-    fun init(context: Context) {
-        instance = context.applicationContext
-    }
-}
+// AppContext 已于第五十一轮搬进 :engine 模块（engine/.../schedule/AppContext.kt）：
+// 协议层需要它，而协议层不能反向依赖 app 的业务源码。全限定名不变
+// （com.lanhang.miuix.schedule.AppContext），所以本文件及其他调用方都不需要改。
