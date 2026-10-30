@@ -218,7 +218,7 @@ class OaWebViewActivity : AppCompatActivity() {
         setContentView(composeView)
 
         composeView.setContent {
-            LanhangMiuixTheme(darkTheme = isNightMode()) {
+            LanhangMiuixTheme(darkTheme = com.lanhang.miuix.ui.miuix.ThemeState.isDark) {
                 Column(
                     modifier = Modifier
                         .fillMaxSize()

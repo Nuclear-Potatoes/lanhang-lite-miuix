@@ -82,8 +82,16 @@ class MainActivity : AppCompatActivity() {
     private var momentsFragment: Fragment? = null
     private var mineFragment: Fragment? = null
 
-    /** 夜间模式变化时让 Compose 外壳重画 */
-    private var nightMode by mutableStateOf(false)
+    /**
+     * 夜间模式是否生效（顶栏 / 底栏 / overlay 三处 Compose 外壳共用）。
+     *
+     * 2026-10-30：不再用 `isNightMode()` 读 Activity 的缓存 configuration —— 系统切深浅色时
+     * 它不会更新（语言被 `LocaleHelper` 包裹时更会被 `createConfigurationContext` 永久冻结），
+     * 表现为「深色模式不跟随系统」。改读进程级 Compose 状态 [com.lanhang.miuix.ui.miuix.ThemeState]，
+     * 它由 `Application.registerComponentCallbacks` 持续校正，值一变这几个 setContent 自动重组。
+     */
+    private val nightMode: Boolean
+        get() = com.lanhang.miuix.ui.miuix.ThemeState.isDark
 
     /** 重建（旋转/夜间模式 recreate）时恢复选中 Tab，且不播放入场动画 */
     private var restoring = false
@@ -106,7 +114,6 @@ class MainActivity : AppCompatActivity() {
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
-        nightMode = isNightMode()
         setupShell()
         // 2026-10-25：切亮/暗色会走 recreate()，个别机型上顶栏区域会残留上一窗口的画面
         // （表现为标题叠影）。首帧之后再强制整窗重绘一次，顶栏/底栏颜色立即跟到新主题。
@@ -174,8 +181,9 @@ class MainActivity : AppCompatActivity() {
 
     override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
         super.onConfigurationChanged(newConfig)
-        // 主题（亮/暗）切换后让 Compose 外壳跟上；Fragment 里的 Compose 内容自己读 Configuration
-        nightMode = isNightMode()
+        // 亮/暗切换后：Compose 部分读 ThemeState 会自己重组，但自绘课表（View 网格）不会，
+        // 这里显式让它按新配色重画一遍，否则课块/时间轴还是旧色。
+        (scheduleFragment as? ScheduleFragment)?.onThemeChanged()
     }
 
     /**

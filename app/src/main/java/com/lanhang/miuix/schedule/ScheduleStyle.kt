@@ -180,10 +180,15 @@ class ScheduleStyle(
             }
         }
 
+        /**
+         * 2026-10-30：改读进程级 [com.lanhang.miuix.ui.miuix.ThemeState]。
+         *
+         * 原来读 `context.resources.configuration.uiMode`：界面语言选「简体中文 / English」时
+         * `LocaleHelper.wrap()` 会用 `createConfigurationContext` 把整份 configuration
+         * （含 uiMode）冻成快照，系统切深浅色后这里读到的永远是旧值 —— 课表配色不跟随系统。
+         */
         private fun isNight(context: Context): Boolean =
-            (context.resources.configuration.uiMode and
-                android.content.res.Configuration.UI_MODE_NIGHT_MASK) ==
-                android.content.res.Configuration.UI_MODE_NIGHT_YES
+            com.lanhang.miuix.ui.miuix.ThemeState.isDark
 
         /** 相对亮度（WCAG 2.x，sRGB 转线性） */
         fun relLuminance(color: Int): Double {

@@ -85,8 +85,16 @@ fun markStickyListLanded(key: String) {
 
 /** 按 [key] 取一份**跨 Tab 切换存活**的列表滚动状态（工作 / 工作圈 / 我的 等一级列表用） */
 @Composable
-fun rememberStickyListState(key: String): LazyListState =
-    remember(key) { StickyStates.listStates.getOrPut(key) { LazyListState() } }
+fun rememberStickyListState(key: String): LazyListState = remember(key) { stickyListStateFor(key) }
+
+/**
+ * 非 Composable 版的 [rememberStickyListState]。
+ *
+ * 2026-10-30：跳二级页前要在 Fragment 的方法里**同步**读一次滚动位置（那时列表还活着），
+ * 用不了 `@Composable`，所以把取状态的逻辑抽出来。
+ */
+fun stickyListStateFor(key: String): LazyListState =
+    StickyStates.listStates.getOrPut(key) { LazyListState() }
 
 @Composable
 fun rememberPageListStates(namespace: String = ""): PageListStates =

@@ -28,6 +28,7 @@ import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.icon.MiuixIcons
+import top.yukonga.miuix.kmp.icon.extended.Add
 import top.yukonga.miuix.kmp.icon.extended.ChevronBackward
 import top.yukonga.miuix.kmp.icon.extended.ChevronForward
 import top.yukonga.miuix.kmp.icon.extended.GridView
@@ -66,6 +67,11 @@ fun ScheduleHeader(
     onPickWeek: () -> Unit,
     onSelectView: (Boolean) -> Unit,
     onToday: () -> Unit,
+    /**
+     * 打开「手动课程」面板（2026-10-30 用户第 3 条）。
+     * 放在最左侧、和「回到本周」挨着：都是「改课表本身」的操作，语义一组。
+     */
+    onAddCourse: () -> Unit,
 ) {
     val scheme = MiuixTheme.colorScheme
     val accent = state.accent ?: scheme.primary
@@ -157,6 +163,22 @@ fun ScheduleHeader(
                 contentDescription = stringResource(
                     if (state.showingGrid) R.string.schedule_switch_to_week else R.string.schedule_switch_to_grid
                 ),
+                modifier = Modifier.size(19.dp),
+                tint = muted,
+            )
+        }
+
+        // 添加课程：用户 2026-10-30 明确要求放在**右上角**（最右一个按钮），点一下直接进添加页。
+        // 之前放在左侧「回到本周」旁边，用户认为不该跟翻周控件混在一起。
+        IconButton(
+            onClick = onAddCourse,
+            minWidth = 36.dp,
+            minHeight = 36.dp,
+            cornerRadius = 50.dp,
+        ) {
+            Icon(
+                imageVector = MiuixIcons.Add,
+                contentDescription = "添加课程",
                 modifier = Modifier.size(19.dp),
                 tint = muted,
             )

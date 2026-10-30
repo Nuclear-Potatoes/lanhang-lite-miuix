@@ -455,7 +455,7 @@ fun showMiuixInput(
         setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnDetachedFromWindow)
         installViewTreeOwners(host ?: context)
         setContent {
-            LanhangMiuixTheme(darkTheme = (host ?: context).isNightMode()) {
+            LanhangMiuixTheme(darkTheme = ThemeState.isDark) {
                 var visible by remember { mutableStateOf(false) }
                 // 2026-10-29 修「评论/回复输入框打字不显示、发出去变成最后一次输入的内容」：
                 // 原来 text 是 setContent 外的一个普通 var，TextField 的 onValueChange 虽然改了它，
@@ -645,7 +645,7 @@ fun showMiuixDialog(context: Context, spec: MiuixDialogSpec): Dialog {
         setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnDetachedFromWindow)
         installViewTreeOwners(host ?: context)
         setContent {
-            LanhangMiuixTheme(darkTheme = (host ?: context).isNightMode()) {
+            LanhangMiuixTheme(darkTheme = ThemeState.isDark) {
                 // 2026-10-25 用户反馈「对话框动画非常生硬」：之前卡片是「啪」一下出现。
                 // 现在照 Miuix 面板的观感做：卡片从下方 1/6 高度弹上来 + 缩放 0.94→1 + 渐显，
                 // 遮罩同时 0 →0.42 渐深；退场反向并延后真正 dismiss，避免闪断。
@@ -855,7 +855,7 @@ fun showMiuixProgress(
         setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnDetachedFromWindow)
         installViewTreeOwners(host ?: context)
         setContent {
-            LanhangMiuixTheme(darkTheme = (host ?: context).isNightMode()) {
+            LanhangMiuixTheme(darkTheme = ThemeState.isDark) {
                 MiuixDialogCard {
                     Column(Modifier.fillMaxWidth()) {
                         Column(

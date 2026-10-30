@@ -52,7 +52,7 @@ class WorkFragment : Fragment() {
     ): View = ComposeView(requireContext()).apply {
         setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnViewTreeLifecycleDestroyed)
         setContent {
-            LanhangMiuixTheme(darkTheme = LocalContext.current.isNightMode()) {
+            LanhangMiuixTheme(darkTheme = com.lanhang.miuix.ui.miuix.ThemeState.isDark) {
                 // 返回键：栈里还有上一页就先退一页，栈底交给系统（退出应用）
                 BackHandler(enabled = stack.size > 1) { pop() }
                 MiuiNavStack(

@@ -182,7 +182,7 @@ class MineFragment : Fragment() {
     ): View = ComposeView(requireContext()).apply {
         setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnViewTreeLifecycleDestroyed)
         setContent {
-            LanhangMiuixTheme(darkTheme = LocalContext.current.isNightMode()) {
+            LanhangMiuixTheme(darkTheme = com.lanhang.miuix.ui.miuix.ThemeState.isDark) {
                 MineScreen(
                     state = uiState,
                     contactsState = contactsUi,
@@ -755,6 +755,9 @@ class MineFragment : Fragment() {
     }
 
     private fun applyTheme(mode: String) {
+        // 2026-10-30：Compose 层立刻跟着变，不等 AppCompat 重建 Activity（重建还有一帧闪）。
+        // 强制 light/dark 也写进进程级状态，ThemeState.isDark 会覆盖 systemDark。
+        com.lanhang.miuix.ui.miuix.ThemeState.applyMode(mode)
         AppCompatDelegate.setDefaultNightMode(
             when (mode) {
                 "light" -> AppCompatDelegate.MODE_NIGHT_NO

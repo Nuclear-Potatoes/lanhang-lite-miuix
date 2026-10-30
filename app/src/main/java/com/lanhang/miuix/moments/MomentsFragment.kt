@@ -61,6 +61,9 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
+/** 动态流列表状态的粘性 key（`StickyStates` 里按它存取，跨 Tab 切换 + 二级页进出都存活） */
+private const val TAB_LIST_KEY = "tab_moments"
+
 /**
  * 工作圈宿主。视觉层换成 Compose + Miuix（见 [MomentsScreen]），
  * 这里只保留数据、翻页与增删改动作。
@@ -86,6 +89,33 @@ class MomentsFragment : Fragment() {
 
     /** 当前页：列表 / 发表页 / 某个人的主页（都是本 Tab 内的二级页） */
     private var page by mutableStateOf(MomentPage.LIST)
+
+    // ---- 动态流的滚动位置存档（2026-10-30）----
+    //
+    // 用户：「工作圈内双击 Tab 回顶一次，再次下滑，点头像进主页再返回，依旧回到顶部」。
+    //
+    // 原来只在 Compose 的 `LaunchedEffect(page)` 里存位置，可那一刻列表页可能已经被
+    // `MiuiNavStack` 移出组合，`feedListState.firstVisibleItemIndex` 读到的是 0 ——
+    // 存下来的「原位置」就是顶部，返回自然回到顶部。（双击回顶后位置基线变成 0，
+    // 才让这个时序问题稳定暴露出来。）
+    //
+    // 改法：位置存在 Fragment 字段上，并且**在所有跳转前同步存一次**
+    // （见 [saveFeedScroll]，那时列表一定还活着），Compose 侧只负责「数据回来后再补回」。
+    private var feedRestoreIndex = 0
+    private var feedRestoreOffset = 0
+    private var feedRestorePending = false
+
+    /** 动态流列表状态（进程级粘性，和 Compose 里那份是同一个对象） */
+    private val feedListState: androidx.compose.foundation.lazy.LazyListState
+        get() = com.lanhang.miuix.ui.miuix.stickyListStateFor(TAB_LIST_KEY)
+
+    /** 离开动态流之前调一次：同步记下当前滚到第几条 + 偏移 */
+    private fun saveFeedScroll() {
+        if (page != MomentPage.LIST) return
+        feedRestoreIndex = feedListState.firstVisibleItemIndex
+        feedRestoreOffset = feedListState.firstVisibleItemScrollOffset
+        feedRestorePending = true
+    }
 
     // ---- 他人主页：整块交给 profile/ProfileHost.kt（「我的」里也是同一份）----
     /** 主页栈：A → B → … 任意层，返回正好弹回上一个人 */
@@ -178,27 +208,15 @@ class MomentsFragment : Fragment() {
     ): View = ComposeView(requireContext()).apply {
         setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnViewTreeLifecycleDestroyed)
         setContent {
-            LanhangMiuixTheme(darkTheme = LocalContext.current.isNightMode()) {
+            LanhangMiuixTheme(darkTheme = com.lanhang.miuix.ui.miuix.ThemeState.isDark) {
                 // 发表动态是「新页面」：左右滑动切页（往左进新页，退回时反过来）
                 val publishCurve = spring<IntOffset>(dampingRatio = 1f, stiffness = 146f)
                 // 动态流的滚动位置提到 AnimatedContent **外面**：进个人主页会把列表页的组合整个销毁，
                 // 状态放在里面就跟着没了，返回时会跳回顶部（用户 2026-10-25 两次反馈）
                 // 跨 Tab 切换存活（第十三轮）：Tab 切页 detach/attach 会重建 view，
                 // 普通 rememberLazyListState() 会丢掉滚动位置，回来时跳回顶部、顶栏也跟着闪。
-                val feedListState = rememberStickyListState("tab_moments")
-                // 光把状态提出来还不够：返回的那一帧列表可能还没数据（首次加载/刷新中），
-                // LazyListState 会把自己夹回 0，位置照样丢。所以再存一份「第几条 + 偏移」快照，
-                // 等回到列表且列表真有内容时精确滚回去。
-                var feedRestoreIndex by remember { mutableIntStateOf(0) }
-                var feedRestoreOffset by remember { mutableIntStateOf(0) }
-                var feedRestorePending by remember { mutableStateOf(false) }
-                LaunchedEffect(page) {
-                    if (page != MomentPage.LIST) {
-                        feedRestoreIndex = feedListState.firstVisibleItemIndex
-                        feedRestoreOffset = feedListState.firstVisibleItemScrollOffset
-                        feedRestorePending = true
-                    }
-                }
+                // 2026-10-30：state 与「存档」都挪到 Fragment 上（feedListState / saveFeedScroll），
+                // 因为存档必须在跳转**之前**同步做，那时列表还活着；Compose 这边只负责补回。
                 LaunchedEffect(page, items.size) {
                     // 从「消息」点名要看某条动态时，别让「返回原位置」把列表拽回顶部
                     if (focusFeedId != null) return@LaunchedEffect
@@ -413,6 +431,7 @@ class MomentsFragment : Fragment() {
             }
         }
         emptyText = null
+        saveFeedScroll()
         pageForward = true
         page = MomentPage.PUBLISH
         backCallback.isEnabled = true
@@ -422,6 +441,7 @@ class MomentsFragment : Fragment() {
     /** 顶栏搜索按钮：进搜索页（推入动画；搜索页是普通二级页，返回箭头/返回键都能退） */
     private fun openSearch() {
         if (page == MomentPage.SEARCH) return
+        saveFeedScroll()
         pageForward = true
         page = MomentPage.SEARCH
         backCallback.isEnabled = true
@@ -494,6 +514,9 @@ class MomentsFragment : Fragment() {
             return
         }
         profileStack.reset(userId)
+        // 离开动态流之前先记下滚动位置：此刻列表还活着，等 Compose 的 LaunchedEffect 再存
+        // 可能列表已被移出组合、index 读成 0（见 saveFeedScroll 注释）
+        saveFeedScroll()
         pageForward = true
         page = MomentPage.PROFILE
         backCallback.isEnabled = true

@@ -24,6 +24,239 @@
 
 ---
 
+## 49. 第四十九轮（2026-10-30）：课表右上角「+」→ 整页添加课程（1.1.18 / versionCode 70）
+
+用户原话：「在课表的右上角添加一个加号键，作为添加课程的按钮，点击即进入，不需要二次确认，
+参照这个添加课程的页面做你的ui，课程颜色不需要配置，按照你的取色逻辑保证不要与现有课程重复，做完后push」。
+
+### 49.1 入口：右上角，不是左上角
+
+`ScheduleHeader` 的加号按钮从「回到本周」右边（左上区）挪到**最右槽位**（视图切换按钮之后）。
+实机 dump 到的 bounds：`[1117,382][1173,438]`。
+
+### 49.2 弹窗 → 整页
+
+旧版点「+」弹 `showMiuixContent` 卡片，字段全摊在一个小卡片里，还会被圆角裁切。现在改成**整页**：
+
+| 区块 | 内容 |
+| --- | --- |
+| 顶栏 | `✕` / 标题（添加课程·编辑课程）/ `✓`（课程名非空才点亮） |
+| 卡片一 | 课程名称（必填）、地点、教师，左标签 + 右对齐占位 |
+| 卡片二 | 上课星期：一~日 七个胶囊 |
+| 卡片三 | 上课节次：折叠成「第 N - M 节 ›」，点开是起/止两段 `1..PeriodClock.count` 网格 |
+| 卡片四 | 上课周次：全部 / 单周 / 双周 + 1~20 六列多选，手点格子会清掉单双周标记 |
+| 卡片五 | **没有** —— 用户明确说课程颜色不用配，交给 `CourseColors` |
+
+页内另有「已添加的课程 N 门」，点一行进编辑、行尾「删除」。
+
+承载方式是**课表根 FrameLayout 的覆盖层**（`ComposeView` + `addView`），不是 Dialog：
+等价于进了个子页面，底下课表的数据与滚动位置都还在。配套 `OnBackPressedCallback`
+（否则按返回直接退到桌面）与 `onDestroyView` 里清引用（否则下次点了没反应）。
+
+### 49.3 颜色：沿用「整学期课名均分色相」，不另做调色板
+
+用户要「按你的取色逻辑保证不要与现有课程重复」。项目原有 `CourseColors`：把本学期**所有**课程名
+排序后 360° 均分、`hueOf(name)` 查表、表空时哈希兜底。手动课以前不在表里 → 走兜底 → 可能撞色。
+
+修法**不是**另写分配器（第 28 轮已被用户否决），而是把手动课名喂进同一张表：
+`ScheduleRepository.allCachedCourseNames()` 返回前 `addAll(ManualCourseStore.usedNames())`。
+增删手动课后必须 `CourseColors.invalidate()` + 清 `ScheduleFragment.courseColorMap`，否则还是旧表。
+
+### 49.4 顺手修掉三个真 bug
+
+1. **连堂课被拆成两块**（本轮引入）：`mergeCourses` 原来只看排序后的**相邻两条**。
+   手动课正好落在连堂第一节时（周一高数 1-2 节 + 新加的课第 1 节），高数 1 和 2 之间夹了别的课，
+   合并被打断 → 网格上裂成「第 1 节」+「第 2 节」两块。改成先按（课名 + 教室）**分组**、
+   组内各自合并，再统一按起始节排序。
+2. **课程块点了没反应**（第 48 轮就埋下了）：`GestureDetector` 用 `SimpleOnGestureListener`
+   而**没有覆写 `onDown`** —— 它默认返回 false，GestureDetector 拿到 DOWN 就认为「这次触摸不归我管」，
+   后续 UP 与第二次 DOWN 全部丢弃，单击详情、双击翻转一起失效。补 `override fun onDown(e) = true`。
+3. **返回键直接退出 App**：覆盖层是普通 View、不在返回栈里，加 `OnBackPressedCallback`。
+
+### 49.5 验证（模拟器 emulator-5554，第 9 周）
+
+| 项 | 结果 |
+| --- | --- |
+| 右上角「+」 | ✅ dump `[1117,382][1173,438]`，在视图切换右侧 |
+| 整页渲染 | ✅ 各卡片与参考图同构（✕/标题/✓、三行输入、星期、节次、周次网格） |
+| 输入 + 保存 | ✅ 输入 `TestCourse` → ✓ 变蓝 → 保存后页内出现「已添加的课程 1 门」 |
+| 进网格 | ✅ 周一第 1 节出现叠加块（右下角红点），手动课确实进了当天数据 |
+| 连堂不裂开 | ✅ 修 `mergeCourses` 后周一 1-2 节恢复整块 |
+| 单击看详情 | ✅ 点块中心弹出「高等数学B1 / E302 / 舒琳馨 / 4-19 周 / 01-02 节」 |
+| 双击翻转 | ⚠️ **未验证**：`adb input` 两次点击间隔 >300ms，被判成两次单击（弹详情）。代码路径与上游一致，需真机手指确认 |
+| 返回键 | ⚠️ 未单独验证（回调已就位） |
+| 清理测试数据 | ✅ 测试课已删，高数恢复 3 块、无残留 |
+
+### 49.6 踩坑（重要）
+
+- **`adb` 截图缩放导致坐标全错**：本轮前四次点击全部点空（课程块、✓、✕），原因都是「拿截图目测的
+  坐标去点」，而 `uiautomator dump` 的 bounds 与截图位置差 100~170px。**一律先 dump 再取 bounds 中心**。
+  这次连「点了没反应」都被误判成代码 bug，白花了半小时去查 `GestureDetector`。
+- **PowerShell 5.1 不能用来改 UTF-8 源码**：`Get-Content -Raw` + `[IO.File]::WriteAllText`
+  把 `build.gradle.kts` 的中文注释写成 GBK 乱码、还吃掉换行，直接 BUILD FAILED，只能从
+  `push/repo` 拷回再用 edit 工具改。改源码一律用 edit。
+
+---
+
+## 48. 第四十八轮（2026-10-30）：跟随系统深浅色 / 课表叠加翻转 / 手动添加课程 / 工作圈滚动记忆
+
+用户五条：①「深色模式下 app 颜色没有随系统自动切换」；②课程叠加时应显示与课程颜色对应的点、
+双击翻转而不是分两列；③手动添加课程（参考上游 lanhang-lite + nexio 课表 UI，miuix 化）；
+④把后端与接口代码全部闭源搬进 aar（见 §48.6，**本轮未开始**）；⑤工作圈已经在顶部时再下滑、
+点头像进他人主页返回仍跳回顶部。
+
+### 48.1 深浅色不跟随系统的真因（两处，都修了）
+
+**第一处**：`util/LocaleHelper.wrap()` 在「界面语言 ≠ 跟随系统」时用
+`base.createConfigurationContext(config)` 包一层，而 `config` 是
+`Configuration(base.resources.configuration)` 的**整份快照（含 `uiMode`）**。
+这个 override 优先级高于系统，`uiMode` 被永久冻在「包裹那一刻」的值 ——
+系统之后怎么切夜间模式，`Activity.resources` 都是旧值。
+修法：wrap 的基准改成 `(base.applicationContext ?: base).resources.configuration`，
+不再把 Activity 那份缓存配置整份拷进去。
+
+**第二处**：全 App 的 Compose 主题入口各自读 `isSystemInDarkTheme()` / `Context.isNightMode()`，
+读的都是 Activity 缓存的那份 configuration，而切 uiMode 是否会真的让 Activity 重建
+取决于机型、`configChanges` 声明与 AppCompat 的 `applyDayNight` 时机，不可靠。
+
+新增 `ui/miuix/ThemeState.kt`：**进程级 Compose 状态**，读
+`Application.resources.configuration`（进程真值、不被 LocaleHelper 包裹），并注册
+`Application.registerComponentCallbacks` 接住后续变化。`isDark` 把「系统值」与用户强制档位
+（`Session.themeMode` = system/light/dark）合成最终结果。
+
+改造点：`App.applyTheme()` 先 `ThemeState.applyMode(...)`；`App.onCreate` 在
+`AppLanguage.apply(...)` 之后调 `ThemeState.init(this)`；`MainActivity.nightMode`、
+`MineFragment` / `MomentsFragment` / `WorkFragment` / `OaWebViewActivity` 的
+`LanhangMiuixTheme(darkTheme = ...)`、`ScheduleStyle` 全部改成读 `ThemeState.isDark`。
+
+**保留 `AppCompatDelegate.setDefaultNightMode`**：XML `colorResource` 那一层（`page_bg` /
+`card_bg`）和自绘 View 仍靠 resources configuration，去掉会花屏；Compose 层读
+`ThemeState.isDark` 则负责「立即重组、不等 Activity 重建」。
+
+**设备实测（emulator-5554，双向，都通过）**：
+
+| 操作 | 结果 |
+| --- | --- |
+| 主题模式设为「跟随系统」+ 系统 light（`ui_night_mode=1`） | App 立刻浅色（白底、彩色浅块） |
+| `cmd uimode night yes`（不重启 App） | App **立即**变深色，无需重建 Activity |
+| `cmd uimode night no` | 立刻变回浅色 |
+
+**排障提示（下次别再绕）**：一开始看到「系统浅色、App 仍全黑」以为修复没生效，其实是
+`Session.themeMode` 被用户手动设成了 `dark`（设置 → 外观 → 主题模式 显示「暗色」）——
+**先确认档位再怀疑代码**。另外 `adb shell input tap` 的坐标要用
+`uiautomator dump` 里的 `bounds` 中心，凭截图肉眼估的 y 会偏 10~300px（截图被缩放显示），
+本轮因此白按了三次「外观」行。
+
+### 48.2 课表叠加：合成一块 + 右下角色点 + 双击翻转
+
+原来是泳道分列（`laneLayout` 算出 `lane/lanes`，同一时段的两门课各占半列）。
+用户要求改成上游 lanhang-lite 的做法：**叠成一整块，右下角一个与课程同色的点，
+双击在同一组的几门课之间翻转**。
+
+- 新增 `overlapFlip: HashMap<String, Int>`（Fragment 级，键 = `天|课名@起始节/…`），记住每组当前翻到第几门；
+- `laneLayout` + `LaneInfo` 删除，新增 `overlapGroups(blocks)`：按 `periodStart` 升序求**区间连通分量**
+  （`b.periodStart <= currentEnd` 就并入同组，并延长 `currentEnd`），一组 = 一个叠加块；
+- `renderGrid()` 的课程块循环改成 `for (group in overlapGroups(dayBlocks))`：
+  一个全宽 `FrameLayout`（`colW` 宽、`spanRows` 高）+ `nameView` + `roomView`
+  + 仅当 `group.size > 1` 时加的 6dp 圆点（`Gravity.BOTTOM or END`），
+  局部 `fun render(index)` 负责背景/文字色/圆点色的整体重刷；
+- 手势换成 `GestureDetector`：`onSingleTapConfirmed` → `showCourseDetail(...)`（**不能用
+  `onSingleTapUp`**，否则双击的第一下就把详情弹出来了）；`onDoubleTap` → `flipIdx = (flipIdx + 1) % group.size`，
+  写回 `overlapFlip` 并 `render(flipIdx)`。
+
+**本轮未验证**：第 9 周课表没有叠加课程（每格一门），只有编译级把握。
+下次在第 6 周或任意有叠加的周上双击确认「圆点出现 + 翻转 + 不再分两列」。
+
+### 48.3 手动添加课程（新功能）
+
+- `schedule/ManualCourseStore.kt`：`data class ManualCourse(id/name/teacher/room/dayOfWeek/
+  periodStart/periodEnd/weekStart/weekEnd/oddEven)` + `object ManualCourseStore`
+  （SharedPreferences + JSON，内存缓存，`all/upsert/remove/forDay`）。
+  纯本机数据，不上传、不参与任何接口。
+- **注入点是唯一的**：`ScheduleFragment#getCoursesForDay()` 末尾
+  `result.addAll(ManualCourseStore.forDay(dayIdx, week))` 再 `sortedBy { periodStart }`，
+  于是网格 / 列表视图 / 导出 / 桌面组件全部自动包含手动课，不用各处再判断。
+  注意原来那行 `data.schedule?.find{...} ?: return emptyList()` 也改成**回退到手动课**，
+  否则服务端没数据的那天手动课会消失。
+- `schedule/ManualCourseScreen.kt`：miuix 面板（`ManualCoursePanel`）+ 表单（`ManualCourseForm`），
+  列表 → 点一门进编辑（照 nexio 的层次，不把所有字段摊在一页）。字段全走
+  `MiuixTheme.colorScheme` 令牌；星期/单双周用自写 `MiuixChip` 胶囊。
+- 入口：`ScheduleHeader` 新增 `onAddCourse`，在最左侧「回到本周」右边加 `MiuixIcons.Add` 图标
+  （都是「改课表本身」的操作，语义一组）；`ScheduleFragment#showManualCourseEditor()`
+  用 `showMiuixContent(activity) { dismiss -> ... }` 承载，保存/删除后 `renderAll()`。
+
+**踩坑**：第一版两个 `Column` 只有 `verticalScroll` 没有最大高度 —— 内容比弹窗卡片高时会被顶出卡片，
+标题「手动课程 / 添加课程」被圆角切掉一半。修法：`.heightIn(max = 520.dp)` + `verticalScroll`
+（夹住高度才滚得起来）+ `padding(vertical = 6.dp)`。
+
+**设备实测**：页头「+」→ 面板（标题/说明/空态/添加课程/关闭，标题不再被裁）、
+「添加课程」→ 表单（课程名/教师/教室 + 周一~周日 chip + 节次 1~12 + 周次 1~30 + 每周/单周/双周 +
+保存/取消）全部正常渲染。**未验证**：真正保存一门课并看它出现在网格里（本轮时间用尽）。
+
+### 48.4 工作圈「回顶部」记忆失效（第五项）
+
+根因：原来在 Compose 侧用 `LaunchedEffect(page)` 存滚动位置，但它在**列表页已经离开组合之后**
+才跑，`firstVisibleItemIndex` 读到的是 0 —— 存进去的「记忆位置」永远是顶部；
+再加上双击 tab 回顶之后基准本来就是 0，问题更明显。
+
+修法：**在 Fragment 里、导航之前同步存**。
+
+```kotlin
+// 文件级
+private const val TAB_LIST_KEY = "tab_moments"
+
+// 字段
+private var feedRestoreIndex = 0
+private var feedRestoreOffset = 0
+private var feedRestorePending = false
+private val feedListState get() = com.lanhang.miuix.ui.miuix.stickyListStateFor(TAB_LIST_KEY)
+
+private fun saveFeedScroll() {
+    if (page != MomentPage.LIST) return
+    feedRestoreIndex = feedListState.firstVisibleItemIndex
+    feedRestoreOffset = feedListState.firstVisibleItemScrollOffset
+    feedRestorePending = true
+}
+```
+
+`openProfile()` / `openPublish()` / `openSearch()` 在离开 LIST 之前各调一次 `saveFeedScroll()`；
+Compose 侧只留「数据到位后补回」：
+
+```kotlin
+LaunchedEffect(page, items.size) {
+    if (focusFeedId != null) return@LaunchedEffect
+    if (page == MomentPage.LIST && feedRestorePending && items.isNotEmpty()) {
+        feedListState.scrollToItem(feedRestoreIndex, feedRestoreOffset)
+        feedRestorePending = false
+    }
+}
+```
+
+配套把 `ui/miuix/PageListStates.kt` 的 `stickyListStateFor(key)` 抽成非 Composable 访问器
+（`rememberStickyListState` 内部复用它），这样 Fragment 才能直接拿到同一个 `LazyListState`。
+
+**本轮未验证**：只有编译级把握（第 5 项要求「双击回顶后再下滑、进他人主页、返回仍在原位」，
+需要多步手势 + 真实数据，本轮时间不够）。做法与 §47.5 的相册修复同一套，风险低。
+
+### 48.5 本轮诚实记账
+
+| 项 | 状态 |
+| --- | --- |
+| ①跟随系统深浅色 | ✅ 代码 + **设备双向验证通过** |
+| ②课表叠加色点/双击翻转 | ⚠️ 代码 + 构建通过，**未设备验证**（第 9 周无叠加课） |
+| ③手动添加课程 | ⚠️ 面板/表单设备验证通过，**保存后进网格未验证** |
+| ④后端接口闭源搬 aar | ❌ **本轮未开始**（约 20 文件的结构性搬迁，需独占一轮） |
+| ⑤工作圈滚动记忆 | ⚠️ 代码 + 构建通过，**未设备验证** |
+
+基线扫描（下次做第 ④ 项时直接用）：公开源码里 `nchu.edu.cn` 域名出现在
+`homePageUrl = "http://go.nchu.edu.cn/?id=10&state=<uuid>"` 一类常量；接口路径字面量去重后 10 类
+（`/api`、`/api/`、`/message/history$q`、`/message/unread`、`/message/unread_count`、
+`/moments/api`、`/staffs/$userId`、`/staffs/%s`、`/staffs/batch`、`/staffs/search`）。
+
+本轮未发版（用户未要求 push）。
+
+---
+
 ## 47. 第四十七轮（2026-10-29）：评论输入框 / 深浅配色 / 课表自适应「至少保证表头」
 
 用户三条：①深浅模式配色不对（深色顶栏与工作圈应纯黑、评论区灰；浅色顶栏与内容应淡灰、评论区更深）；

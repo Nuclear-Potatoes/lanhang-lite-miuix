@@ -81,6 +81,10 @@ object ScheduleRepository {
         if (last >= first) {
             for (w in first..last) collect(loadCachedWeek(w)?.data)
         }
+        // 2026-10-30（用户：「课程颜色不需要配置，按照你的取色逻辑保证不要与现有课程重复」）：
+        // 手动课程名也要进这张表。否则它会落到 [CourseColors.fallback] 的 hash 兜底色相上，
+        // 跟某门教务课撞成同一个颜色 —— 手动课和教务课在同一张网格里，撞色就分不清了。
+        runCatching { ManualCourseStore.usedNames() }.getOrDefault(emptyList()).forEach { names.add(it) }
         return names.toList()
     }
 

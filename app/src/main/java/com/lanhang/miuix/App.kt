@@ -1,4 +1,4 @@
-﻿package com.lanhang.miuix
+package com.lanhang.miuix
 
 import android.app.Application
 import android.app.Application.ActivityLifecycleCallbacks
@@ -28,6 +28,10 @@ class App : Application() {
         }
         // 语言必须在任何 Activity 创建前 prime（见 LocaleHelper：不用系统的 per-app locale）
         AppLanguage.apply(Session.language)
+        // 主题档位的进程级真相源：必须在任何 Activity 创建前就位。
+        // 2026-10-30：系统切夜间模式界面不变（深色不跟随系统）就是因为各处读的是
+        // Activity 缓存/被 createConfigurationContext 冻结的 configuration，详见 ThemeState 注释。
+        com.lanhang.miuix.ui.miuix.ThemeState.init(this)
         applyTheme()
         // 校园网密码的 Keystore 存储（第十六轮）
         com.lanhang.miuix.campusnet.CampusNetStore.init(this)
@@ -85,6 +89,8 @@ class App : Application() {
     }
 
     private fun applyTheme() {
+        // 进程级主题状态同步一份：Compose 层读 ThemeState.isDark，不再依赖 Activity configuration
+        com.lanhang.miuix.ui.miuix.ThemeState.applyMode(Session.themeMode)
         androidx.appcompat.app.AppCompatDelegate.setDefaultNightMode(
             when (Session.themeMode) {
                 "light" -> androidx.appcompat.app.AppCompatDelegate.MODE_NIGHT_NO

@@ -42,10 +42,21 @@ object LocaleHelper {
         else -> systemLocale
     }
 
-    /** 跟随系统时原样返回，否则包一层强制语言的 Context */
+    /**
+     * 跟随系统时原样返回，否则包一层强制语言的 Context。
+     *
+     * 2026-10-30（用户报「深色模式不跟随系统」）：底稿**必须用 Application 的 configuration**，
+     * 不能用 `base.resources.configuration`。
+     *
+     * `createConfigurationContext(config)` 会把整份 `config` 当作 **override**，之后系统再怎么变
+     * 都不会传导进来 —— 若底稿取的是 Activity 那份（可能已被上一次 wrap 或系统缓存写成旧值），
+     * `uiMode` 就被永久冻在「包裹那一刻」，`isNightMode()` 恒为 false，深色永远不跟随。
+     * Application 的 resources 不被 wrap 影响，是系统真值。
+     */
     fun wrap(base: Context): Context {
         if (language == SYSTEM) return base
-        val config = Configuration(base.resources.configuration)
+        val truth = (base.applicationContext ?: base).resources.configuration
+        val config = Configuration(truth)
         config.setLocales(LocaleList(resolve()))
         return base.createConfigurationContext(config)
     }

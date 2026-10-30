@@ -58,6 +58,14 @@ class ScheduleFragment : Fragment() {
     private val weekData = HashMap<Int, ScheduleData>()
     private var showingGrid = true  // 默认网格视图
 
+    /**
+     * 叠加课程的「翻到第几门」记忆（2026-10-30 用户第 2 条）。
+     *
+     * key = `天索引|课名@起始节|…`，value = 组内下标。同一格叠加了两门课时双击可来回翻，
+     * 刷新 / 切周再切回来仍停在用户翻到的那一门（不清空，只在组消失后自然失效）。
+     */
+    private val overlapFlip = HashMap<String, Int>()
+
     // 课程配色：HSL 黄金角算法（同课同色）
     private val courseColorMap = mutableMapOf<String, Int>()
     private lateinit var gridScroll: android.view.View
@@ -74,6 +82,13 @@ class ScheduleFragment : Fragment() {
 
     override fun onCreateView(inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?): View? {
         return inflater.inflate(R.layout.fragment_schedule, container, false)
+    }
+
+    override fun onDestroyView() {
+        // 覆盖层挂在视图树上。视图销毁时必须把引用也清掉，
+        // 否则下次 show() 会以为「已经开着」直接 return，点了加号没反应。
+        hideManualCourseEditor()
+        super.onDestroyView()
     }
 
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
@@ -105,7 +120,7 @@ class ScheduleFragment : Fragment() {
         )
         header.setContent {
             com.lanhang.miuix.ui.miuix.LanhangMiuixTheme(
-                darkTheme = androidx.compose.ui.platform.LocalContext.current.isNightMode()
+                darkTheme = com.lanhang.miuix.ui.miuix.ThemeState.isDark
             ) {
                 ScheduleHeader(
                     state = headerState,
@@ -114,10 +129,13 @@ class ScheduleFragment : Fragment() {
                     onPickWeek = { showWeekPicker(header) },
                     onSelectView = { grid -> if (grid != showingGrid) switchView(grid) },
                     onToday = { switchWeek(actualCurrentWeek) },
+                    onAddCourse = { showManualCourseEditor() },
                 )
             }
         }
         swipeRefresh.setOnRefreshListener { refresh() }
+        // 添加课程页打开时让返回键先关页面（覆盖层是普通 View，不在返回栈里，必须自己接管）
+        requireActivity().onBackPressedDispatcher.addCallback(viewLifecycleOwner, manualCourseBack)
         val weekScroll = view.findViewById<androidx.core.widget.NestedScrollView>(R.id.weekScroll)
         installWeekSwipe(view.findViewById(R.id.contentWeek))
         gridScroll = view.findViewById(R.id.gridScroll)
@@ -188,6 +206,81 @@ class ScheduleFragment : Fragment() {
         style = ScheduleStyle.fromTheme(ctx)
         applyChromeStyle()
         renderAll()
+    }
+
+    /**
+     * 亮 / 暗主题切换后由 MainActivity 调一次。
+     *
+     * 2026-10-30：Compose 部分（页头 / 其它 Tab）读 `ThemeState` 会自己重组，但课表这张网格是
+     * **自绘 View**，不会因为配置变化自动重画；不喊这一声，系统切深浅色后课块颜色还是旧的。
+     * `ScheduleStyle.fromTheme` 内部也已经改成读 `ThemeState`（不吃被冻结的 configuration）。
+     */
+    fun onThemeChanged() {
+        if (!isAdded) return
+        applyThemeStyle()
+    }
+
+    /**
+     * 「添加课程」全屏页的覆盖层（null = 未打开）。
+     *
+     * 2026-10-30（用户：「点击即进入，不需要二次确认」）：以前点「+」弹的是一个卡片弹窗，
+     * 用户要的是**整页**添加界面（照参考图那种 ✕/标题/✓ 的 sheet 布局）。
+     * 这里直接把 [ManualCoursePage] 铺在课表根 FrameLayout 上，等价于进了一个子页面，
+     * 又不用为它单开 Fragment / 路由 —— 课表底下的数据和滚动位置都还在。
+     *
+     * 保存或删除后回调 `renderAll()`：手动课是通过 `getCoursesForDay` 混进同一份数据的，
+     * 重画一次网格就生效（列表视图 / 组件走同一个函数，也一起吃上）。
+     */
+    private var manualCourseOverlay: android.view.View? = null
+
+    /**
+     * 添加页打开时接管返回键。否则按返回会直接退到桌面 ——
+     * 覆盖层是加在同一个 Fragment 上的普通 View，系统返回栈根本不知道它存在。
+     */
+    private val manualCourseBack = object : androidx.activity.OnBackPressedCallback(false) {
+        override fun handleOnBackPressed() {
+            hideManualCourseEditor()
+        }
+    }
+
+    private fun showManualCourseEditor() {
+        if (manualCourseOverlay != null) return
+        val host = view as? android.view.ViewGroup ?: return
+        val overlay = androidx.compose.ui.platform.ComposeView(requireContext())
+        overlay.setViewCompositionStrategy(
+            androidx.compose.ui.platform.ViewCompositionStrategy.DisposeOnViewTreeLifecycleDestroyed
+        )
+        overlay.setContent {
+            com.lanhang.miuix.ui.miuix.LanhangMiuixTheme(
+                darkTheme = com.lanhang.miuix.ui.miuix.ThemeState.isDark
+            ) {
+                ManualCoursePage(
+                    onClose = { hideManualCourseEditor() },
+                    onChanged = {
+                        // 手动课名会并入配色表（整学期均分色相），分配结果一变，
+                        // 缓存的「课名 -> 颜色」就必须清掉重算，否则新加的课还是旧色。
+                        courseColorMap.clear()
+                        renderAll()
+                    },
+                )
+            }
+        }
+        host.addView(
+            overlay,
+            android.view.ViewGroup.LayoutParams(
+                android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+            ),
+        )
+        manualCourseOverlay = overlay
+        manualCourseBack.isEnabled = true
+    }
+
+    private fun hideManualCourseEditor() {
+        val overlay = manualCourseOverlay ?: return
+        (overlay.parent as? android.view.ViewGroup)?.removeView(overlay)
+        manualCourseOverlay = null
+        manualCourseBack.isEnabled = false
     }
 
     /** 面板与头部配色随令牌刷新（头部是 Compose，靠 headerState 上的颜色覆盖） */
@@ -1455,17 +1548,28 @@ class ScheduleFragment : Fragment() {
             blockArea.addView(band, blp)
         }
 
-        // 课程块
+        // 课程块（2026-10-30 用户第 2 条：叠加不再分栏）
+        //
+        // 旧做法：同一时段有多门课 → 横向劈成两/多栏并排，每栏宽 = (colW-gapW)/lanes。
+        // 用户明确否掉：「课程叠加时，应在右下角显示一个与课程颜色对应的点，双击这节课程之后
+        // 翻转这节课程，显示出与这节课程叠加的课程，而不是分两列展示课程」。
+        //
+        // 新做法：先把当天课程按「时段连通」分组（[overlapGroups]），每一组只画**一个**块，
+        // 块占满整列；组里不止一门课时，右下角画一个**该课颜色**的小圆点作为「这里叠着课」的标记，
+        // 双击在组内的几门课之间循环翻转（文字 / 底色 / 圆点颜色一起换），单击仍然是看详情。
         for (d0 in 0 until 7) {
             val dayBlocks = dayCourses[d0]
-            val lanes = laneLayout(dayBlocks)
-            dayBlocks.forEachIndexed { bi, ci ->
-                val info = lanes[bi]
-                val startIdx = rowIndexOf(ci.periodStart).coerceAtLeast(0)
-                val endIdx = rowIndexOf(ci.periodEnd).let { if (it >= 0) it else startIdx }
+            for (group in overlapGroups(dayBlocks)) {
+                val pStart = group.minOf { dayBlocks[it].periodStart }
+                val pEnd = group.maxOf { dayBlocks[it].periodEnd }
+                // 翻转记忆：同一周同一组刷新后仍停在用户翻到的那一门上
+                val groupKey = "$d0|" + group.joinToString("/") {
+                    "${dayBlocks[it].course.name}@${dayBlocks[it].periodStart}"
+                }
+                var flipIdx = (overlapFlip[groupKey] ?: 0).coerceIn(0, group.size - 1)
+                val startIdx = rowIndexOf(pStart).coerceAtLeast(0)
+                val endIdx = rowIndexOf(pEnd).let { if (it >= 0) it else startIdx }
                 val spanRows = endIdx - startIdx + 1
-                val blockColor = courseColor(ci.course.name ?: "?")
-                val blockText = style.onCourseTint(blockColor)
                 // 参考截图的观感：整块浅色胶囊 + 同色系深字，块内居中，不加色条
                 // 窄屏列宽只有 20~30dp，字号再按老值就会把课名挤成竖排；这里一并按列宽降档
                 val nameSize = when {
@@ -1473,10 +1577,8 @@ class ScheduleFragment : Fragment() {
                     colW < dp(40) || rowH < dp(40) -> ts(8.5f)
                     else -> ts(9.5f)
                 }
-                // 外层 FrameLayout：底色胶囊 + 内容 + 右下角色点（参照 NexioSchedule 课程块右下角的实心小圆）
-                val block = FrameLayout(ctx).apply {
-                    background = s.rounded(density, 10f, style.courseFill(blockColor))
-                }
+                // 外层 FrameLayout：底色胶囊 + 内容 + 右下角色点
+                val block = FrameLayout(ctx)
                 val blockInner = LinearLayout(ctx).apply {
                     orientation = LinearLayout.VERTICAL
                     gravity = Gravity.CENTER
@@ -1485,51 +1587,83 @@ class ScheduleFragment : Fragment() {
                 block.addView(blockInner, FrameLayout.LayoutParams(
                     FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT
                 ))
-                // 右下角色点 = 「这一格有多门课重合」的标记（NexioSchedule 的语义），
-                // 正常不重合的块不画点（用户 2026-10-25 反馈：之前连堂就画点，语义不对）
-                if (info.overlap) {
-                    block.addView(View(ctx).apply {
-                        background = s.rounded(density, 3f, blockColor)
-                    }, FrameLayout.LayoutParams(dp(6), dp(6)).apply {
+                // 右下角色点 = 「这一格叠着好几门课」的标记；不叠的块不画点
+                val dot = View(ctx)
+                if (group.size > 1) {
+                    block.addView(dot, FrameLayout.LayoutParams(dp(6), dp(6)).apply {
                         gravity = Gravity.BOTTOM or Gravity.END
                         rightMargin = dp(5)
                         bottomMargin = dp(4)
                     })
                 }
-                blockInner.addView(TextView(ctx).apply {
-                    text = ci.course.name ?: ""
+                val nameView = TextView(ctx).apply {
                     textSize = nameSize
                     setTypeface(null, android.graphics.Typeface.BOLD)
-                    setTextColor(blockText)
                     gravity = Gravity.CENTER
                     includeFontPadding = false
                     maxLines = if (rowH < dp(40)) 4 else 8
                     layoutParams = LinearLayout.LayoutParams(
                         LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f
                     )
-                })
-                val room = ci.course.room ?: ""
-                if (room.isNotEmpty()) {
-                    blockInner.addView(TextView(ctx).apply {
-                        text = room
-                        textSize = nameSize - ts(1f)
-                        setTextColor(blockText)
-                        alpha = 0.8f
-                        gravity = Gravity.CENTER
-                        includeFontPadding = false
-                        maxLines = 2
-                        layoutParams = LinearLayout.LayoutParams(
-                            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
-                        )
-                    })
                 }
-                // 重合时才分栏（两门课同时段横向各占一半），否则占满整列
-                val blockW = if (info.lanes > 1) (colW - gapW) / info.lanes else colW
-                val lp = FrameLayout.LayoutParams(blockW, spanRows * (rowH + gapH) - gapH)
-                lp.leftMargin = colIndexOf(d0).coerceAtLeast(0) * (colW + gapW) +
-                    info.lane * (blockW + gapW)
+                blockInner.addView(nameView)
+                val roomView = TextView(ctx).apply {
+                    textSize = nameSize - ts(1f)
+                    alpha = 0.8f
+                    gravity = Gravity.CENTER
+                    includeFontPadding = false
+                    maxLines = 2
+                    layoutParams = LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+                    )
+                }
+                blockInner.addView(roomView)
+
+                // 把「组内第 i 门课」画到这个块上
+                fun render(index: Int) {
+                    val ci = dayBlocks[group[index]]
+                    val color = courseColor(ci.course.name ?: "?")
+                    val tint = style.onCourseTint(color)
+                    block.background = s.rounded(density, 10f, style.courseFill(color))
+                    nameView.text = ci.course.name ?: ""
+                    nameView.setTextColor(tint)
+                    val room = ci.course.room ?: ""
+                    roomView.text = room
+                    roomView.setTextColor(tint)
+                    roomView.visibility = if (room.isEmpty()) View.GONE else View.VISIBLE
+                    if (group.size > 1) dot.background = s.rounded(density, 3f, color)
+                }
+                render(flipIdx)
+
+                val lp = FrameLayout.LayoutParams(colW, spanRows * (rowH + gapH) - gapH)
+                lp.leftMargin = colIndexOf(d0).coerceAtLeast(0) * (colW + gapW)
                 lp.topMargin = yOfRow(startIdx)
-                block.setOnClickListener { showCourseDetail(ci) }
+                // 单击看详情；双击在叠加的课之间翻转。
+                // 用 onSingleTapConfirmed（等双击窗口过去再确认）而不是 onSingleTapUp，
+                // 否则双击的第一下就会先把详情弹出来（§多次踩过的坑）。
+                val detector = android.view.GestureDetector(
+                    ctx,
+                    object : android.view.GestureDetector.SimpleOnGestureListener() {
+                        // 必须显式返回 true：SimpleOnGestureListener 的 onDown 默认是 false，
+                        // 一返回 false，GestureDetector 就认为这次触摸不归它管，后续 UP / 第二次 DOWN
+                        // 全部不再处理 —— 表现就是「点课程块毫无反应」（单击详情、双击翻转一起失效）。
+                        override fun onDown(e: android.view.MotionEvent): Boolean = true
+
+                        override fun onSingleTapConfirmed(e: android.view.MotionEvent): Boolean {
+                            showCourseDetail(dayBlocks[group[flipIdx]])
+                            return true
+                        }
+
+                        override fun onDoubleTap(e: android.view.MotionEvent): Boolean {
+                            if (group.size <= 1) return false
+                            flipIdx = (flipIdx + 1) % group.size
+                            overlapFlip[groupKey] = flipIdx
+                            render(flipIdx)
+                            return true
+                        }
+                    }
+                )
+                block.setOnTouchListener { _, e -> detector.onTouchEvent(e) }
                 blockArea.addView(block, lp)
             }
         }
@@ -1541,11 +1675,13 @@ class ScheduleFragment : Fragment() {
 
     private fun getCoursesForDay(data: ScheduleData, dayIdx: Int, week: Int): List<CourseItem> {
         val dayNames = listOf("星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日")
-        val targetName = dayNames.getOrNull(dayIdx) ?: return emptyList()
-        val day = data.schedule?.find { it.dayName == targetName } ?: return emptyList()
+        // 2026-10-30 用户第 3 条（手动添加课程）：服务端那天没数据也要把手动课吐出来，
+        // 所以这里的 `?: return emptyList()` 改成回退到手动课程，而不是直接空手回去
+        val targetName = dayNames.getOrNull(dayIdx) ?: return ManualCourseStore.forDay(dayIdx, week)
+        val day = data.schedule?.find { it.dayName == targetName }
 
         val result = mutableListOf<CourseItem>()
-        day.periods?.forEach { period ->
+        day?.periods?.forEach { period ->
             val periodNum = period.periodName?.trim()?.toIntOrNull() ?: return@forEach
             period.courses?.forEach { course ->
                 if (course.isWeekValid(week) && course.isOddEvenValid(week)) {
@@ -1553,28 +1689,42 @@ class ScheduleFragment : Fragment() {
                 }
             }
         }
+        // 自己加的课混进同一份列表：网格 / 列表视图 / 导出 / 桌面组件因此全部自动包含，
+        // 不用在每一处再写一遍「还要不要看手动课」
+        result.addAll(ManualCourseStore.forDay(dayIdx, week))
         return result.sortedBy { it.periodStart }
     }
 
+    /**
+     * 把「同一门课的连续节次」合成一个 [CourseItem]（1-2 节连堂 = 一块）。
+     *
+     * 2026-10-30 修：原来是「按 periodStart 排序后只看**相邻两条**」。
+     * 一旦中间插进别的课（手动添加的课正好落在连堂的第一节），连堂就被拆成两块，
+     * 线上表现为周一 1-2 节从一整块裂成「第 1 节」+「第 2 节」两小块。
+     * 现在先按（课名 + 教室）**分组**，各自组内合并，再统一按起始节排序 ——
+     * 中间夹了谁都不影响同一门课自己连续。
+     */
     private fun mergeCourses(courses: List<CourseItem>): List<CourseItem> {
         if (courses.size <= 1) return courses
         val result = mutableListOf<CourseItem>()
-        var cur = courses[0]
-        for (i in 1 until courses.size) {
-            val next = courses[i]
-            // 连续节次且不跨越午休/晚休（4→5、8→9）
-            if (next.course.name == cur.course.name && next.course.room == cur.course.room &&
-                next.periodStart == cur.periodEnd + 1 &&
-                cur.periodEnd != 4 && cur.periodEnd != 8
-            ) {
-                cur = cur.copy(periodEnd = next.periodEnd)
-            } else {
+        courses
+            .groupBy { (it.course.name ?: "") to (it.course.room ?: "") }
+            .forEach { (_, sameCourse) ->
+                val sorted = sameCourse.sortedBy { it.periodStart }
+                var cur = sorted[0]
+                for (i in 1 until sorted.size) {
+                    val next = sorted[i]
+                    // 连续节次且不跨越午休/晚休（4→5、8→9）
+                    if (next.periodStart == cur.periodEnd + 1 && cur.periodEnd != 4 && cur.periodEnd != 8) {
+                        cur = cur.copy(periodEnd = next.periodEnd)
+                    } else {
+                        result.add(cur)
+                        cur = next
+                    }
+                }
                 result.add(cur)
-                cur = next
             }
-        }
-        result.add(cur)
-        return result
+        return result.sortedBy { it.periodStart }
     }
 
     // ==================== 配色 ====================
@@ -1619,31 +1769,33 @@ class ScheduleFragment : Fragment() {
         }
     }
 
-    /** 一块课在当天占第几栏：同一时段有多门课时横向分栏，重合的块画色点 */
-    private data class LaneInfo(val lane: Int, val lanes: Int, val overlap: Boolean)
-
-    private fun laneLayout(blocks: List<CourseItem>): List<LaneInfo> {
+    /**
+     * 把一天里的课按「时段互相连通」分组（2026-10-30 用户第 2 条）。
+     *
+     * 返回每组在 [blocks] 里的下标列表：时段有交叠的课进同一组（传递闭包），
+     * 不重叠的课各自成组（`size == 1`）。调用方每组只画一个块，
+     * 组内多门课时靠双击翻转 —— 不再横向劈成两栏。
+     *
+     * [blocks] 必须已按 `periodStart` 升序（`getCoursesForDay` 保证）。
+     */
+    private fun overlapGroups(blocks: List<CourseItem>): List<List<Int>> {
         if (blocks.isEmpty()) return emptyList()
-        val laneEnds = mutableListOf<Int>()
-        val laneOf = IntArray(blocks.size)
-        blocks.forEachIndexed { i, b ->
-            var lane = laneEnds.indexOfFirst { it < b.periodStart }
-            if (lane < 0) {
-                lane = laneEnds.size
-                laneEnds.add(b.periodEnd)
+        val groups = mutableListOf<MutableList<Int>>()
+        var current = mutableListOf(0)
+        var currentEnd = blocks[0].periodEnd
+        for (i in 1 until blocks.size) {
+            val b = blocks[i]
+            if (b.periodStart <= currentEnd) {
+                current.add(i)
+                if (b.periodEnd > currentEnd) currentEnd = b.periodEnd
             } else {
-                laneEnds[lane] = b.periodEnd
-            }
-            laneOf[i] = lane
-        }
-        val overlaps = blocks.indices.map { i ->
-            blocks.indices.any { j ->
-                j != i && blocks[j].periodStart <= blocks[i].periodEnd &&
-                    blocks[i].periodStart <= blocks[j].periodEnd
+                groups.add(current)
+                current = mutableListOf(i)
+                currentEnd = b.periodEnd
             }
         }
-        val lanes = maxOf(1, laneEnds.size)
-        return blocks.indices.map { i -> LaneInfo(laneOf[i], lanes, overlaps[i]) }
+        groups.add(current)
+        return groups
     }
 
 }
