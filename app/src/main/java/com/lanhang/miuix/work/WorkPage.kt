@@ -382,8 +382,8 @@ fun WorkPage(
     }
 
     // 双击底栏「工作」回到顶部（原来这里错写成 TAB_MINE，工作 Tab 双击一直没反应）
-    LaunchedEffect(ScrollToTop.tick) {
-        if (ScrollToTop.tab == ShellState.TAB_WORK) listState.animateScrollToTopSlow()
+    com.lanhang.miuix.ui.shell.ScrollToTopEffect(ShellState.TAB_WORK) {
+        listState.animateScrollToTopSlow()
     }
     LazyColumn(
         modifier = Modifier.fillMaxWidth(),

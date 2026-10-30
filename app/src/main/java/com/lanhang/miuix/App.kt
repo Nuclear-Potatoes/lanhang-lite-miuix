@@ -47,6 +47,15 @@ class App : Application() {
         registerActivityLifecycleCallbacks(object : ActivityLifecycleCallbacks {
             override fun onActivityResumed(activity: android.app.Activity) {
                 (activity as? androidx.activity.ComponentActivity)?.let { com.lanhang.miuix.ui.miuix.DialogHost.onResumed(it) }
+                // 主题对账：通知栏/快捷开关切深浅色时，config change 不一定派发到进程，
+                // 一回到前台就主动问一次系统（详见 ThemeState.refresh 的注释）。
+                val wasDark = com.lanhang.miuix.ui.miuix.ThemeState.isDark
+                com.lanhang.miuix.ui.miuix.ThemeState.refresh(activity)
+                if (wasDark != com.lanhang.miuix.ui.miuix.ThemeState.isDark) {
+                    // Compose 层读的是 state，自己会重组；XML 背景色与自绘课表得手动补一刀
+                    activity.window?.decorView?.let { decor -> decor.post { decor.invalidate() } }
+                    (activity as? com.lanhang.miuix.ui.MainActivity)?.onSystemThemeChanged()
+                }
             }
 
             override fun onActivityPaused(activity: android.app.Activity) {

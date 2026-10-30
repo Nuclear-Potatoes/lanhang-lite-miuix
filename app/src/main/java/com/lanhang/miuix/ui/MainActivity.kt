@@ -187,6 +187,19 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
+     * 系统深浅色在「我们没收到 onConfigurationChanged」的情况下变了（通知栏快捷开关遮挡 Activity 那种），
+     * 由 [com.lanhang.miuix.App] 的 ActivityLifecycleCallbacks 在回到前台对账后发现变化时调用。
+     *
+     * Compose 层读 `ThemeState.isDark` 会自己重组；这里负责非 Compose 的两块：
+     * 窗口根 View 的背景（XML `@color/page_bg` 那份 resources 可能还是旧的）和自绘课表网格。
+     */
+    fun onSystemThemeChanged() {
+        if (isFinishing || isDestroyed) return
+        binding.root.invalidate()
+        (scheduleFragment as? ScheduleFragment)?.onThemeChanged()
+    }
+
+    /**
      * 双击底栏某个 Tab：先切到该页，再把页面滚回顶部。
      *
      * 课表页的网格是自绘 View（不在 Compose 树里），只能直接喊 Fragment 滚；

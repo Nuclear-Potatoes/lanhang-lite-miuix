@@ -34,9 +34,28 @@ data class ManualCourse(
     val weeks: List<Int> = (1..MAX_WEEK).toList(),
     /** `""` 每周 / `"1"` 单周 / `"2"` 双周 —— 只用于导出与详情展示，判定一律看 [weeks] */
     val oddEven: String = "",
+    /**
+     * 自定义上课时间（2026-10-30 用户第 3 条：「在上课周次旁边添加一个自定义时间的功能，
+     * 可以选择一天中的任意上课时间」）。
+     *
+     * `-1` = 没开自定义，走 [periodStart]/[periodEnd] 那张作息表；
+     * 否则是「当天 0 点起的分钟数」（如 14:00 = 840）。两者可以并存：
+     * 节次仍然决定它在网格里占几行，时间只是「这节课其实几点几分上」。
+     */
+    val startMinute: Int = -1,
+    val endMinute: Int = -1,
 ) {
-    /** 这一周上不上 */
-    fun inWeek(week: Int): Boolean = week in weeks
+    /** 开过自定义时间吗 */
+    val hasCustomTime: Boolean get() = startMinute in 0..1439 && endMinute in 0..1439
+
+    /**
+     * 这一周上不上。
+     *
+     * 空集合 = **每周都上**：用户可以在周次网格里一个都不选直接保存（他把「全部/单周/双周」
+     * 三档都不选是常态操作），这时如果按「永不上课」处理，课就彻底从课表上消失了，
+     * 会被当成「没保存成功」。所以空集合按「整学期每周」对待。
+     */
+    fun inWeek(week: Int): Boolean = weeks.isEmpty() || week in weeks
 
     /** 转成课表渲染用的 [CourseItem]；`weekRange` 带上是为了导出/详情也能自洽 */
     fun toCourseItem(): CourseItem = CourseItem(
@@ -44,7 +63,7 @@ data class ManualCourse(
             name = name,
             teacher = teacher.ifBlank { null },
             room = room.ifBlank { null },
-            weekRange = compressWeeks(weeks),
+            weekRange = compressWeeks(weeks).ifBlank { "1-$MAX_WEEK" },
             oddEven = oddEven.ifBlank { null },
         ),
         periodStart = periodStart.coerceAtLeast(1),
@@ -118,6 +137,8 @@ object ManualCourseStore {
                             periodEnd = o.optInt("pe", 1),
                             weeks = readWeeks(o),
                             oddEven = o.optString("oe"),
+                            startMinute = o.optInt("sm", -1),
+                            endMinute = o.optInt("em", -1),
                         )
                     )
                 }
@@ -152,6 +173,8 @@ object ManualCourseStore {
                     put("pe", c.periodEnd)
                     put("wk", c.weeks.joinToString(","))
                     put("oe", c.oddEven)
+                    put("sm", c.startMinute)
+                    put("em", c.endMinute)
                 }
             )
         }

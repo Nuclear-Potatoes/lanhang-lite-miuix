@@ -87,7 +87,8 @@ class ScheduleFragment : Fragment() {
     override fun onDestroyView() {
         // 覆盖层挂在视图树上。视图销毁时必须把引用也清掉，
         // 否则下次 show() 会以为「已经开着」直接 return，点了加号没反应。
-        hideManualCourseEditor()
+        // 传 animated = false：这时视图正在被拆，不该再播退场动画。
+        hideManualCourseEditor(animated = false)
         super.onDestroyView()
     }
 
@@ -232,6 +233,10 @@ class ScheduleFragment : Fragment() {
      * 重画一次网格就生效（列表视图 / 组件走同一个函数，也一起吃上）。
      */
     private var manualCourseOverlay: android.view.View? = null
+    /** 覆盖层下面的 18% 压暗层（进出场动画时一起淡入淡出） */
+    private var manualCourseScrim: android.view.View? = null
+    /** 退出动画进行中：期间不允许再打开（否则两个覆盖层会叠在一起） */
+    private var manualCourseClosing = false
 
     /**
      * 添加页打开时接管返回键。否则按返回会直接退到桌面 ——
@@ -244,7 +249,7 @@ class ScheduleFragment : Fragment() {
     }
 
     private fun showManualCourseEditor() {
-        if (manualCourseOverlay != null) return
+        if (manualCourseOverlay != null || manualCourseClosing) return
         val host = view as? android.view.ViewGroup ?: return
         val overlay = androidx.compose.ui.platform.ComposeView(requireContext())
         overlay.setViewCompositionStrategy(
@@ -265,6 +270,18 @@ class ScheduleFragment : Fragment() {
                 )
             }
         }
+        // 压暗层：与 NavMotion.PARENT_DIM 同一个 18%，夹在课表与覆盖层之间
+        val scrim = android.view.View(requireContext()).apply {
+            setBackgroundColor(android.graphics.Color.BLACK)
+            alpha = 0f
+        }
+        host.addView(
+            scrim,
+            android.view.ViewGroup.LayoutParams(
+                android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+            ),
+        )
         host.addView(
             overlay,
             android.view.ViewGroup.LayoutParams(
@@ -273,19 +290,86 @@ class ScheduleFragment : Fragment() {
             ),
         )
         manualCourseOverlay = overlay
+        manualCourseScrim = scrim
         manualCourseBack.isEnabled = true
+        // 进场：与二级页（ui/miuix/NavPush.kt 的 NavMotion）完全同一套几何/时长/曲线 ——
+        // 覆盖层从右侧整幅滑入，下面的课表向左让出 24% 屏宽并压暗 18%。
+        // 用户 2026-10-30：「课程添加页面进入与退出页面缺失动画，参考进入二级菜单的动画」。
+        animateManualCourseOverlay(host, overlay, scrim, enter = true)
     }
 
-    private fun hideManualCourseEditor() {
+    private fun hideManualCourseEditor(animated: Boolean = true) {
         val overlay = manualCourseOverlay ?: return
-        (overlay.parent as? android.view.ViewGroup)?.removeView(overlay)
-        manualCourseOverlay = null
         manualCourseBack.isEnabled = false
+        val host = overlay.parent as? android.view.ViewGroup
+        if (host == null || !animated) {
+            (overlay.parent as? android.view.ViewGroup)?.removeView(overlay)
+            manualCourseScrim?.let { s -> (s.parent as? android.view.ViewGroup)?.removeView(s) }
+            manualCourseScrim = null
+            manualCourseOverlay = null
+            if (::swipeRefresh.isInitialized) swipeRefresh.translationX = 0f
+            return
+        }
+        // 退出：整段动画跑完再摘引用，期间不允许重复打开（manualCourseClosing 挡住 show）
+        manualCourseClosing = true
+        val scrim = manualCourseScrim
+        animateManualCourseOverlay(host, overlay, scrim, enter = false) {
+            (overlay.parent as? android.view.ViewGroup)?.removeView(overlay)
+            scrim?.let { s -> (s.parent as? android.view.ViewGroup)?.removeView(s) }
+            if (manualCourseOverlay === overlay) manualCourseOverlay = null
+            if (manualCourseScrim === scrim) manualCourseScrim = null
+            manualCourseClosing = false
+        }
+    }
+
+    /**
+     * 覆盖层进出场动画（与 `NavMotion` 同一套参数：300ms / FastOutSlowIn / 父页 -24% + 压暗 18%）。
+     *
+     * 用 `ValueAnimator` 而不是 `ObjectAnimator`：这里要**同一个 p 同时驱动三个属性**
+     * （覆盖层位移、课表让位、压暗层透明度），三个各起一条动画必然不同拍。
+     */
+    private fun animateManualCourseOverlay(
+        host: android.view.ViewGroup,
+        overlay: android.view.View,
+        scrim: android.view.View?,
+        enter: Boolean,
+        onEnd: (() -> Unit)? = null,
+    ) {
+        val w = host.width.coerceAtLeast(1).toFloat()
+        val content: android.view.View? = if (::swipeRefresh.isInitialized) swipeRefresh else null
+        val anim = android.animation.ValueAnimator.ofFloat(0f, 1f)
+        anim.duration = 300L
+        // FastOutSlowIn 的近似贝塞尔（cubic-bezier(0.4, 0.0, 0.2, 1.0)）
+        anim.interpolator = android.view.animation.PathInterpolator(0.4f, 0f, 0.2f, 1f)
+        anim.addUpdateListener { a ->
+            val raw = a.animatedValue as Float
+            val p = if (enter) raw else 1f - raw
+            overlay.translationX = (1f - p) * w
+            content?.translationX = -0.24f * p * w
+            scrim?.alpha = 0.18f * p
+        }
+        anim.addListener(object : android.animation.AnimatorListenerAdapter() {
+            override fun onAnimationEnd(animation: android.animation.Animator) {
+                if (enter) {
+                    // 落位后把位移清成 0，避免后续布局/测量沿用旧 translation
+                    overlay.translationX = 0f
+                    content?.translationX = -0.24f * w
+                }
+                onEnd?.invoke()
+            }
+        })
+        anim.start()
     }
 
     /** 面板与头部配色随令牌刷新（头部是 Compose，靠 headerState 上的颜色覆盖） */
     private fun applyChromeStyle() {
         val density = resources.displayMetrics.density
+        // 页面底色也手工刷一遍：XML 里的 `@color/page_bg` 依赖 resources.configuration，
+        // 而通知栏快捷开关那种切法可能根本没派发 config change（此时它还是旧色）。
+        // 深浅两档与 ui/miuix/LanhangMiuix.kt 的 background 保持一致。
+        view?.setBackgroundColor(
+            if (com.lanhang.miuix.ui.miuix.ThemeState.isDark) 0xFF000000.toInt() else 0xFFF5F5F5.toInt()
+        )
         // 网格面板底色：**默认透明**（参照 NexioSchedule 主课表——网格直接铺在页面底色上，
         // 只有课程胶囊本身是实心块，没有大白色卡片框着）。设了自定义课表背景（图片/纯色）时
         // 才重新铺一层半透明面板，否则壁纸会透进课程网格里、字看不清。
@@ -1656,9 +1740,31 @@ class ScheduleFragment : Fragment() {
 
                         override fun onDoubleTap(e: android.view.MotionEvent): Boolean {
                             if (group.size <= 1) return false
-                            flipIdx = (flipIdx + 1) % group.size
-                            overlapFlip[groupKey] = flipIdx
-                            render(flipIdx)
+                            // 2026-10-30 用户第 5 条：「给课表中的叠加课程增加翻转动画，
+                            // 动效参考 lanhang-lite」。上游是绕 Y 轴翻面：先转到 90°（此时块侧对屏幕、
+                            // 几乎看不见），换掉内容，再从 -90° 转回 0° —— 观感就是这张卡片翻了个面。
+                            // 翻转途中再双击直接忽略，否则两条动画会同时写 rotationY，块会停在半路。
+                            if (block.rotationY != 0f) return true
+                            block.pivotX = block.width / 2f
+                            block.pivotY = block.height / 2f
+                            block.animate()
+                                .rotationY(90f)
+                                .setDuration(130L)
+                                .setInterpolator(android.view.animation.DecelerateInterpolator())
+                                .withEndAction {
+                                    flipIdx = (flipIdx + 1) % group.size
+                                    overlapFlip[groupKey] = flipIdx
+                                    render(flipIdx)
+                                    block.rotationY = -90f
+                                    block.animate()
+                                        .rotationY(0f)
+                                        .setDuration(130L)
+                                        .setInterpolator(
+                                            android.view.animation.AccelerateDecelerateInterpolator()
+                                        )
+                                        .start()
+                                }
+                                .start()
                             return true
                         }
                     }

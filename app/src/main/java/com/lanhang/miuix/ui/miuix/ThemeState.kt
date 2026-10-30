@@ -63,9 +63,27 @@ object ThemeState {
         if (mode != newMode) mode = newMode
     }
 
+    /**
+     * 重新对一次账：**每个 Activity 回到前台都要调**（见 `App.onActivityResumed`）。
+     *
+     * 2026-10-30 用户第二次反馈「切换深浅色模式时 app 没有正确切换」，参考录屏拆帧后确认
+     * 操作是**下拉通知栏点「深色模式」开关**。这条路径和 `cmd uimode night` 不一样：
+     * 通知栏展开时 Activity 只是被遮挡、并没有暂停，系统这次 config change 不会可靠地
+     * 派发到进程 —— [ComponentCallbacks.onConfigurationChanged] 收不到，于是 [systemDark]
+     * 停在旧值，收起通知栏回到 App 一看还是原来的亮色。
+     *
+     * 所以除了被动等回调，还得在「每次回到前台」主动问一次系统：
+     * 优先问 `UiModeManager`（系统真值，不依赖有没有派发 configuration），问不到才退回
+     * 读 `Application.resources.configuration`。
+     */
+    fun refresh(context: android.content.Context) {
+        val dark = readSystemDark(context)
+        if (dark != systemDark) systemDark = dark
+    }
+
     /** 冷启动时对一次账，并把系统侧的后续变化接进来 */
     fun init(app: Application) {
-        systemDark = app.resources.configuration.isNightConfiguration()
+        systemDark = readSystemDark(app)
         mode = Session.themeMode
         app.registerComponentCallbacks(object : ComponentCallbacks {
             override fun onConfigurationChanged(newConfig: Configuration) {
@@ -81,3 +99,20 @@ object ThemeState {
 /** 从一份 Configuration 里读夜间位（只认 UI_MODE_NIGHT_MASK） */
 internal fun Configuration.isNightConfiguration(): Boolean =
     (uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
+
+/**
+ * 系统侧「现在是不是深色」的真值。
+ *
+ * `UiModeManager.nightMode` 直接就是用户在设置/通知栏选的那一档，跟 configuration
+ * 有没有派发到本进程无关；只有 AUTO / CUSTOM（日出日落、定时）这两档它不回答「此刻」，
+ * 才退回读 `Application.resources.configuration`（进程级、不被 LocaleHelper 包裹）。
+ */
+private fun readSystemDark(context: android.content.Context): Boolean {
+    val um = context.getSystemService(android.content.Context.UI_MODE_SERVICE) as? android.app.UiModeManager
+    when (um?.nightMode) {
+        android.app.UiModeManager.MODE_NIGHT_YES -> return true
+        android.app.UiModeManager.MODE_NIGHT_NO -> return false
+    }
+    val app = context.applicationContext ?: context
+    return app.resources.configuration.isNightConfiguration()
+}

@@ -24,6 +24,121 @@
 
 ---
 
+## 50. 第五十轮（2026-10-30）：深浅色真机切换 / 双击回顶 / 添加页转场与周次交互 / 叠加块翻转（1.1.19 / versionCode 71）
+
+用户五条（按原话）：①「切换深浅色模式时，app 没有正确切换深浅色」；②「双击滚到页面顶部后，再次滚到页面下部，
+点击个人头像后，没有任何操作，app 就自动滚到了页面顶端」；③「课程添加页面进入与退出页面缺失动画，参考进入
+二级菜单的动画；全部/单周/双周可以都不选，用户可以选择特殊周次上课；选择上课周次时参考长按滑动快速多选；
+在上课周次旁边添加自定义时间，可以选择一天中任意上课时间，动效与交互参考视频四」；④「给课表中的叠加课程
+增加翻转动画，动效参考 lanhang-lite」。（⑤=③的拆分，用户按视频编号叙述。）
+
+### 50.1 深浅色：把「系统真值」从 Activity 缓存里救出来
+
+上一轮（§48.1）已经把 `ThemeState` 改成读 `Application.resources.configuration`，
+但真机仍是「切了不生效」。这轮补三点：
+
+1. `ThemeState.init(app)` / 新增 `refresh(context)` 里改用 **`UiModeManager.getNightMode()`
+   判真值**：`MODE_NIGHT_YES` → 深，`MODE_NIGHT_NO` → 浅；只有 `AUTO` / `CUSTOM`
+   （本机没登记日落到日出时段）才退回 `resources.configuration.isNightConfiguration()`。
+   原因：HyperOS 的深色开关是**改系统级 uiMode 标志**，不保证 `configChanges` 派发到我们的
+   Activity；`UiModeManager` 读的是系统服务，永远是最新值。
+2. `App.onActivityResumed` 里做**对账**：`wasDark` 与 `refresh()` 后的 `isDark` 不同就
+   `decorView.post { invalidate() }` + `MainActivity.onSystemThemeChanged()`，
+   让 Compose 与 XML 背景（`page_bg` / `card_bg`）同帧换色。回到前台是对账的最好时机——
+   用户从通知栏下拉切完深色必然回到 App。
+3. `MainActivity.onSystemThemeChanged()`（`isFinishing || isDestroyed` 守卫）里额外
+   `binding.root.invalidate()` + 课表 `onThemeChanged()`，因为自绘课表不吃 Compose 重组。
+
+**验证**：模拟器 5 条路径（设置切档位、`cmd uimode night y/n`、杀进程重启）全部正常，
+但**无法复现用户录屏里的真机现象**（HyperOS 通知栏开关）。修法是针对「config change 未可靠派发」
+这一根因做的加固，需真机确认。
+
+### 50.2 双击回顶后又自己跳回顶部（真因：`LaunchedEffect` 用了旧 tick 重跑）
+
+`ScrollToTop` 是 `object { var tick; var tab }` 的全局信号，各页 `LaunchedEffect(ScrollToTop.tick)`
+监听。问题出在**从二级页返回时**：列表的组合被销毁重建，新的 `LaunchedEffect` 拿到的是**同一个旧 tick 值**，
+于是「上一轮的请求」被当成新请求又执行一次 —— 用户看到的就是「点一下头像（无操作）就自己滚回顶部」。
+
+`ScrollToTop.tab` 仍留着上次的 tab 值，所以「tab 相等」的守卫拦不住。
+
+修法：新增 `@Composable fun ScrollToTopEffect(tabIndex, onScrollTop)`，
+内部 `val handled = remember { intArrayOf(ScrollToTop.tick) }` 记录**本次组合的基线**，
+`LaunchedEffect` 里 `if (ScrollToTop.tick == handled[0]) return`，只有真的收到新 tick 才滚。
+四处一次性替换（工作圈 / 工作 / 我的 / 成绩）。
+
+**教训**：全局事件信号 + `LaunchedEffect(key)` 的组合，必须用 `remember` 存「进入组合那一刻的基线值」，
+否则组合重建会把历史事件重放一遍。
+
+### 50.3 添加页转场：复用二级页那套参数表
+
+新增 `ui/miuix/NavMotion.kt` 之外的唯一参数来源仍是 `NavPush` 里的 `NavMotion`
+（`DURATION_MS = 300` / `FastOutSlowInEasing` / `PARENT_TRAVEL = 0.24f` / `PARENT_DIM = 0.18f`）。
+`ScheduleFragment.showManualCourseEditor()` / `hideManualCourseEditor(animated)` 用
+`ValueAnimator + PathInterpolator(0.4f, 0f, 0.2f, 1f)`：
+
+- 覆盖层 `translationX = (1 - p) * w`（右侧滑入）；
+- 父层（`swipeRefresh`，fragment 根 FrameLayout 的 child 0）`translationX = -0.24f * p * w`；
+- 黑色 scrim `alpha = 0.18f * p`。
+
+退出时反相。`manualCourseClosing` 标志防重入，`onDestroyView` 里 `animated = false` 同步摘除。
+
+### 50.4 周次：三档都能取消 + 长按拖选
+
+**「全部」再点取消判不出来的坑**：原来用 `oddEven` 当档位状态，而 `oddEven` 的 `""` 既表示「全部」
+又表示「未选」——`if (oddEven == code && code.isNotEmpty())` 对「全部」永远为假，点了没反应。
+修法：引入独立 `weekMode`（`"all" | "1" | "2" | ""`），`selected = weekMode == code`，
+再点自己就 `weekMode = ""` **并清空 `weeks`**（「都不选」应该就是全空）。
+取消档位后手动点格子 / 长按拖选，都会把 `weekMode` 与 `oddEven` 一起清掉。
+
+**长按滑动批量多选**（视频三）：整块周次网格挂 `pointerInput` + `detectDragGesturesAfterLongPress`，
+`onGloballyPositioned` 记 `weekGridSize`，`weekAt(x, y)` 按 `6 列 × rows` 反算周号，
+`applyWeekRange(from, to)` 按 `dragSelect`（起点是选中还是未选中）决定这一笔是「刷上」还是「刷掉」。
+
+### 50.5 自定义时间（视频四）
+
+- `ManualCourseStore.ManualCourse` 新增 `startMinute` / `endMinute`（`-1` = 用节次），
+  JSON 里存 `sm` / `em`，`hasCustomTime` 判断是否启用；
+- 「上课星期」行右侧加「自定义时间」+ 自绘 `MiniSwitch`（42×24dp，`animateDpAsState` 滑 19dp）；
+  不用 Miuix 的 `Switch`——它自带 48dp 行高，塞进标题行会把整行顶爆；
+- 开关打开后「上课节次」行文案变 `08:00 - 08:45`，点击弹 `TimeSheetDialog`：
+  全屏 35% 黑遮罩 + 底部 20dp 圆角面板 + 取消/上课时间/确定 + **四列滚轮**（时:分 — 时:分），
+  每列 `LazyColumn` + `rememberSnapFlingBehavior`，上下各留两行 `contentPadding`，
+  于是「首项 = 中间那一行」——选中值直接取 `firstVisibleItemIndex`，不用算偏移；中间行加粗高亮。
+- 编辑器根容器从 `Column` 改成 `Box`，sheet 叠在上面（不开窗、不 Dialog，和覆盖层同一套）。
+
+### 50.6 叠加块翻转（视频参考 lanhang-lite）
+
+`onDoubleTap` 从「裸换内容」改成绕 Y 轴翻面：`animate().rotationY(90f)`（130ms，Decelerate）
+→ `withEndAction` 里换 `flipIdx` / `render()` → `rotationY = -90f` → 转回 0（AccelerateDecelerate）。
+`pivot` 显式设为中心，翻转中再双击直接忽略（否则两条动画抢 `rotationY`，块停在半路）。
+
+### 50.7 验证（模拟器 emulator-5554，1220×2656，第 9 周）
+
+| 项 | 结果 |
+| --- | --- |
+| 添加页进入/退出动画 | ⚠️ 静态截图只能证明页面渲染正确，动画需真机/录屏确认 |
+| 三档全不选 | ✅ 点「全部」后三档都不高亮、1~20 全部熄灭，截图确认 |
+| 空周次保存 | ✅ 名字填 `NoWeek` + 空周次 → ✓ 点亮 → 保存成功（「已添加的课程 2 门」） |
+| 长按拖选 | ⚠️ 代码已接（`detectDragGesturesAfterLongPress`），`adb` 长按+拖动难以稳定模拟，需真机确认 |
+| 自定义时间开关 | ✅ 开关打开 → 节次行变「08:00 - 08:45」，节次网格自动展开 |
+| 时间滚轮面板 | ✅ 四列 06..10 / : 00..02 / 08..10 / : 43..47，中间行 08:00 — 08:45 加粗；点「确定」关闭并回写 |
+| 叠加块翻转 | ⚠️ **未验证**：第 9 周无叠加课（每格一门），需在有叠加的周上双击 |
+| 深浅色 | ⚠️ 模拟器无法复现真机现象；已按「UiModeManager 真值 + 回前台对账」加固 |
+| 双击回顶 | ⚠️ 代码已修（`remember` 基线），`adb` 双击间隔 >300ms 无法模拟 |
+| 测试数据清理 | ✅ `TestTn` / `NoWeek` 都已从「已添加的课程」里删掉，课表无残留 |
+
+### 50.8 本轮踩坑
+
+- **`adb install -r` 的输出被 `Select-Object -Last 1` 吃掉**，看起来装上了其实装的还是上一版 ——
+  于是「点『全部』没反应」被我当成逻辑 bug 又查了一遍。教训：**装包后必须看到 `Success` 字样**，
+  并且用「只有新版本才有的字符串」（例如「上课时间」）确认代码真的进了包。
+- **截图坐标与 `uiautomator dump` 的 bounds 差一个缩放系数**（本轮实测约 1.41，且随 y 增大而增大）：
+  我一直用「看截图估坐标」的方式点，连点四次全空。**一律 dump 取 bounds 中心**，别再目测。
+- **覆盖层只能覆盖到 `fragmentContainer` 的底边（y=2397）**，y>2397 的「删除」按钮被底栏吃掉，
+  点击直接切到别的 Tab。要删列表项必须先把内容滚上来。
+
+---
+
 ## 49. 第四十九轮（2026-10-30）：课表右上角「+」→ 整页添加课程（1.1.18 / versionCode 70）
 
 用户原话：「在课表的右上角添加一个加号键，作为添加课程的按钮，点击即进入，不需要二次确认，

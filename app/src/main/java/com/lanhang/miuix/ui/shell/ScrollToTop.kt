@@ -32,6 +32,31 @@ object ScrollToTop {
     }
 }
 
+/**
+ * 「只响应**新的**双击请求」的副作用。
+ *
+ * 各页面原来直接写 `LaunchedEffect(ScrollToTop.tick) { if (tab == 本页) 滚到顶 }`，
+ * 有个致命时序：页面从二级页（他人主页 / 相册 / 成绩详情…）返回时，整个 Compose 组合是
+ * **重建**的，`LaunchedEffect` 会以**同一个旧 tick** 再跑一遍 —— 于是用户刚滚到的位置
+ * 又被拽回顶部。
+ *
+ * 2026-10-30 用户反馈：「双击滚到页面顶部后，再次滚到页面下部，点击个人头像后，
+ * 没有任何操作，app 就自动滚到了页面顶端」。拆开就是这条 —— 真正的点因是「本页组合重建」，
+ * 而重建的触发点（点头像进主页）看起来跟滚动毫无关系，所以现象特别费解。
+ *
+ * 修法：每页 remember 一个「上次处理过的 tick」，只有 tick 真的变了才滚。
+ * remember 在组合重建时会重新初始化成当前值，正好实现「重建不响应、只响应新请求」。
+ */
+@androidx.compose.runtime.Composable
+fun ScrollToTopEffect(tabIndex: Int, onScrollTop: suspend () -> Unit) {
+    val handled = androidx.compose.runtime.remember { intArrayOf(ScrollToTop.tick) }
+    androidx.compose.runtime.LaunchedEffect(ScrollToTop.tick) {
+        if (ScrollToTop.tick == handled[0]) return@LaunchedEffect
+        handled[0] = ScrollToTop.tick
+        if (ScrollToTop.tab == tabIndex) onScrollTop()
+    }
+}
+
 
 /**
  * 「慢慢滚回顶部」—— **四个 Tab 共用这一个实现**。

@@ -129,8 +129,8 @@ fun GradesScreen(
     ReportListScroll(listState, ShellState.TAB_MINE)
 
     // 双击底栏「成绩」回到顶部
-    LaunchedEffect(ScrollToTop.tick) {
-        if (ScrollToTop.tab == ShellState.TAB_MINE) listState.animateScrollToTopSlow()
+    com.lanhang.miuix.ui.shell.ScrollToTopEffect(ShellState.TAB_MINE) {
+        listState.animateScrollToTopSlow()
     }
 
     // 页面根必须有底色：切 Tab / 进二级页时两页会重叠，透明根会把下层页面透出来

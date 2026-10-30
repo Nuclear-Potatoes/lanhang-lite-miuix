@@ -436,9 +436,10 @@ fun MineScreen(
             else -> {
                 val mineListState = pageLists.of(page)
                 ReportListScroll(mineListState, ShellState.TAB_MINE)
-                // 双击底栏「我的」回到顶部
-                LaunchedEffect(ScrollToTop.tick) {
-                    if (ScrollToTop.tab == ShellState.TAB_MINE) mineListState.animateScrollToTopSlow()
+                // 双击底栏「我的」回到顶部（用 ScrollToTopEffect：从二级页/他人主页返回时
+                // 本页组合会重建，普通 LaunchedEffect 会拿旧 tick 再滚一次顶）
+                com.lanhang.miuix.ui.shell.ScrollToTopEffect(ShellState.TAB_MINE) {
+                    mineListState.animateScrollToTopSlow()
                 }
                 LazyColumn(
                     modifier = pageModifier,

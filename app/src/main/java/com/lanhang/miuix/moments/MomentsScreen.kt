@@ -162,9 +162,11 @@ fun MomentsScreen(
     // 往下滑 → 顶栏大标题收起为居中小标题（见 ShellScroll）
     ReportListScroll(listState, ShellState.TAB_MOMENTS)
 
-    // 双击底栏「工作圈」回到顶部
-    LaunchedEffect(ScrollToTop.tick) {
-        if (ScrollToTop.tab == ShellState.TAB_MOMENTS) listState.animateScrollToTopSlow()
+    // 双击底栏「工作圈」回到顶部。
+    // 2026-10-30：改用 ScrollToTopEffect —— 直接写 LaunchedEffect(tick) 的话，
+    // 从他人主页/发表页返回时本页组合是重建的，会拿旧 tick 再滚一次顶（用户报的那条 bug）。
+    com.lanhang.miuix.ui.shell.ScrollToTopEffect(ShellState.TAB_MOMENTS) {
+        listState.animateScrollToTopSlow()
     }
 
     // 滚到底部自动翻页（对齐原来的 onScrolled 逻辑：距末尾 3 条就预取）
