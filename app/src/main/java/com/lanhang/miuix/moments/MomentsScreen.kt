@@ -64,6 +64,7 @@ import androidx.compose.ui.unit.dp
 import com.lanhang.miuix.ui.miuix.isNightMode
 import coil.compose.AsyncImage
 import coil.compose.AsyncImagePainter
+import coil.request.ImageRequest
 import coil.compose.SubcomposeAsyncImage
 import coil.compose.SubcomposeAsyncImageContent
 import com.lanhang.miuix.ui.ImageLoadingBox
@@ -795,6 +796,13 @@ private fun MomentCard(
 @Composable
 internal fun MomentImageGrid(media: List<MediaItem>, onImage: (List<String>, Int, android.graphics.Rect?) -> Unit) {
     val urls = media.map { it.url?.takeIf { u -> u.isNotBlank() } ?: it.displayUrl.orEmpty() }
+    // 2026-11-01 第五十八轮（用户第 3 条：「图片不一定要加载原图，可以进行压缩以加快加载速度」）：
+    // 这格子只有屏宽的三分之一（九宫格排三列），而服务端图动辄 2000~4000px，
+    // 按原图尺寸解码等于把一张 12M 像素的位图塞进一个 390px 的小框里 ——
+    // 内存和解码时间都浪费掉了。按格子的实际像素尺寸解码即可。
+    val imgCtx = LocalContext.current
+    val winW = LocalWindowInfo.current.containerSize.width
+    val cellPx = (winW / 3).coerceAtLeast(1)
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         media.chunked(3).forEachIndexed { rowIndex, rowItems ->
             Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -805,7 +813,11 @@ internal fun MomentImageGrid(media: List<MediaItem>, onImage: (List<String>, Int
                     // 用户第 11 条：图片也要有加载界面 —— 取图期间画占位骨架，
                     // 失败时也留着骨架（不再是一片透明，看着像图丢了）
                     SubcomposeAsyncImage(
-                        model = mediaItem.displayUrl,
+                        model = ImageRequest.Builder(imgCtx)
+                            .data(mediaItem.displayUrl)
+                            .size(cellPx, cellPx)
+                            .crossfade(120)
+                            .build(),
                         contentDescription = null,
                         contentScale = ContentScale.Crop,
                         modifier = Modifier

@@ -11,6 +11,7 @@
     <string name="common_home">回我的主页</string>
     <string name="common_more">更多</string>
     <string name="grades_semester">学期</string>
+    <string name="moments_show_original">显示原图</string>
     <string name="moments_loading">加载中…</string>
     <string name="moments_load_more">加载更多</string>
     <string name="moments_no_more">没有更多了</string>
@@ -71,6 +72,19 @@
     <string name="settings_about_version">版本 %1$s</string>
     <string name="settings_account">当前账号</string>
     <string name="settings_app_version">应用版本</string>
+    <!-- 2026-11-03 第六十轮（用户第 3 条）：检查更新 -->
+    <string name="settings_check_update">检查更新</string>
+    <string name="settings_check_update_checking">正在检查…</string>
+    <string name="settings_check_update_no_version">读不到当前版本号，暂时无法检查更新。</string>
+    <string name="settings_check_update_available">有新版 %1$s</string>
+    <string name="settings_check_update_available_title">发现新版本</string>
+    <string name="settings_check_update_message">当前 %1$s → 最新 %2$s</string>
+    <string name="settings_check_update_download">去下载</string>
+    <string name="settings_check_update_later">稍后</string>
+    <string name="settings_check_update_latest">已是最新</string>
+    <string name="settings_check_update_latest_message">当前已是最新版本（%1$s）。</string>
+    <string name="settings_check_update_failed">检查失败</string>
+    <string name="settings_check_update_failed_message">检查失败：%1$s</string>
     <string name="settings_proto">接口标识</string>
     <string name="settings_diagnostics">诊断与日志</string>
     <string name="settings_diagnostics_subtitle">查看最近错误并分享</string>
@@ -311,6 +325,7 @@
     <string name="settings_debug_summary">重新握手并拉取一次课表原始数据</string>
     <string name="schedule_view_grid">网格</string>
     <string name="schedule_view_week">周视图</string>
+    <string name="common_edit">编辑</string>
     <string name="common_ok">确定</string>
     <string name="schedule_back_to_today">回到本周</string>
     <string name="refresh_pull">下拉刷新</string>
@@ -425,7 +440,38 @@
     <string name="mine_credits_upstream_summary">github.com/Micheal-Reber/lanhang-lite</string>
     <string name="mine_im">私信</string>
     <string name="mine_im_summary">和老师同学单聊、群聊</string>
-    <string name="im_loading">正在连接私信…</string>
+    <!-- 第六十三轮第 4 条：设置 → 通知（免打扰 / 显示详情 / 总开关） -->
+    <string name="notify_settings_title">通知</string>
+    <string name="notify_settings_section_message">新消息通知</string>
+    <string name="notify_settings_master">接收新消息通知</string>
+    <string name="notify_settings_master_summary">关闭后不再弹出任何私信通知</string>
+    <string name="notify_settings_detail">通知显示消息详情</string>
+    <string name="notify_settings_detail_summary">关闭后只提示「你收到一条新消息」</string>
+    <string name="notify_settings_detail_hidden_title">新消息</string>
+    <string name="notify_settings_detail_hidden_body">你收到一条新消息</string>
+    <string name="notify_settings_section_quiet">免打扰</string>
+    <string name="notify_settings_quiet">免打扰时段</string>
+    <string name="notify_settings_quiet_summary">这段时间内不弹出通知</string>
+    <string name="notify_settings_quiet_start">开始时间</string>
+    <string name="notify_settings_quiet_end">结束时间</string>
+    <string name="notify_settings_summary_off">已关闭</string>
+    <string name="notify_settings_summary_on">已开启</string>
+    <string name="notify_settings_summary_quiet">免打扰 %1$s–%2$s</string>
+    <string name="notify_settings_summary_no_permission">缺少通知权限</string>
+    <string name="notify_settings_footer">这是本机通知：App 进程还在运行时，新私信会弹一条系统通知；进程被系统清理后就收不到了。关闭总开关或处在免打扰时段时不会弹出，未读消息仍会留在私信列表里。</string>
+    <string name="common_retry_later">请稍后再试</string>
+    <!-- 第六十三轮第 3 条：新的朋友（好友申请） -->
+    <string name="friend_requests_title">新的朋友</string>
+    <string name="friend_requests_empty">暂时没有新的好友申请</string>
+    <string name="friend_requests_empty_hint">别人加你之后会出现在这里</string>
+    <string name="friend_requests_accept">接受</string>
+    <string name="friend_requests_delete_title">删除申请</string>
+    <string name="friend_requests_delete_message">确定删除 %1$s 的好友申请吗？</string>
+    <string name="friend_requests_delete_message_generic">确定删除这条好友申请吗？</string>
+    <string name="friend_requests_failed">操作失败</string>
+    <string name="friend_requests_load_failed">加载失败：%1$s</string>
+    <string name="im_new_friends">新的朋友</string>
+    <string name="im_new_friends_summary">查看好友申请</string>    <string name="im_loading">正在连接私信…</string>
     <string name="im_connecting">正在连接私信服务…</string>
     <string name="im_connected">私信已连接</string>
     <string name="im_failed">私信连接失败</string>

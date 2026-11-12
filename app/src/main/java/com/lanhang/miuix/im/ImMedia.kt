@@ -196,31 +196,45 @@ object ImMedia {
         private var file: File? = null
         private var startedAt = 0L
 
-        fun start(): Boolean = runCatching {
-            val target = File(cacheDir(context), "voice_${System.currentTimeMillis()}.m4a")
+        fun start(): Boolean {
+            // 2026-10-31 第五十六轮：MediaRecorder 独占麦克风，上一次实例没彻底释放时
+            // 本次 prepare() 会直接抛异常（模拟器/真机都出现过），必须先清干净。
+            runCatching { recorder?.reset() }
+            runCatching { recorder?.release() }
+            recorder = null
             @Suppress("DEPRECATION")
             val r = MediaRecorder()
-            r.setAudioSource(MediaRecorder.AudioSource.MIC)
-            r.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
-            r.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
-            r.setAudioSamplingRate(16000)
-            r.setAudioChannels(1)
-            r.setAudioEncodingBitRate(32000)
-            r.setOutputFile(target.absolutePath)
-            r.prepare()
-            r.start()
-            recorder = r
-            file = target
-            startedAt = System.currentTimeMillis()
-            true
-        }.getOrDefault(false)
+            val target = File(cacheDir(context), "voice_${System.currentTimeMillis()}.m4a")
+            return runCatching {
+                r.setAudioSource(MediaRecorder.AudioSource.MIC)
+                r.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
+                r.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
+                r.setAudioSamplingRate(16000)
+                r.setAudioChannels(1)
+                r.setAudioEncodingBitRate(32000)
+                r.setOutputFile(target.absolutePath)
+                r.prepare()
+                r.start()
+                recorder = r
+                file = target
+                startedAt = System.currentTimeMillis()
+                true
+            }.onFailure {
+                android.util.Log.e("ImVoice", "MediaRecorder 启动失败", it)
+                runCatching { r.reset() }
+                runCatching { r.release() }
+                runCatching { target.delete() }
+            }.getOrDefault(false)
+        }
 
         /** 停止并返回 (文件, 秒数)；不足 1 秒按 1 秒算，太短（<1s）视为取消 */
         fun stop(): Pair<File, Int>? {
             val r = recorder ?: return null
             recorder = null
             val seconds = ((System.currentTimeMillis() - startedAt) / 1000).toInt()
-            val ok = runCatching { r.stop() }.isSuccess
+            val ok = runCatching { r.stop() }.onFailure {
+                android.util.Log.e("ImVoice", "MediaRecorder.stop 失败（录音过短/未收到音频）", it)
+            }.isSuccess
             runCatching { r.release() }
             val target = file ?: return null
             file = null

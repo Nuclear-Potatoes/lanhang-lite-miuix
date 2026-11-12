@@ -900,10 +900,18 @@ object ImRepository {
                 error = "发送失败：${e?.name ?: "未知错误"}"
             }
         }
-        if (content is LocationMessage) {
-            RongIMClient.getInstance().sendLocationMessage(message, push, null, callback)
-        } else {
-            RongIMClient.getInstance().sendMediaMessage(message, push, null, callback)
+        // 2026-10-31 第五十六轮：融云的 sendMediaMessage 是同步入口，内部读不到本地文件
+        // （空文件 / 录音被截断）时会当场抛 RuntimeException，直接闪退。这里兜住并标红。
+        runCatching {
+            if (content is LocationMessage) {
+                RongIMClient.getInstance().sendLocationMessage(message, push, null, callback)
+            } else {
+                RongIMClient.getInstance().sendMediaMessage(message, push, null, callback)
+            }
+        }.onFailure {
+            android.util.Log.e("ImSend", "sendMediaMessage 抛异常", it)
+            mark(peerId, key, ImMessage.STATE_FAILED)
+            error = "发送失败：${it.message ?: it.javaClass.simpleName}"
         }
     }
 

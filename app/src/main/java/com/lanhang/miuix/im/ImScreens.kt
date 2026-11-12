@@ -103,6 +103,8 @@ fun ImConversationsScreen(
     onOpenChat: (ImConversation) -> Unit,
     /** 点头像 / 姓名 → 这个人的个人主页（群聊没有群资料页，不假装有） */
     onOpenProfile: (String) -> Unit = {},
+    /** 列表顶部「新的朋友」入口 → 好友申请列表（第六十三轮第 3 条） */
+    onOpenFriendRequests: () -> Unit = {},
 ) {
     LaunchedEffect(Unit) { ImRepository.ensureStarted() }
 
@@ -154,6 +156,45 @@ fun ImConversationsScreen(
         }
 
         LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
+            // 第六十三轮第 3 条（用户：「原版蓝航有好友申请功能，加入这个功能并做到私信页面中」）：
+            // 会话列表最上面固定一条「新的朋友」，点进去是好友申请页。
+            // 官方原版也是把它放在私信会话列表顶部（NewFriendsListActivity）。
+            item("newFriends") {
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 3.dp),
+                    insideMargin = PaddingValues(0.dp),
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .pressableRow(onClick = onOpenFriendRequests, corner = 16.dp)
+                            .padding(horizontal = 14.dp, vertical = 14.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            text = stringResource(R.string.im_new_friends),
+                            style = MiuixTheme.textStyles.body1,
+                            fontWeight = FontWeight.Medium,
+                            color = MiuixTheme.colorScheme.onSurface,
+                            modifier = Modifier.weight(1f),
+                        )
+                        Text(
+                            text = stringResource(R.string.im_new_friends_summary),
+                            style = MiuixTheme.textStyles.footnote1,
+                            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                        )
+                        Spacer(Modifier.width(4.dp))
+                        Text(
+                            text = "›",
+                            style = MiuixTheme.textStyles.body1,
+                            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                        )
+                    }
+                }
+            }
+
             when {
                 // 用户第 11 条：私信列表加载中统一成转圈 + 文案
                 conversations.isEmpty() && ImRepository.loadingConversations -> item("loading") {
@@ -752,23 +793,39 @@ fun ImChatScreen(
                             .pointerInput(peerId) {
                                 detectTapGestures(
                                     onPress = {
-                                        if (!recorder.start()) {
+                                        // 2026-10-31 第五十六轮（用户：「长按松手后自动闪退」）：
+                                        // 整条「按下录音 → 松手发送」链路都跑在手势协程里，任何一处抛异常
+                                        // 都会冒到主线程把进程打死。这里逐段兜住：失败只提示，不再闪退。
+                                        val started = runCatching { recorder.start() }
+                                            .onFailure { android.util.Log.e("ImVoice", "start 抛异常", it) }
+                                            .getOrDefault(false)
+                                        if (!started) {
                                             say(context.getString(R.string.im_record_failed))
                                             return@detectTapGestures
                                         }
                                         recording = true
-                                        tryAwaitRelease()
-                                        recording = false
-                                        val result = recorder.stop()
+                                        try {
+                                            tryAwaitRelease()
+                                        } finally {
+                                            recording = false
+                                        }
+                                        val result = runCatching { recorder.stop() }
+                                            .onFailure { android.util.Log.e("ImVoice", "stop 抛异常", it) }
+                                            .getOrNull()
                                         if (result == null) {
                                             say(context.getString(R.string.im_voice_too_short))
                                         } else {
-                                            ImRepository.sendVoice(
-                                                peerId = peerId,
-                                                uri = Uri.fromFile(result.first),
-                                                durationSec = result.second,
-                                                isGroup = isGroup,
-                                            )
+                                            val ok = runCatching {
+                                                ImRepository.sendVoice(
+                                                    peerId = peerId,
+                                                    uri = Uri.fromFile(result.first),
+                                                    durationSec = result.second,
+                                                    isGroup = isGroup,
+                                                )
+                                            }.onFailure {
+                                                android.util.Log.e("ImVoice", "sendVoice 抛异常", it)
+                                            }.isSuccess
+                                            if (!ok) say(context.getString(R.string.im_voice_too_short))
                                         }
                                     }
                                 )

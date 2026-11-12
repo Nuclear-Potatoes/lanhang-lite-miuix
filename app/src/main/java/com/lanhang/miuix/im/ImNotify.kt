@@ -76,6 +76,11 @@ object ImNotify {
     ) {
         if (peerId.isBlank()) return
         if (!hasPermission(context)) return
+        // 第六十三轮第 4 条：总开关与免打扰时段。原版蓝航把这两件事交给融云的
+        // `setNotificationQuietHours(...)`，但本项目没有融云推送通道（通知是本机自己弹的），
+        // 那几个 API 在这里不会有任何效果，所以改成自己判。
+        if (!NotifySettingsStore.enabled) return
+        if (NotifySettingsStore.inQuietHours(NotifySettingsStore.currentMinute())) return
         ensureChannel(context)
 
         val intent = Intent(context, MainActivity::class.java).apply {
@@ -93,11 +98,24 @@ object ImNotify {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
 
+        // 「通知显示消息详情」关掉后只暴露「有一条新消息」，不透出发送人与正文
+        val showDetail = NotifySettingsStore.showDetail
+        val shownTitle = if (showDetail) {
+            title
+        } else {
+            context.getString(R.string.notify_settings_detail_hidden_title)
+        }
+        val shownBody = if (showDetail) {
+            body
+        } else {
+            context.getString(R.string.notify_settings_detail_hidden_body)
+        }
+
         val notification = NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_im_notify)
-            .setContentTitle(title)
-            .setContentText(body)
-            .setStyle(NotificationCompat.BigTextStyle().bigText(body))
+            .setContentTitle(shownTitle)
+            .setContentText(shownBody)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(shownBody))
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setCategory(NotificationCompat.CATEGORY_MESSAGE)
             .setAutoCancel(true)
@@ -110,11 +128,63 @@ object ImNotify {
         runCatching {
             NotificationManagerCompat.from(context).notify(requestCode, notification)
         }
+        // 应用图标角标：原版走融云打包进来的 ShortcutBadger（见 `config/NotificationModule`），
+        // 这里用反射调同名工具，没有该依赖就静默跳过 —— 角标失败不能影响通知本身。
+        applyBadge(context)
     }
 
     /** 进入某个会话时清掉它的通知（会话里的消息已经被看过了） */
     fun cancel(context: Context, peerId: String) {
         if (peerId.isBlank()) return
         runCatching { NotificationManagerCompat.from(context).cancel(peerId.hashCode()) }
+        applyBadge(context)
+    }
+
+    /** 清掉全部私信通知并把角标归零（退出登录、或所有会话都看过时调用） */
+    fun cancelAll(context: Context) {
+        runCatching { NotificationManagerCompat.from(context).cancelAll() }
+        applyBadge(context)
+    }
+
+    /**
+     * 候选角标工具类。
+     *
+     * 第一个是融云 imkit 打包进去的 fork（原版 `NotificationModule` 用的就是它），
+     * 第二个是广为人知的独立库。两个都不在依赖里时 [applyBadge] 静默返回。
+     */
+    private val BADGER_CLASSES = listOf(
+        "io.rong.notification.shortcutbadger.ShortcutBadger",
+        "me.leolin.shortcutbadger.ShortcutBadger",
+    )
+
+    /**
+     * 把「系统里还挂着几条私信通知」写进应用图标角标。
+     *
+     * 原版（`cn.edu.nchu.nahang.config.NotificationModule`）是收到推送 +1、点开 -1，
+     * 自己维护一个计数。这里**不自己数**，直接数系统里还活着的通知 —— 天然与用户
+     * 看到的一致，也不会因为某条路径忘了减而越积越大。
+     */
+    fun applyBadge(context: Context) {
+        val count = runCatching {
+            context.getSystemService(NotificationManager::class.java)
+                ?.activeNotifications
+                ?.size ?: 0
+        }.getOrDefault(0)
+        for (name in BADGER_CLASSES) {
+            val ok = runCatching {
+                val cls = Class.forName(name)
+                if (count <= 0) {
+                    cls.getMethod("removeCount", Context::class.java).invoke(null, context)
+                } else {
+                    cls.getMethod(
+                        "applyCount",
+                        Context::class.java,
+                        Integer.TYPE,
+                    ).invoke(null, context, count)
+                }
+                true
+            }.getOrDefault(false)
+            if (ok) return
+        }
     }
 }

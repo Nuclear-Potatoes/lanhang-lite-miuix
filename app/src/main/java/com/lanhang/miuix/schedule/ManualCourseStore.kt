@@ -68,6 +68,11 @@ data class ManualCourse(
         ),
         periodStart = periodStart.coerceAtLeast(1),
         periodEnd = periodEnd.coerceAtLeast(periodStart.coerceAtLeast(1)),
+        // 开了自定义时间的课把分钟带下去：课表按分钟在时间轴上定位，不再吸附到节次
+        startMinute = if (hasCustomTime) startMinute else -1,
+        endMinute = if (hasCustomTime) endMinute else -1,
+        // 第五十七轮第 2 条：把 id 带下去，课程详情弹窗才知道「这门课能编辑」
+        manualId = id,
     )
 }
 

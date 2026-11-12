@@ -26,6 +26,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -50,10 +51,16 @@ import com.lanhang.miuix.profile.ProfileStackHost
 import com.lanhang.miuix.profile.ProfileStackState
 import com.lanhang.miuix.profile.ProfileStore
 import com.lanhang.miuix.session.Session
+import com.lanhang.miuix.settings.UpdateChecker
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import com.lanhang.miuix.ui.miuix.LanhangAvatar
 import com.lanhang.miuix.ui.miuix.LanhangIcons
 import com.lanhang.miuix.ui.miuix.MiuiNavStack
 import com.lanhang.miuix.ui.miuix.rememberPageListStates
+import com.lanhang.miuix.ui.miuix.showMiuixConfirm
+import com.lanhang.miuix.ui.miuix.showMiuixInfo
 import com.lanhang.miuix.ui.shell.ReportListScroll
 import com.lanhang.miuix.ui.shell.ScrollToTop
 import com.lanhang.miuix.ui.shell.animateScrollToTopSlow
@@ -100,6 +107,12 @@ object MinePage {
     const val IM = 11
     const val IM_CHAT = 12
 
+    /** 第六十三轮第 3 条：私信 → 新的朋友（好友申请列表） */
+    const val FRIEND_REQUESTS = 16
+
+    /** 第六十三轮第 4 条：设置 → 通知（总开关 / 显示详情 / 免打扰时段） */
+    const val NOTIFY_SETTINGS = 17
+
     /**
      * 通讯录里点「查看个人主页」（2026-10-26 新增）。
      *
@@ -117,7 +130,8 @@ object MinePage {
 
     fun depth(page: Int): Int = when (page) {
         ROOT -> 0
-        APPEARANCE, TOOLS, ABOUT, IM_CHAT, PROFILE_OTHER, MOMENTS_FILTER, CLASS_REMINDER -> 2
+        APPEARANCE, TOOLS, ABOUT, IM_CHAT, PROFILE_OTHER, MOMENTS_FILTER, CLASS_REMINDER,
+        FRIEND_REQUESTS, NOTIFY_SETTINGS -> 2
         else -> 1
     }
 
@@ -137,6 +151,8 @@ object MinePage {
         MOMENTS_FILTER -> R.string.moments_filter_title
         CLASS_REMINDER -> R.string.class_reminder_title
         IM, IM_CHAT -> R.string.mine_im
+        FRIEND_REQUESTS -> R.string.friend_requests_title
+        NOTIFY_SETTINGS -> R.string.notify_settings_title
         else -> R.string.tab_mine
     }
 }
@@ -211,12 +227,16 @@ fun MineScreen(
     onOpenMomentsFilter: () -> Unit,
     /** 设置 → 通用 → 上课提醒 */
     onOpenClassReminder: () -> Unit,
+    /** 设置 → 通用 → 通知（第六十三轮第 4 条） */
+    onOpenNotifySettings: () -> Unit,
     onOpenContacts: () -> Unit,
     onOpenMessages: () -> Unit,
     /** 「私信」入口 → 会话列表 */
     onOpenIm: () -> Unit,
     /** 会话列表 / 个人主页 → 和这个 userId 的聊天页（第二个参数是顶栏标题：单聊=姓名，群聊=群名） */
     onOpenImChat: (String, String) -> Unit,
+    /** 私信 → 新的朋友（好友申请列表，第六十三轮第 3 条） */
+    onOpenFriendRequests: () -> Unit,
     /** 通讯录里点「查看个人主页」→ 切到工作圈看这个人的主页 */
     onOpenOtherProfile: (String) -> Unit,
     /** 消息里点某条互动 → 切到工作圈 */
@@ -251,6 +271,14 @@ fun MineScreen(
     // 因为 AnimatedContent 只组合当前那一页，离开时整棵子树被销毁，页面里的
     // rememberLazyListState() 跟着没了。key 用 MinePage 编号，同一页每次进来都取回自己那份。
     val pageLists = rememberPageListStates("mine")
+
+    // 2026-11-03 第六十轮（用户第 3 条）：检查更新的状态放在这一层，**不放进「关于」页的 item**。
+    // LazyColumn 的 item 滚出屏幕就会被回收，正在查的时候滑下去再滑回来，
+    // 「正在检查…」和上次的结果都会不见；放在 MineScreen 里则跨页往返都还在。
+    val checkUpdateContext = androidx.compose.ui.platform.LocalContext.current
+    val checkUpdateScope = rememberCoroutineScope()
+    var updateChecking by remember { mutableStateOf(false) }
+    var updateHint by remember { mutableStateOf<String?>(null) }
 
     // 统一转场：几何/时长/曲线全在 ui/miuix/NavPush.kt 的 NavMotion 里（第十轮重写）
     MiuiNavStack(
@@ -315,6 +343,14 @@ fun MineScreen(
                 )
             }
 
+            // 设置 → 通知（第六十三轮第 4 条）：与其它二级页同构，整页交给 NotifySettingsScreen。
+            // 列表滚动位置走 pageLists，返回再进来仍停在原处。
+            MinePage.NOTIFY_SETTINGS -> Box(pageModifier) {
+                com.lanhang.miuix.im.NotifySettingsScreen(
+                    modifier = Modifier.fillMaxSize(),
+                    listState = pageLists.of(MinePage.NOTIFY_SETTINGS),
+                )
+            }
             MinePage.PROFILE -> Box(pageModifier) {
                 // 自己主页里点别人头像 → 他人主页 → 返回：同样要留住滚动位置（同相册）。
                 val profileListState = pageLists.of(MinePage.PROFILE)
@@ -401,6 +437,16 @@ fun MineScreen(
                         onOpenImChat(conversation.peerId, conversation.title)
                     },
                     onOpenProfile = onOpenOtherProfile,
+                    // 第六十三轮第 3 条：会话列表顶部的「新的朋友」入口
+                    onOpenFriendRequests = onOpenFriendRequests,
+                )
+            }
+
+            // 私信 → 新的朋友：好友申请列表（第六十三轮第 3 条）
+            MinePage.FRIEND_REQUESTS -> Box(pageModifier) {
+                com.lanhang.miuix.im.FriendRequestsScreen(
+                    modifier = Modifier.fillMaxSize(),
+                    listState = pageLists.of(MinePage.FRIEND_REQUESTS),
                 )
             }
 
@@ -453,8 +499,10 @@ fun MineScreen(
                             onOpenTools = onOpenTools,
                             onOpenMomentsFilter = onOpenMomentsFilter,
                             onOpenClassReminder = onOpenClassReminder,
+                            onOpenNotifySettings = onOpenNotifySettings,
                             onLogout = onLogout,
                         )
+
 
                         MinePage.APPEARANCE -> settingsAppearanceItems(
                             state = state,
@@ -467,7 +515,97 @@ fun MineScreen(
                             onDebugSchedule = onDebugSchedule,
                         )
 
-                        MinePage.ABOUT -> settingsAboutItems(state = state, onDiagnostics = onDiagnostics)
+                        MinePage.ABOUT -> settingsAboutItems(
+                            state = state,
+                            onDiagnostics = onDiagnostics,
+                            updateChecking = updateChecking,
+                            updateHint = updateHint,
+                            onCheckUpdate = {
+                                // 版本号拿不到（packageManager 抛异常的兜底是 "--"）就没法比大小，
+                                // 直接说明情况，别让用户看到一次莫名其妙的「发现新版本」。
+                                // 注意：这一段是普通 lambda，不是 @Composable 作用域，
+                                // 所以文案一律走 context.getString，不能用 stringResource。
+                                val ctx = checkUpdateContext
+                                if (!state.version.any { it.isDigit() }) {
+                                    showMiuixInfo(
+                                        context = ctx,
+                                        title = ctx.getString(R.string.settings_check_update),
+                                        message = ctx.getString(R.string.settings_check_update_no_version),
+                                        confirm = ctx.getString(R.string.common_ok),
+                                    )
+                                } else {
+                                    updateChecking = true
+                                    updateHint = null
+                                    checkUpdateScope.launch {
+                                        val result = withContext(Dispatchers.IO) {
+                                            UpdateChecker.check(state.version)
+                                        }
+                                        updateChecking = false
+                                        when (result) {
+                                            is UpdateChecker.Result.Available -> {
+                                                val release = result.release
+                                                updateHint = ctx.getString(
+                                                    R.string.settings_check_update_available,
+                                                    release.version,
+                                                )
+                                                val notes = release.notes.trim()
+                                                val message = buildString {
+                                                    append(
+                                                        ctx.getString(
+                                                            R.string.settings_check_update_message,
+                                                            state.version,
+                                                            release.version,
+                                                        )
+                                                    )
+                                                    if (notes.isNotEmpty()) {
+                                                        append("\n\n")
+                                                        append(notes.take(300))
+                                                        if (notes.length > 300) append('…')
+                                                    }
+                                                }
+                                                showMiuixConfirm(
+                                                    context = ctx,
+                                                    title = ctx.getString(R.string.settings_check_update_available_title),
+                                                    message = message,
+                                                    confirmText = ctx.getString(R.string.settings_check_update_download),
+                                                    dismissText = ctx.getString(R.string.settings_check_update_later),
+                                                    onConfirm = {
+                                                        // 优先给 APK 直链（点了就开始下），没有就退回 release 页
+                                                        openUrl(ctx, release.apkUrl ?: release.pageUrl)
+                                                    },
+                                                )
+                                            }
+
+                                            UpdateChecker.Result.Latest -> {
+                                                updateHint = ctx.getString(R.string.settings_check_update_latest)
+                                                showMiuixInfo(
+                                                    context = ctx,
+                                                    title = ctx.getString(R.string.settings_check_update),
+                                                    message = ctx.getString(
+                                                        R.string.settings_check_update_latest_message,
+                                                        state.version,
+                                                    ),
+                                                    confirm = ctx.getString(R.string.common_ok),
+                                                )
+                                            }
+
+                                            is UpdateChecker.Result.Failed -> {
+                                                updateHint = ctx.getString(R.string.settings_check_update_failed)
+                                                showMiuixInfo(
+                                                    context = ctx,
+                                                    title = ctx.getString(R.string.settings_check_update),
+                                                    message = ctx.getString(
+                                                        R.string.settings_check_update_failed_message,
+                                                        result.message,
+                                                    ),
+                                                    confirm = ctx.getString(R.string.common_ok),
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            },
+                        )
 
                         else -> mineRootItems(
                             state = state,
@@ -731,6 +869,7 @@ private fun androidx.compose.foundation.lazy.LazyListScope.settingsDirectoryItem
     onOpenTools: () -> Unit,
     onOpenMomentsFilter: () -> Unit,
     onOpenClassReminder: () -> Unit,
+    onOpenNotifySettings: () -> Unit,
     onLogout: () -> Unit,
 ) {
     // 第二十四轮：**设置里不再放「关于」入口**（用户要求），关于只在「我的」首页有入口；
@@ -757,6 +896,16 @@ private fun androidx.compose.foundation.lazy.LazyListScope.settingsDirectoryItem
                     androidx.compose.ui.platform.LocalContext.current,
                 ),
                 onClick = onOpenClassReminder,
+            )
+            HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
+            // 通知（第六十三轮第 4 条）：和「上课提醒」同属「通用」这一组，
+            // 两者都是「这台设备上要不要响、什么时候响」的问题。
+            SettingRow(
+                title = stringResource(R.string.notify_settings_title),
+                summary = com.lanhang.miuix.im.NotifySettingsStore.summary(
+                    androidx.compose.ui.platform.LocalContext.current,
+                ),
+                onClick = onOpenNotifySettings,
             )
         }
     }
@@ -852,6 +1001,9 @@ private fun openUrl(context: android.content.Context, url: String) {
 private fun androidx.compose.foundation.lazy.LazyListScope.settingsAboutItems(
     state: MineUiState,
     onDiagnostics: () -> Unit,
+    updateChecking: Boolean,
+    updateHint: String?,
+    onCheckUpdate: () -> Unit,
 ) {
     // 第二十四轮：参考 nexio 课程表的「关于」页重排 ——
     // 顶部一块居中的图标 / 名字 / 版本号当封面，下面才是条目；不再是一进来就一列清单。
@@ -874,6 +1026,19 @@ private fun androidx.compose.foundation.lazy.LazyListScope.settingsAboutItems(
             SettingRow(
                 title = stringResource(R.string.settings_account),
                 value = state.account,
+            )
+            HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
+            // 2026-11-03 第六十轮（用户第 3 条「参考上游项目，做一下检查更新功能」）：
+            // 入口紧挨着「应用版本」—— 想知道自己是什么版本的人，点一下就能知道有没有更新。
+            // 正在查的时候把 onClick 置空，避免连点叠出多次请求。
+            SettingRow(
+                title = stringResource(R.string.settings_check_update),
+                summary = when {
+                    updateChecking -> stringResource(R.string.settings_check_update_checking)
+                    !updateHint.isNullOrBlank() -> updateHint
+                    else -> null
+                },
+                onClick = if (updateChecking) null else onCheckUpdate,
             )
         }
     }

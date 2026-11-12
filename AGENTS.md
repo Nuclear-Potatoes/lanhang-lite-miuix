@@ -1,3 +1,478 @@
+## 64. 第六十四轮（2026-11-12）：切回课表时「先拉伸再弹回」
+
+### 64.1 用户原话
+
+> 现在从工作圈下部直接切换到课表时会从拉伸状态弹一下再恢复正常，修复这个问题
+
+以及同轮追加的交付指令：
+
+> 完成修改后push到github，push完成后休眠电脑
+
+### 64.2 现象与根因
+
+第 63 轮第 1 条为了修「从工作圈返回后课表被截断」，加了一条自检：`gridScroll` 的高度只要和 `lastLayoutHeight` 不一样就重画。这条守则**不区分高度是变大还是变小**，于是引出新问题。
+
+切换回课表的那一帧，顶栏还在从「工作圈的收起态」往课表的展开态过渡，`gridScroll.height` 此刻是**偏大的中间值**：
+
+1. `onTabSelected()` 里的 `root.post { }` 判 `h != lastLayoutHeight` 成立 → 立刻按这个偏大值把网格画一遍，行高被算大，整张课表看起来被**拉长**；
+2. 300ms 顶栏动画走完，`gridScroll` 回落到展开态高度，160ms 防抖任务再重排一次 → 用户看到「**弹一下**」才恢复正常。
+
+反向同理：在课表里往下滚使顶栏收起（高度变大），也会触发一次不必要的重排，内容会跳一下。
+
+一句话：**「高度变了就重画」把顶栏动画产生的过渡中间值也当成了真实布局高度。**
+
+### 64.3 修法
+
+核心规则改为**只在「可用高度变小」时重画**，变大一律不动。两处同步改（`schedule/ScheduleFragment.kt`）：
+
+补丁 A，`gridRelayoutTask`：
+
+```kotlin
+private val gridRelayoutTask = Runnable {
+    if (!isAdded || view == null || !::gridScroll.isInitialized) return@Runnable
+    val h = gridScroll.height
+    if (h <= 0 || !showingGrid) return@Runnable
+    // 只在「可用高度变小」时才重画。
+    //
+    // 变大意味着顶栏正在收起（用户往下滚课表），或者正带着上一页的收起态切回来 ——
+    // 这是个过渡中的中间值，不是最终布局高度。按它重排，整张网格会先被拉长、
+    // 等顶栏展开动画走完再弹回原样。
+    // 变小则必须重画，否则网格比可用区高，最后一行会被 ScrollView 静默裁掉。
+    if (lastLayoutHeight <= 0 || h < lastLayoutHeight) {
+        lastLayoutHeight = h
+        renderGrid()
+    }
+}
+```
+
+补丁 B，`onTabSelected()` 里的高度自检：
+
+```kotlin
+root?.post {
+    val h = if (::gridScroll.isInitialized && gridScroll.height > 0) gridScroll.height else root.height
+    if (h > 0 && (lastLayoutHeight <= 0 || h < lastLayoutHeight)) {
+        lastLayoutHeight = h
+        renderGrid()
+    }
+    ensureContentNotEmpty()
+}
+```
+
+净效果：切回课表时网格一直保持上次展开态那一份正确布局，全程不重排；高度真的变小（比如顶栏从收起态恢复、或从别的页面带着更大高度回来）时才重排，第 63 轮修好的「末行被裁」不会回退。
+
+### 64.4 验证
+
+模拟器 1220×2656，第 9 周。工作圈在模拟器里打不开（内网 API 不通，显示「加载失败」），改用机制相同的「我的」页代替：下滑三段使顶栏收起（标题从 `[59,181][245,316]` 移到 `[316,153][458,255]`），再点底部课表 tab，用同一条 `adb shell` 内「点一下 + 连拍 12 张 `screencap`」抓切换过程。
+
+- 第 1 张是「我的」页，第 2 张已进入课表且顶栏处于收起态（过渡帧），第 3–12 张**字节完全相同**（每张 363,358 B）。
+- 过渡帧与稳定帧的**行距一致**（第 1 节同在 y≈275、第 10 节同在 y≈1590 附近），只有顶栏位置不同 —— 说明过程中没有出现「行高被算大」的拉伸态，修复生效。
+- 第 10 节 `20:40` 在 `[18,2306][115,2344]` 完整可见，未被裁。
+
+### 64.5 产物
+
+- `versionCode 73` / `versionName "1.1.21"`
+- `lanhang-miuix-release.apk`：8674300 字节，SHA256 `98DE2E5F5FC6546F0206743F36D78ACCE589591970D29C836FF0776C668271AC`
+- 本轮一并把第 63 轮（好友申请、通知重做）随版本发布
+
+### 64.6 教训
+
+1. **「尺寸变了就重画」这类守则必须区分方向。** 布局容器的尺寸在动画期间会经过大量中间值，只有「变小导致内容装不下」才是必须立刻响应的信号；「变大」几乎永远是过渡态或留白，按它重排只会制造抖动。
+2. **两个触发点必须用同一条判据。** 第 63 轮的 bug 出在两条路径判据不一致（`onTabSelected` 判「不等就重画」、防抖任务判「不等就重画」但时机不同）；这一轮把两处统一成「变小才重画」，才不会互相打架。
+3. 模拟器上 `screenrecord` 不可靠（`--time-limit 7` 实际只产出 1.36 秒），验证瞬时过渡应改用「同一条 `adb shell` 内连点 + 连拍 `screencap`」。注意 PowerShell 双引号里的 `\$i` 不会传给远端 shell（会变成空变量名），要用单引号字符串整段传给 `adb shell`。
+## 63. 第六十三轮（2026-11-12）：课表截断复现修复、周次拖拽多选、好友申请、通知重做
+
+### 63.1 用户提出的四条
+
+> 第一，从工作圈页下滑一段位置后，切换回课表页，课表页依旧会被异常截断。第二，上课周次页，做一个长按并拖拽时批量选择周次的手势，将1 2 3 4 5 6等复选框与底部背景的边距加大一些。第三，原版蓝航有好友申请功能，加入这个功能并做到私信页面中。第四，参考原版lanhang的通知代码，重做通知功能
+
+### 63.2 第一条：课表被截断（这类问题的第三次修）
+
+第 53 轮修过「切 Tab 后课表拉伸」，第 55 轮修过「二级页返回后课表被拉伸」，第 58 轮修过「工作圈往返后课表伸长」，这次是同一族的第四个入口。
+
+**根因链**：课表顶栏是「大标题 → 小标题」随滚动收起的（`ui/shell/ShellBars.kt` 的 `rememberBarCollapse`，`ShellScroll.report` 上报进度）。顶栏收起时 `fragmentContainer` 变高，展开时变矮。`ScheduleFragment.onTabSelected()` 里用 `root.post { }` 做高度自检重画，但这个 post 经常赶在上一页的旧布局还没结算完时执行：此时读到的 `root.height` 是「顶栏仍收起」时的较大值，恰好与上次记录的 `lastLayoutHeight` 相等 → 判定「高度没变」直接跳过重画；紧接着布局结算完，容器缩回较小值，网格却仍按较大高度算的行高排布 → 底部第 10 节被 `ScrollView` 裁掉。
+
+**修法（`schedule/ScheduleFragment.kt`，四处）**：
+
+1. 监听 `gridScroll` 自身的高度变化，而不是只信 `root.post` 的一次采样：
+   ```kotlin
+   gridScroll.addOnLayoutChangeListener { _, _, top, _, bottom, _, oldTop, _, oldBottom ->
+       if (bottom - top != oldBottom - oldTop) {
+           gridScroll.removeCallbacks(gridRelayoutTask)
+           gridScroll.postDelayed(gridRelayoutTask, 160L)
+       }
+   }
+   ```
+   160ms 防抖是必须的：顶栏收起动画是 300ms，逐帧都会触发 layout 变化，不防抖会连续重画十几次。
+2. 新增防抖任务 `gridRelayoutTask`，只有在「高度确实变了 + 当前是网格视图 + Fragment 还活着」时才重画：
+   ```kotlin
+   private val gridRelayoutTask = Runnable {
+       if (!isAdded || view == null || !::gridScroll.isInitialized) return@Runnable
+       val h = gridScroll.height
+       if (h > 0 && h != lastLayoutHeight && showingGrid) renderGrid()
+   }
+   ```
+3. `renderGrid()` 末尾回写 `lastLayoutHeight` 时改记「真正决定 rowH 的那个高度」：`gridScroll.height`，拿不到才退回 `view?.height`。
+4. `onTabSelected()` 的高度自检也改成优先读 `gridScroll.height`，读不到才退回 `root.height`。
+
+**教训**：这类「回来看就被拉伸/截断」的问题，症结从来不是算错了高度，而是**采样时机**。任何只在 `post {}` 里采一次高度的自检都会输给「顶栏动画 + 异步布局结算」这两个变量。可靠做法是给容器挂 `addOnLayoutChangeListener`，让布局自己通知你，再配一次防抖。
+
+**实测**（模拟器 1220×2656）：工作圈页因模拟器无外网始终「加载失败」滚不动，改用「我的」页走同一机制（同为 Compose LazyColumn，同样 `ReportListScroll(mineListState, ShellState.TAB_MINE)` 上报顶栏收起）。我的页下滑三段，标题从 `[59,181][245,316]` 缩为 `[317,153][459,255]`（确认顶栏已收起），再切回课表：第 10 节时间 `20:40` 位于 `[18,2306][115,2344]`，高 38px，教室 `张磊` 位于 `[146,2286][318,2341]`，与首次进入课表时的坐标逐像素一致，未被裁。
+
+### 63.3 第二条：上课周次长按拖拽多选 + 加大底边距
+
+**关键发现**：长按拖拽的骨架代码第 60 轮就写好了，变量 `weekGridSize` / `dragAnchor` / `dragBase` / `dragSelect`、函数 `weekAt(x, y)` / `applyWeekRange(...)` 全在文件里，`detectDragGesturesAfterLongPress`、`pointerInput`、`onGloballyPositioned` 三个 import 也都在——**但从来没挂到任何 Composable 上**，所以手势完全无效。属于「写了没接线」的典型。
+
+**修法（`schedule/ManualCourseScreen.kt`）**：
+
+1. `applyWeekRange(from, to, base: Set<Int>, select: Boolean)` 改成显式传参。原来它是读 `dragBase` / `dragSelect` 两个 state 的，而手势协程在 `pointerInput(Unit)` 里创建后不随重组更新，闭包捕获的是首帧的 state 对象，时序不可靠。
+2. 周次网格外层 `Column` 加 `.padding(start = 12.dp, end = 12.dp, top = 6.dp, bottom = 16.dp)`（用户要求「复选框与底部背景的边距加大一些」），内部再套一层 `Box` 承载手势：
+   ```kotlin
+   .fillMaxWidth()
+   .onGloballyPositioned { weekGridSize = it.size }
+   .pointerInput(Unit) {
+       detectDragGesturesAfterLongPress(
+           onDragStart = { offset ->
+               val start = weekAt(offset.x, offset.y)
+               if (start == null) dragAnchor = -1
+               else {
+                   val base = weeks
+                   val add = start !in base
+                   dragAnchor = start; dragBase = base; dragSelect = add
+                   applyWeekRange(start, start, base, add)
+               }
+           },
+           onDrag = { change, _ ->
+               if (dragAnchor > 0) {
+                   val now = weekAt(change.position.x, change.position.y)
+                   if (now != null) applyWeekRange(dragAnchor, now, dragBase, dragSelect)
+               }
+           },
+           onDragEnd = { dragAnchor = -1 },
+           onDragCancel = { dragAnchor = -1 },
+       )
+   }
+   ```
+   手势必须挂在**整块网格**上而不是每个 Chip 上：挂在 Chip 上时手指一旦划过格子边界就出了该 Chip 的命中区，拖拽立刻中断。
+
+**实测**：`adb shell input motionevent DOWN 150 1659` → 停 900ms → 连续 `MOVE` 到 `886 1659` → `UP`。截图确认第 1–5 周全部变蓝选中，第 6 周及之后保持未选，一次拖拽批量选中成功；19、20 两个 Chip 与卡片灰色底边之间留有约 58px（≈20dp）间距。
+
+### 63.4 第三条：好友申请（私信 → 新的朋友）
+
+接口全部来自原版蓝航反编译的 `cn/rongcloud/rce/lib/FriendTask`（jadx 1.5.1，原版 APK `蓝航_1.0.14.apk`）：
+
+| 用途 | 方法与路径 | 备注 |
+| --- | --- | --- |
+| 拉申请列表 | `GET /friends/request_list?version=<long>` | 返回 `{data:[...], version}`，`version` 传 0 取全量 |
+| 清未读 | `PUT /friends/clear_unread` | **是 PUT 不是 POST**，body `{}` |
+| 接受申请 | `POST /friends/accept/<requestId>` | **传 requestId，不是 uid** |
+| 删除申请 | `DELETE /friends/request_list/<requestId>` | |
+| 发起申请 | `POST /friends/invite` | body `{"id": 目标uid, "content": 验证语}` |
+
+`FriendRequestInfo` 字段（Gson 按字段名匹配，原版无 `@SerializedName`）：`uid`、`name`、`portrait_url`、`requestId`、`state`、`content`、`read_state`、`user_type`、`create_dt`、`update_dt`。`state`：0=INVITE、1=INVITED、2=ACCEPT、3=ACCEPTED、4=TIME_OUT。
+
+**改动**：
+
+- 新建 `engine/.../net/FriendModels.kt`：`FriendRequest`（带 `pending` / `unread` 两个派生属性与五个 `STATE_*` 常量）+ `FriendRequestList`。
+- `engine/.../net/RceApi.kt`（11,308 → 15,862 字节）：补 `put()` / `delete()` 两个泛型辅助方法（原来只有 `get` / `post`），新增 `friendRequests(version)`、`acceptFriend(requestId)`、`clearFriendUnread()`、`deleteFriendRequest(requestId)`、`inviteFriend(uid, content)` 五个方法，失败时把原因留在 `lastFriendRequestError`。
+- 新建 `im/FriendRequestsScreen.kt`：「新的朋友」页。进页拉列表，拿到非空列表就顺手清未读；接受成功就地摘掉该行并刷新会话列表；点整行弹确认框可删除；空态与失败态都有独立文案。
+- `im/ImScreens.kt`（61,433 → 63,612 字节）：`ImConversationsScreen` 加 `onOpenFriendRequests` 参数，并在会话列表最上方插一个 `item("newFriends")` 入口行（「新的朋友」+「查看好友申请」+「›」）。
+- `mine/MineScreen.kt`：`MinePage` 加 `FRIEND_REQUESTS = 16`，`depth()` 归到 2，`titleRes()` 补标题；私信页把回调透传下去，并新增整页分支。
+- `mine/MineFragment.kt`：`onOpenFriendRequests = { open(MinePage.FRIEND_REQUESTS) }`，走 `open(entry)` 的压栈逻辑，返回自动回私信。
+- `res/values/strings.xml`：补 12 个键。
+
+**坑**：`FriendRequestsScreen.kt` 首次编译报 `Smart cast to 'String' is impossible, because 'content' is a public API property declared in different module`。`content` 是 engine 模块里的 public 属性，跨模块时 Kotlin 不敢做智能转换。改用局部变量 `val contentText = request.content.orEmpty()` 即可。
+
+**实测**：私信页出现「新的朋友 / 查看好友申请 ›」入口，点进去标题正确。模拟器无网（DNS 解析不到 `nginx-1.app.nchu.edu.cn`），页面按设计显示失败条 + 空态「暂时没有新的好友申请 / 别人加你之后会出现在这里」。**真实好友申请数据需要校内网络环境验证**。
+
+### 63.5 第四条：通知功能重做
+
+原版 `cn/edu/nchu/nahang/ui/me/SetNotificationActivity` 有三项：接收新消息通知开关、通知显示消息详情开关、免打扰时段。原版是调融云 `RongIM.setNotificationQuietHours("00:00:00", 1439)` 这类接口，**但本项目没有融云推送通道（`app_key` 为空），那些调用在这里不生效**——我们的通知是本机 `NotificationManager` 自己弹的（`im/ImNotify.kt`）。所以三项设置照做，判定逻辑改在本机实现。
+
+**新增文件**：
+
+- `im/NotifySettingsStore.kt`：SharedPreferences（`notify_settings`）存 `enabled` / `detail` / `quiet` / `quiet_start` / `quiet_end`。核心是 `inQuietHours(nowMinute)`，按跨零点处理：`span = ((end-start)+1440)%1440`、`offset = ((now-start)+1440)%1440`、`offset < span` 即在区间内；`start == end` 视为未设置。默认时段 23:00–07:00。
+- `im/NotifySettingsScreen.kt`：「新消息通知」（总开关 + 详情开关，总开关关掉时详情行变半透明不可点）、「免打扰」（开关 + 开始/结束时间，点开就地展开无限滚轮）、页脚说明本机通知的口径。
+
+**`im/ImNotify.kt` 四处补丁**（4,705 → 7,876 字节）：`showMessage` 开头的权限检查之后加「总开关关闭则直接 return」「处于免打扰时段则直接 return」两个早退；通知标题与正文按 `showDetail` 决定是否替换为「新消息 / 你收到一条新消息」；每次 `notify(...)` 与 `cancel()` 之后调 `applyBadge()`，反射 `io.rong.notification.shortcutbadger.ShortcutBadger`（备选 `me.leolin.shortcutbadger.ShortcutBadger`）把当前通知条数写到桌面图标角标，两个类都没有就静默跳过。
+
+**接线**：`MinePage.NOTIFY_SETTINGS = 17`（`depth()` 归 2）；设置页「上课提醒」行下面加分隔线与「通知」行，副标题动态显示 `已开启` / `已关闭` / `免打扰 23:00–07:00` / `缺少通知权限`；`App.kt` 在 `ClassReminderStore.init(this)` 之后加 `NotifySettingsStore.init(this)`；`strings.xml` 补 18 个键。
+
+**坑**：`MineScreen.kt` 里有两个 `when`——L300 起那个是**页面渲染**（每个分支返回 Composable），L487 起那个在 `LazyColumn { }` 内部（每个分支是 `LazyListScope` 扩展，如 `settingsDirectoryItems(...)`）。我第一次把 `MinePage.NOTIFY_SETTINGS -> Box(...)` 插到了后者，编译报 `@Composable invocations can only happen from the context of a @Composable function`。改插到前者（锚点用 `MinePage.PROFILE -> Box(pageModifier) {`，先校验唯一性）后通过。**改这两个 when 之前一定先分清哪个是哪个。**
+
+**实测**：设置页出现「通知 / 已开启」行；点进去三项齐全，两个开关默认开、免打扰默认关；打开免打扰后出现「开始时间 23:00」「结束时间 07:00」；点开后面板内的无限滚轮显示 `22 / 23 / 00` 与 `55 / 00 / 05`，滑动小时轮后值行同步变为 `00:00`，循环与联动都正常。验证完已把免打扰关回关闭状态。
+
+### 63.6 产物与教训
+
+- APK `app-release.apk` = 8,674,300 字节，SHA256 `954679A27EFE893B689466042AFE232275C65E6858E930F4FEEA5FEA82673A10`，已复制为项目根 `lanhang-miuix-release.apk` 并装机验证。
+- 改 engine 必须先在 `src/lanhang-lite-main` 跑 `:engine:assembleRelease`，再把 `engine/build/outputs/aar/engine-release.aar` 复制成 `app/libs/engine.aar`，然后才能构建 app——app 依赖的是这个本地 aar 文件，不是 project 依赖。
+- 模拟器 `adb shell input motionevent <DOWN|MOVE|UP> <x> <y>` 是验证长按拖拽手势的正确手段：`input swipe` 的轨迹是从起点线性插值到终点，中间没有静止段，触发不了长按。
+- 本轮四条全部落地，其中第一条与第三条的「真机/校内网验证」仍待补。
+## 62. 第六十二轮（2026-11-04）：第 10 节课被底部裁掉
+
+### 62.1 现象
+
+用户截图（模拟器 1220×2656）显示第 10 节的 `19:55` 正常，但 `20:40`、教室名、教师名被屏幕底部 tab 栏截断或完全看不见。
+
+### 62.2 实测（`uiautomator dump`）
+
+- `fragmentContainer` `[0,351][1220,2397]`、`gridScroll` `[18,483][1202,2382]`、`shellBottomNav` 顶边 2397
+  —— 网格底边 2382 **并没有**被 tab 覆盖，问题在内容自身高度超出可用区域
+- 第 9 节 `19:00` y1=2163、第 10 节 `19:55` y1=2334，行距 171px
+- 第 10 节内部：`20:40` 只占 2372–2382（10px，正常应 38px）；`张磊` 2356–2382（26px，被裁）
+- `wm density` = 468 → density 2.925（不是 2.75），`dp(x) = x * 2.925`
+
+### 62.3 根因：多算了一个 `gapH`
+
+- `usable = availH - panelPad - headerRowH - bandH * visibleBreaks.size - gapH * (rowCount - 1)`
+  —— 按「行数 − 1 个间隙」扣
+- 但时间列每格 `LinearLayout.LayoutParams(timeW, rowH).apply { bottomMargin = gapH }`
+  **最后一行也带了 bottomMargin**，于是 timeCol 实际高 = `rowCount * (rowH + gapH)`
+- 块区 `val gridH = yOfRow(rowCount - 1) + rowH + gapH` 同样多算一个 `gapH`
+- 两者都多出一个 `gapH`（density 2.925 下约 14.6px），内容总高比可视区高出这一格，
+  `ScrollView` 把最后一行裁掉
+
+### 62.4 修法（`schedule/ScheduleFragment.kt`）
+
+1. 时间列最后一格不再带尾部间隙：
+
+```kotlin
+layoutParams = LinearLayout.LayoutParams(timeW, rowH).apply {
+    // 第六十二轮：最后一行不再带尾部间隙 —— 块区高度按「行数 × 行高」
+    // 收尾，这多出来的一个 gapH 会把第 10 节顶出可视区被 ScrollView 裁掉。
+    if (p != rowOrder.last()) bottomMargin = gapH
+}
+```
+
+2. 块区高度去掉尾部 `gapH`：
+
+```kotlin
+// 第六十二轮：原来这里多加了一个 gapH（最后一行下方的空隙），
+// 导致整块内容比可用高度高出一个间隙，最后一行被裁。
+val gridH = yOfRow(rowCount - 1) + rowH
+```
+
+两处必须**同时**改：只改一处会让时间列与块区的行基线错开 `gapH`，课程块整体上移或下移。
+
+### 62.5 实测复核（改后）
+
+- `20:40` `[18,2306][115,2344]` —— 高 38px，完整
+- `张磊` `[146,2286][318,2341]`、`张中华` `[363,2286][535,2341]`、`马明辉` `[797,2286][969,2341]`
+  —— 三行全部落在 `gridScroll` 底边 2382 之内，底部还余 38–56px
+- 行距由 171px 收为 164px（每行让出 7px）
+- 第 11 周（课程更密）复核同样完整；列表视图不受影响
+
+### 62.6 教训
+
+- 「可用高度扣了几个间隙」必须和「内容实际排布了几个间隙」逐一对齐。
+  这里 `usable` 扣 `rowCount - 1` 是对的，错的是内容多排了第 `rowCount` 个间隙。
+- 容器本身没被 tab 覆盖时不要急着改 `fragmentContainer` 的约束或加 padding
+  （第 58 轮就曾误判为「底栏是浮层」而多扣 66dp，第 59 轮已推翻）；
+  先用 `uiautomator dump` 对比容器底边与内容实际底边，能立刻分清是「被挡」还是「溢出」。
+- `ScrollView` 会静默裁掉溢出内容，界面上没有滚动条提示，
+  所以最后一行被裁时看起来像「布局少了一行」，实际是高度算多了一格。
+## 60. 第六十轮（2026-11-03）：周次默认全不选 / 编辑课程改二级页 + 圆形选择框 / 检查更新
+
+### 60.1 上课周次默认全不选
+`schedule/ManualCourseScreen.kt`：`weeks` 初始值从「1..MAX_WEEK 全选」改为
+`(initial?.weeks ?: emptyList()).toSet()`（新增时为空集，编辑时回填原周次）；
+`weekMode` 初始值 `if (initial == null) "" else …`，避免新增时「全部」呈现为选中态。
+- 「全部/单周/双周」三档的 `RadioTag` 现在可以**再点一次取消**：`weekMode = ""`、
+  `weeks = emptySet()`、`oddEven = ""` —— 三档一个都不选是合法状态，之后由用户在
+  1–20 周网格里自己挑特殊周次。
+- 手动点任意周次按钮会清掉 `oddEven` / `weekMode`，因为已经不是「全部/单双周」的快捷态。
+
+### 60.2 编辑课程 = 添加课程的二级页
+原先「编辑」是手写的双层 `animateFloatAsState` + `translationX` 覆盖动画，返回时直接
+连根覆盖层一起关掉，与其它页面的返回语义不一致。本轮整段换成既有的导航栈组件：
+
+```kotlin
+MiuiNavStack(
+    key = editing?.let { EditPageKey(it.id) } ?: AddPageKey,
+    depthOf = { if (it is EditPageKey) 1 else 0 },
+) { … }
+```
+- 新增 `private object AddPageKey`、`private data class EditPageKey(val id: String)` 作为栈 key。
+- 编辑页 ✕ 的 `onClose` 改为 `{ editing = null }` —— **只退一层**，回到「添加课程」页
+  （表单已清空，符合「新增」的语义），而不是关掉整个覆盖层。
+- 过渡动画自动与设置/关于等页面一致（`NavMotion.DURATION_MS = 300`、
+  `FastOutSlowInEasing`、父层 `PARENT_TRAVEL = 0.24f` / `PARENT_DIM = 0.18f`）。
+
+### 60.3 选项改成圆形选择框（RadioTag）
+新增 `@Composable private fun RadioTag(label: String, selected: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier)`：
+20dp `CircleShape`，选中 = `scheme.primary` 实心 + 8dp 白色圆点，未选 = `scheme.surfaceContainerHighest` 空心。
+替换了两处：
+- 「上课星期」行右侧的「自定义时间」：原来是 `MiniSwitch`（胶囊开关），换成 `RadioTag`，
+  `onClick` 里 `customTime = !customTime` —— **语义仍是开关**，只是外观对齐用户给的参考图。
+- 「上课周次」行右侧的「全部/单周/双周」：原来三个 `Chip`，换成三个 `RadioTag`。
+- 星期芯片（一~日）与 1–20 周按钮仍用 `Chip`，不动。
+
+### 60.4 检查更新（对齐上游）
+新增 `settings/UpdateChecker.kt`：
+- `object UpdateChecker`，常量 `OWNER = "Nuclear-Potatoes"` / `REPO = "lanhang-lite-miuix"`，
+  接口 `https://api.github.com/repos/$OWNER/$REPO/releases/latest`。
+- `sealed interface Result { Available(release) / Latest / Failed(message) }`；
+  `data class Release(tag, version, title, notes, apkUrl, pageUrl)`，`apkUrl` 取
+  `assets[]` 里第一个 `.apk` 结尾的 `browser_download_url`。
+- OkHttp connect 8s / read 8s / call 12s；header `User-Agent: lanhang-miuix/<版本>`、
+  `Accept: application/vnd.github+json`；404 → `Latest`、403 → `Failed("请求太频繁…")`、其它非 2xx → `Failed("服务器返回 <code>")`。
+- `fun isNewer(latest: String, current: String): Boolean` **逐段比数字**，缺段按 0 ——
+  `1.1.9` 与 `1.1.20` 按字符串比会得出「9 > 20」的错误结论。
+- `mine/MineScreen.kt`（45,148 → 53,341 字节）：`settingsAboutItems` 加 `updateChecking` /
+  `updateHint` / `onCheckUpdate` 三个参数，在「应用」卡里加一行「检查更新」（检查中显示
+  「正在检查…」、完成后摘要变「已是最新」或「有新版 x.y.z」）。
+- 状态 `checkUpdateContext` / `checkUpdateScope` / `updateChecking` / `updateHint` 必须提到
+  `MineScreen` **顶层**：放进 `LazyColumn` 的 item 里会在滚出屏幕时被回收，检查结果直接丢失。
+- **坑**：`onCheckUpdate` 是普通 lambda 不是 `@Composable`，里面**不能**用 `stringResource`，
+  全部改 `ctx.getString(R.string.xxx, args)`。
+- `res/values/strings.xml` 50,244 → 51,274 字节，新增 12 个 `settings_check_update*` 键。
+- 实测：GitHub API 联网正常，弹窗「检查更新 / 当前已是最新版本（1.1.20）。/ 确定」。
+
+### 60.5 连带修掉空周次文案的「· 周」
+`weeks` 允许为空之后，课程摘要会拼出孤零零的「周」：「Test　一 · 第 1 节 · 周」。
+改为条件拼接：
+```kotlin
+append(" 节")
+if (c.weeks.isNotEmpty()) {
+    append(" · ").append(compressWeeks(c.weeks)).append(" 周")
+}
+```
+
+### 60.6 血的教训：整段替换 Composable 树吃掉了 `}`
+本轮的「Chip → RadioTag」是用整段字符串替换做的，`Chip(text = label, selected = day == index,`
+之后的 `onClick = { day = index },` 与 `)` 被吃掉，连带 `forEachIndexed` 与 `Row` 的 `}` 一起丢，
+净少 3 个 `}`。症状极具误导性：
+- Gradle 首报 `ManualCourseScreen.kt:165:17 Unresolved reference 'ManualCourseEditor'`、
+  `223:1 Modifier 'private' is not applicable to 'local function'` —— 因为缺 `}` 让**后面**所有
+  顶层函数变成嵌套函数，报错全落在后续组件上，真正病灶在更早的替换处。
+- 第二轮 80 条 `Unresolved reference 'SectionCard'/'FormRow'/'Divider'/'MiniSwitch'` 同理。
+
+**校验手法（本轮确立，务必沿用）**：
+1. 逐行累加 `{` / `}` 打印 `行号 d=旧→新 原行`，找结构断点；
+2. **net depth 归零 ≠ 结构正确** —— 存在「提前闭合 + 末尾多闭合」互相抵消的情形，
+   必须同时扫「只匹配行首 `fun` / `private fun` / `object` / `data class`」的顶层声明，
+   每条都应 `d=0`；某条开始 `d=1` 就说明它前面的函数少关了一层。
+3. 一旦有多处 `}` 错位，**逐行补会来回震荡**（本轮 -1 → 0 → -1 反复三次），
+   只能把整段（如「上课周次」卡片 66 行）按正确结构重写。
+
+### 60.7 构建与产物
+`assembleRelease` 成功（`BUILD SUCCESSFUL`，日志 `%TEMP%\b60e.txt` / `b60f.txt`），
+APK 8,644,872 字节 → 项目根 `lanhang-miuix-release.apk`，`adb install -r` 输出 `Success`。
+装机复核通过：① 1–20 周与三档周次全部未选；② 编辑进二级页、✕ 只退一层回添加页；
+③ 检查更新弹「已是最新」；④ 空周次文案为「Test　一 · 第 1 节」。
+
+### 60.8 上课星期的七个胶囊挤成一团（次日反馈）
+用户 m01023 附两张对照图：「你的上课星期挤在一起了，参考图一，应该调整为图二的效果」。
+
+根因：星期那行 `Row` 里的 `Chip` **没有 `weight`**，`Box` 的宽度由内容决定 ——
+单个汉字的字号只有 14sp 上下，七个 `Chip` 各自缩成一个窄条，中间只靠 `spacedBy(6.dp)`
+撑着，视觉上就是七个小方块贴在一起、几乎连成一排。
+
+修法（`ManualCourseScreen.kt`）：
+```kotlin
+Row(
+    modifier = Modifier
+        .fillMaxWidth()
+        .padding(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 12.dp),
+    horizontalArrangement = Arrangement.spacedBy(8.dp),
+) {
+    DAY_LABELS.forEachIndexed { index, label ->
+        Chip(
+            text = label,
+            selected = day == index,
+            onClick = { day = index },
+            modifier = Modifier.weight(1f).height(44.dp),
+        )
+    }
+}
+```
+- `weight(1f)` 让七个胶囊**均分整行**（`spacedBy` 先扣掉六个间隙，剩下的按等分）；
+- `height(44.dp)` 把高度钉住，宽高比接近 1:1，和参考图里那种「圆角方块」一致；
+- 左右内边距从 12dp 改成 16dp，与卡片里其它行（标题、周次网格）对齐。
+- `Chip` 本身一行没改 —— 1–20 周次与节次网格原本就用 `weight(1f)`，行为不受影响。
+
+实测 dump（1220×2656、density 2.75）：七个文字节点中心等距 **154px**，胶囊 **132px 宽（≈48dp）× 121px 高（44dp）**；
+未选中底色 `surfaceContainerHighest` 比卡片 `surfaceContainerHigh` 略深，边界清楚，不再糊成一片。
+
+**教训**：`Row` + 等宽排布的按钮组，一定要给每个子项 `Modifier.weight(1f)`；
+只给 `spacedBy` 的话，宽度会退化成「内容宽 + 间隙」，字越少越挤。
+
+## 59. 第五十九轮（2026-11-03）：课程块改参考截图排版 / 课表底端与 tab 对齐 / 时间列右侧裁字
+
+### 59.1 课表底端没和 tab 对齐（根因是重复扣除）
+第 58 轮曾加 `bottomBarReserve = dp(66)` 去躲底部标签栏，实测 `activity_main.xml` 里
+`fragmentContainer` 用的是真约束 `app:layout_constraintBottom_toTopOf="@id/shellBottomNav"`，
+底边 2397 与 `shellBottomNav` 顶边 2397 本就严丝合缝 —— 那 66dp 是**重复扣除**，
+把 `gridContent` 底边压到 2176（比 `gridScroll` 的 2382 少了 206px），于是「课表没铺到 tab」。
+- 删掉 `bottomBarReserve`，改 `val availH = rawAvailH.coerceAtLeast(dp(200))`
+- 结果：`gridContent [18,483][1202,2366]`，比修复前多 190px，底距底栏 31px
+
+### 59.2 课程块排版对齐参考截图
+参考 App（`com.haooz.che`）的课程区：圆角块 + 同色相极浅染底 + 深饱和字，块内三行
+（课名 / 地点 / 教师）。按用户 m00427 的修正落地为：
+- **居中**（不是参考图的左对齐）：`blockInner.gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL`，
+  `nameView` / `roomView` / `teacherView` 三者 `gravity` 全部 `Gravity.CENTER`
+- **去掉 `@` 前缀**：`roomView.text = room`（曾试过 `"@$room"`）
+- **课名贴顶、地点+教师贴底**：`blockInner.addView(View(ctx), LinearLayout.LayoutParams(1, 0, 1f))`
+  插在 `nameView` 与 `roomView` 之间当弹性占位
+- 新增 `teacherView`：`textSize = nameSize - ts(1f)`、`alpha = 0.8f`、`maxLines = 1`、`ellipsize = END`
+- 圆角 `s.rounded(density, 14f, style.courseFill(color))`（原 10f）
+- 留白加大：`gapH = dp(5)`（原 3）、`gapW` 三档 `dp(3)/dp(4)/dp(6)`（原 2/3/4）、
+  `blockInner.setPadding(dp(5), dp(4), dp(5), dp(4))`
+- `limit = (colW - dp(12))`（原 `colW - dp(8)`），`nameW` 上限同步
+- 教师字段取自 `ScheduleModels.Course.teacher`（`@SerializedName("教师")`，本来就存在）
+
+### 59.3 第 9/10 节课程块内容被裁
+块高不够放「课名 2 行 + 地点 + 教师 + 上下 padding」。加字号收敛循环：
+```kotlin
+run {
+    val padV = dp(10)
+    var guard = 0
+    while (fitNameSize > ts(7f) && guard < 80) {
+        guard++
+        val nameLines = kotlin.math.ceil(textPx(nameText, fitNameSize) / limit).toInt().coerceIn(1, 8)
+        val sub = (fitNameSize - ts(1f)).coerceAtLeast(ts(6f))
+        val roomH = if (room.isEmpty()) 0f else
+            kotlin.math.ceil(textPx(room, sub) / limit).toInt().coerceIn(1, 2) * fontH(sub)
+        val teachH = if (teacher.isEmpty()) 0f else fontH(sub)
+        val need = nameLines * fontH(fitNameSize) + roomH + teachH + padV
+        if (need <= h) break
+        fitNameSize -= 0.5f
+    }
+    fitRoomSize = (fitNameSize - ts(1f)).coerceAtLeast(ts(6f))
+    while (fitRoomSize > ts(6f) && room.isNotEmpty() && textPx(room, fitRoomSize) > limit) { fitRoomSize -= 0.5f }
+}
+```
+因此 `val (top, h) = blockRect(ci)` 要从 render 中段**提前到函数开头**（收敛需要块高）。
+
+### 59.4 左侧时间列「08:45」的 5 显示不全（用户 m00528）
+`val timeW = (textPx("08:45", ts(8f)) + dp(4)).toInt().coerceIn(dp(26), dp(52))`
+—— 时间列宽度**写死按 8sp 量**，但 `timeSizeCandidates` 是从 11sp 往下试，
+行高够大时选中的是 11sp，「08:45」比格子宽出约三分之一，`setSingleLine(true)` 从右边裁掉。
+修法：把「挑字号档位」那段整体上移到 `gapW` 之后、`timeW` 之前，再按**真实字号**量宽度：
+```kotlin
+val timeW = (textPx("08:45", timeSize) + dp(6)).toInt().coerceIn(dp(26), dp(64))
+```
+- 循环变量 `ts` 改名 `cand`、标签 `loop@` 改名 `loopPick@`，避免遮蔽 `ts()` 函数
+- 无循环依赖：挑字号只依赖 `rowH`，不依赖 `timeW`/`colW`
+- `timeW` 约 76px → 97px（实测 `08:45 [18,726][115,764]`），`colW` 自动收窄约 4px/列
+
+### 59.5 验证
+| 项 | 结果 |
+|---|---|
+| 构建 | `BUILD SUCCESSFUL in 2m 25s`，无编译错误 |
+| APK | 8,623,244 字节 / SHA256 前缀 `85FB425AF6357567` |
+| 时间列 | `08:45 [18,726][115,764]`、`20:40 [18,2306][115,2344]`，右侧不再缺角 |
+| 底端对齐 | `gridContent` 底 2366、`shellBottomNav` 顶 2397，距 31px |
+| 第 10 节 | `A101 / 张磊`、`A200 / 张中华`、`A104 / 马明辉` 三组全部显示 |
+| 往返 | 课表→工作圈→课表，截图 362,925 → 363,653 字节（仅状态栏时钟变了），布局无变化 |
+
+### 59.6 踩坑
+- `activity_main.xml` 里 `fragmentContainer` 是**真约束**到 `shellBottomNav` 顶部，底栏不是浮层 ——
+  第 58 轮「底栏叠在内容上」的结论是错的，那次的 `bottomBarReserve` 反而制造了 206px 空白。
+- 时间列宽度绝不能按「最小候选字号」估 —— 候选择序是**从大到小**，实际选项往往是最大的那个。
+- `Tee-Object | Select-String` 会返回假 `[exit code: 1]`，判断构建只看 `BUILD SUCCESSFUL`。
+- 启动必须用 `adb shell monkey -p com.lanhang.miuix -c android.intent.category.LAUNCHER 1`，
+  `am start -n .../.ui.MainActivity` 会报 `SecurityException: not exported`。
 # AGENTS.md — 蓝航Lite（com.lanhang.miuix）
 
 南昌航空大学官方 App「蓝航」（`cn.edu.nchu.nahang`，UA 标识 `NchuApp/1.0.14`）的第三方轻量客户端。
@@ -21,6 +496,669 @@
    且允许不做。做不到就明写「本轮未验证 + 原因 + 下次怎么验」。
 5. **不做无害但费时的自动收尾**（重建预览图、反复截同一页、反复 dump 界面）。省下的时间用来
    把用户提的四件事做对。
+
+---
+
+## 58. 第五十八轮（2026-11-01）：课程文字铺满格子并放大 / 工作圈往返课表拉伸 / 工作圈图片压缩 + 按需显示原图 / 第 10 节被底栏遮住 / 教室名贴底
+
+用户这一轮给了三条，随后又追加了三条反馈，全部落在课表网格与工作圈：
+
+1. 「课表主页，课程文字四行换行做得很好，但是没有铺满整个课程格子，导致所有文字都挤在一个小范围里，要将文字在课程范围内均匀铺开。」
+2. 「如果在课表页点击工作圈后再返回，课表会伸长到屏幕之外。」
+3. 「工作圈中的图片不一定要加载原图，可以进行压缩以加快加载速度，在屏幕右下角加一个显示原图的按钮，只有按这个按钮时才加载原图」
+4. 「我已经安装测试，你只是将字平铺了，但是字号并没有变大，要将平铺开的文字一并放大」
+5. 「取消过大的行间距，所有文字向上对齐」
+6. 「观察界面，现在第十节课超出了屏幕范围，无法正常显示，并且教室名需要放在课程区域的最底端」
+
+### 58.1 课名铺满格子：字号要真的变大，行距不要摊开（`ScheduleFragment#renderGrid` / `render()`）
+
+第 4 条反馈说明「平铺」被理解错了方向：把行距拉开只让文字「铺开」，字号一点没涨，看起来还是一小团字。
+
+**字号基准（`nameSize`）**：
+
+```kotlin
+val nameSize = run {
+    val availWSp = (colW - dp(6)).toFloat() / scaledDensity
+    val availHSp = (rowH - dp(10)).toFloat() / scaledDensity
+    // 宽度按「一行 3.5 个字」估，高度按「块内 2.9 行」估；上限提到 24sp，让大格子真正吃到大字号
+    minOf(availWSp / 3.5f, availHSp / 2.9f).coerceIn(ts(8f), ts(24f))
+}
+```
+
+第 56 轮是 `/4.2f`、`/3.2f` 夹在 `7.5~19sp`：按 4.2 字估宽会让字号白白小一圈（四字一行本来就只需要 4 个字宽），上限 19sp 又把高屏的大格子卡死。
+
+**逐课收敛只保证「一行放得下 4 个字」**（原来量的是整串课名，10 字长名会被一路压到 7sp，这才是「字没变大」的真正原因）：
+
+```kotlin
+var fitNameSize = nameSize
+while (fitNameSize > ts(8f) && textPx("国国国国", fitNameSize) > limit) {
+    fitNameSize -= 0.5f
+}
+```
+
+**垂直排布**：课名贴顶、教室名贴底、中间一个 weight=1f 的空占位把两边顶开 —— 课名占 1 行还是 5 行，教室名都稳稳在块底。不再用 `setLineSpacing` 把字摊到整块高（第 5 条反馈），行距固定 `1f`。
+
+### 58.2 从工作圈返回后课表被拉长（第 2 条）
+
+与 §53.4「切 Tab 课表拉伸」同源：`onTabSelected()` 里高度自检被写在 `contentFilled() != 0` 的分支里，`renderAll()` 那条路径从不刷新 `lastLayoutHeight`，于是「重新渲染过但没记下新高度」→ 下一次比较永远不等 → 网格按旧高度算 `rowH`。
+
+修法：自检提到分支外无条件执行；`renderGrid()` 末尾回写 `lastLayoutHeight = view?.height ?: lastLayoutHeight`。**回写必须放在 `renderGrid()` 末尾**，否则每次都「高度不等」→ 无限重绘。
+
+### 58.3 工作圈图片压缩 + 右下角「显示原图」（`moments/MomentsScreen.kt` / `moments/ImagePreviewActivity.kt`）
+
+- **九宫格**：`ImageRequest.Builder(imgCtx).data(url).size(cellPx, cellPx).crossfade(120)`，`cellPx = LocalWindowInfo.current.containerSize.width / 3`。服务端常见 2000~4000px 的图，按格子尺寸解码省约一个数量级的内存与解码时间。
+- **查看器**：`PreviewAdapter` 新增 `originalPages`（以 position 为键）、`screenW`、`screenH`；`onBindViewHolder` 里 `if (position in originalPages) size(Size.ORIGINAL) else size(screenW, screenH)`。
+- **按钮**：代码动态创建的 `TextView`（`取得右下的 Gravity.BOTTOM or Gravity.END`，半透明黑底 + 白色描边圆角），`onCreate` 里 `binding.root.addView(originalButton)`；`updateIndex()` 每次翻页按 `position in originalPages` 切可见性，点过后该页隐藏按钮。
+- `strings.xml` 新增 `moments_show_original` = 显示原图。
+- 前置确认：`DragDismissLayout.onInterceptTouchEvent` 只在垂直拖动超 slop 时返回 true，`ACTION_DOWN` 返回 false，所以代码添加的按钮能正常收到点击。
+
+### 58.4 第 10 节被底部标签栏遮住 + 教室名贴底（第 6 条）
+
+`uiautomator dump` 实测（1220×2656、density 2.75）：第 9 节 `19:00` 在 y=2209-2247、`19:45` 在 2247-2285，第 10 节只剩节次号 `10`（y=2327-2382），`19:55` / `20:40` 节点**完全不存在**；而底部标签栏在 y=2498-2549。
+
+真因：**底部标签栏是叠在内容之上的浮层**（`fragment_schedule.xml` 里 `contentGrid` 是 `0dp + weight=1`，标签栏不在同一个线性布局里），所以 `gridScroll.height` 把被标签栏盖住的约 158px（≈57dp）也算成了可用高度，`rowH` 算出偏大，最后一行被压进标签栏底下。
+
+修法：
+
+```kotlin
+val rawAvailH = gridScroll.height
+val bottomBarReserve = dp(66)                                   // 158px / 2.75 ≈ 57dp，再留余量
+val availH = (rawAvailH - bottomBarReserve).coerceAtLeast(dp(200))
+if (rawAvailH == 0 && !gridRelayoutPending) { /* 首帧补一次重绘 */ }
+```
+
+`usable` / `rowH` 的公式一个字没动（行高下界仍是 `dp(12)`，§57.5）。占位 View 就是 `blockInner.addView(View(ctx), LinearLayout.LayoutParams(1, 0, 1f))`。
+
+### 58.5 本轮验证（模拟器 emulator-5554，1220×2656，第 9 周，深色）
+
+| 项 | 结果 |
+| --- | --- |
+| `assembleRelease` | ✅ `BUILD SUCCESSFUL in 1m 46s`，无编译错误 |
+| APK 放根目录 | ✅ `lanhang-miuix-release.apk` 8,623,244 字节，SHA256 前缀 `7B9B10DC0EB98AB0` |
+| ① 字号放大 + 顶对齐 + 紧凑行距 | ✅ 截图：字号明显变大，文字自块顶起排；「习近平新/时代中国/特色社会/主义思想/概论」完整 5 行，只有极长的串被省略 |
+| ⑥ 第 10 节完整可见 | ✅ `19:55` / `20:40` 都在标签栏上方；教室名 E302/C402/A101/B108 等全在每块最底端 |
+| ② 工作圈往返不拉伸 | ✅ 课表 → 工作圈 → 课表，往返前后截图布局一致（297,893 字节 vs 基线） |
+| ③ 图片压缩 | ✅ 缩略图/预览按屏幕尺寸解码；「显示原图」按钮 dump 实测 `中心=(1046,2477)` |
+| ③ 按需原图 | ✅ 点击后按钮隐藏，截图从 3,579,217 → 3,753,166 字节（重新按原尺寸解码生效） |
+| 测试数据清理 | ✅ 无残留手动课 |
+
+本轮未 push（用户未要求），版本号仍是 72 / 1.1.20。
+
+### 58.6 本轮踩坑
+
+- **`string.Length` 是字符数不是字节数**：`[IO.File]::ReadAllText` 返回 .NET `string`，`.Length` 数的是字符，`ScheduleFragment.kt` 107,255 字节却只有 87,458 个字符 —— 用 `-lt 90000` 做「文件异常」守卫会误报中止（好在上限检查在 `WriteAllText` 之前，没写坏文件）。**字节校验一律用 `(Get-Item $p).Length`。**
+- **重复导入直接把编译打挂**：给 `MomentsScreen.kt` 补 `import coil.request.ImageRequest` 时文件里已经有了，报 `e: .../moments/MomentsScreen.kt:65:21 Conflicting import: imported name 'ImageRequest' is ambiguous.`（同样 67:21）。**加 import 前先 grep 一遍。**
+- **行距摊高会裁掉最后一行**：`mult = nameAvailH / (lineCount * lineH)` 看着像「均匀铺开」，实际最后一行常被裁掉；用户否掉后换成 `setLineSpacing(0f, 1f)` + 顶部对齐。
+- **教室名只按 1 行估算会把课名挤掉**：「综合楼南310」会折成 2 行，`roomBlockH` 只算 1 行就会把课名可用高度估多，第 4 行字被裁。要 `ceil(textPx(room, fitRoomSize) / limit).coerceIn(1, 2)`。
+- **验证红线又差点破**：把 dump 里 `中心=(180.5, 618.5)` 的「赞」按钮当成了图片，点下去把第一条动态点赞了（截图出现「已赞 10」、点赞者列表多了自己），撤销时 adb 还掉线了。重启模拟器、重装后 dump 确认只剩「赞 0 / 赞 0 / 赞 2」才收手。**点之前先看节点的 `text` / `content-desc`，别只看 bounds 形状。**
+- **坐标只能取自 `uiautomator dump` 的 bounds 中心**：同一张截图里 344×344 的图片在 `中心=(254,841)`，风扇图在 `中心=(254,1355)`；点 `(200,700)` 命中的是头像（会跳进个人主页）。
+
+## 57. 第五十七轮（2026-11-01）：课程名四字一行 / 手动课详情加编辑 / 时间滚轮过渡动画 + 时间同步 / 课表超界自适应
+
+用户这一轮给了五条，都在课表与添加课程页：
+
+1. 「课表页的课程文字设为四字一行，超过自动换行，如果有课程的名字过于长导致无法正确显示（比如超出课程边界），则显示省略。」
+2. 「点击用户自己手动添加的课程时，对话框应多一个编辑按钮，点击后进入编辑课程页面，注意动画的连贯性。」
+3. 「上课时间中数字之间的切换不连贯流畅，设计一个过渡动画。」
+4. 「上课时间中开始时间与结束时间设置好后，右上角的时间与下面的时间不同步，在凌晨12点交界处尤其明显，修复这些问题」
+5. 「如果设置的课程时间超出课表界限，课表应重新计算合适的大小并自适应显示在一个屏幕内，修复这些问题」
+
+### 57.1 课程名严格四字一行（`ScheduleFragment#renderGrid`）
+
+旧实现只把 `nameView` 撑到 `colW - dp(2)`（整列宽），于是「焊接技术与工程导论」在一列 200px 里能挤下 6 个字，换行落点由系统断行决定，长短课名的行数完全不可控，长课名还会把 `roomView` 顶出块外。
+
+改法：**按「四个汉字」实测像素宽**来定 `nameView` 的宽度。
+
+```kotlin
+// 静态初始化：宽度按基准字号量四个汉字
+nameView.layoutParams = LinearLayout.LayoutParams(
+    (textPx("国国国国", nameSize).toInt() + dp(3)).coerceAtMost(colW - dp(2)), 0, 1f)
+```
+
+`render()` 里字号会随块高连续变化（见 56.2），所以每次重绘都要用**当次的实际字号**重算宽度，写到同一个 LayoutParams 上：
+
+```kotlin
+val nameW = (textPx("国国国国", fitNameSize).toInt() + dp(3)).coerceAtMost(colW - dp(2))
+(nameView.layoutParams as LinearLayout.LayoutParams).also { it.width = nameW }
+```
+
+量的是 `"国国国国"`（四个最宽的常用汉字）而不是 `"XXXX"` —— 西文宽度只有汉字一半，用西文量会把宽度定窄，中文课名一行就塞不下四个字。
+
+`maxLines` 由块高反算，保证文字不出块：
+
+```kotlin
+val lineH = fontH(fitNameSize)
+val roomBlockH = if (room.isEmpty()) 0f else fontH(fitRoomSize)
+val nameAvailH = (h - dp(8) - roomBlockH).coerceAtLeast(lineH)
+nameView.maxLines = (nameAvailH / lineH).toInt().coerceIn(1, 8)
+```
+
+超长名的省略靠 `nameView.ellipsize = TextUtils.TruncateAt.END`（`roomView` 同样加了）。真机效果：「焊接技术与工程导论」→「焊接技术 / 与工程导 / 论」，「《何以为美：大学美育导引》」→ 四行不溢出，「习近平新时代中国特色社会主义思想概论」→ 五行刚好放下。
+
+### 57.2 手动课详情多一个「编辑」按钮（`CourseItem` / `ManualCourseStore` / `ScheduleFragment` / `ManualCourseScreen`）
+
+数据层加一个字段把「这门课是谁」带到渲染层：
+
+- `CourseItem` 新增 `val manualId: String? = null`（教务课为 `null`）
+- `ManualCourse.toCourseItem()` 里传 `manualId = id`
+- `mergeCourses()` 用 `cur.copy(periodEnd = next.periodEnd)` 合并，`copy` 不丢新字段，合并后的块保留首条的 id —— 手动课本身按节存行，够用
+
+详情弹窗按 `manualId` 决定出不按钮：
+
+```kotlin
+val actions = buildList {
+    val mid = ci.manualId
+    if (mid != null) add(getString(R.string.common_edit) to {
+        ManualCourseNav.pendingEditId = mid
+        showManualCourseEditor()
+    })
+    add(getString(R.string.common_ok) to {})
+}
+```
+
+`MiuixDialogSpec` 的按钮样式规则是「最后一个为主色、前面的是 10% 灰次按钮」，所以「编辑 + 确定」天然读作「次操作 + 主操作」，不用改对话框。`strings.xml` 补 `common_edit` = 编辑。
+
+**动画连贯性**是这条的重点。编辑页是添加页的二级页（`progress` 0→1 时编辑页从右侧滑入、添加页左移 `NavMotion.PARENT_TRAVEL`、中间压 18% 黑遮罩），而弹窗点「编辑」时外层覆盖层本身也在滑入 —— 如果编辑页再从 `progress = 0` 起一次二级动画，用户会看到「整页滑入 → 页面里又滑一次」两层叠加。
+
+做法：给 `ManualCourseNav` 加一个一次性信标 `pendingEditId`，`ManualCoursePage` 首次组合时读走并清空，直接把 `editing` 初始化成对应的 `ManualCourse`：
+
+```kotlin
+val initialEditing = remember {
+    ManualCourseNav.pendingEditId?.let { id ->
+        ManualCourseNav.pendingEditId = null
+        ManualCourseStore.all().firstOrNull { it.id == id }
+    }
+}
+var editing by remember { mutableStateOf<ManualCourse?>(initialEditing) }
+```
+
+`animateFloatAsState` 首次组合不发动画（初值直接等于 target），所以 `progress` 一上来就是 1 —— 只有外层滑入这一层，弹窗一关编辑页就已经就位。返回键也由 `ManualCourseNav.onBack` 注册给 Fragment 的 `OnBackPressedCallback`，先关编辑页、再关添加页、最后才回课表。
+
+真机确认：点「编辑」→ 标题「编辑课程」、名字/星期/节次/周次全部带入；按返回 → 回到「添加课程」页而不是课表。
+
+### 57.3 时间滚轮的数字切换过渡动画（`ManualCourseScreen#WheelColumn`）
+
+旧实现按索引硬切样式：
+
+```kotlin
+fontWeight = if (i == center) FontWeight.Bold else FontWeight.Normal   // 16sp ↔ 34sp
+```
+
+滚动时数字是「跳」着变大小的。改成按**这一项中心离视口中心多远**算连续权重，字号 / 字重 / 颜色全部插值：
+
+```kotlin
+val frac = if (info == null) {
+    if (i == centerIdx) 1f else 0f
+} else {
+    val vpCenter = (vp.viewportStartOffset + vp.viewportEndOffset) / 2f
+    val itemCenter = info.offset + info.size / 2f
+    (1f - kotlin.math.abs(itemCenter - vpCenter) / itemPx).coerceIn(0f, 1f)
+}
+val k = frac * frac * (3f - 2f * frac)   // smoothstep：边缘更软、中间更实
+fontSize = (16f + 18f * k).sp
+fontWeight = if (k > 0.5f) FontWeight.Bold else FontWeight.Normal
+color = lerp(scheme.onSurfaceVariantSummary, scheme.onSurface, k)
+```
+
+用 smoothstep 而不是线性：线性插值下「贴近边缘但还没出屏」的数字仍是大字号，看起来发糊；smoothstep 在两端变化慢、中段快，滚动过程中始终只有一个视觉焦点。`layoutInfo` 拿不到的项（刚进入/退出组合）退回索引判定。
+
+真机实测同一屏内中心项 bounds 高 116px、边缘项 54px（≈2.1 倍），证明插值是连续的而不是两档跳变。
+
+### 57.4 开始/结束时间与右上角不同步（两个独立 bug）
+
+**bug 一：`LaunchedEffect` 的 key 漏了回调，事件回调停在首次组合。**
+
+```kotlin
+// 错的
+LaunchedEffect(state, count, step) {
+    snapshotFlow { state.firstVisibleItemIndex }
+        .collect { onChanged(it) }        // ← 这个 lambda 捕获的 minute 永远是初始值
+}
+```
+
+协程里的 `onChanged` 是**首次组合时**那个闭包，它捕获的 `minute` 不会更新。滚分钟列时 `onChange((minute / 60) * 60 + m)` 用的是旧的小时：23:55 往上滚一格，小时已经变 00，分钟却仍按 `23 * 60` 拼出 `00:55` —— 凌晨交界处最刺眼，正是用户报的现象。
+
+修法：
+
+```kotlin
+val latestOnChanged by rememberUpdatedState(onChanged)
+LaunchedEffect(state, count, step) {
+    snapshotFlow { centerHeld.value }.collect { latestOnChanged(...) }
+}
+```
+
+**bug 二：`rememberLazyListState(initialFirstVisibleItemIndex = …)` 只在首次组合生效。**
+
+外部把值改掉（开始时间越过结束时间后结束时间被自动推后 45 分钟；或从「已添加的课程」点进编辑页换了另一门课）时，滚轮停在旧位置 —— 于是「右上角写着 23:59、滚轮还停在 8:45」。
+
+修法：加一个只在「滚轮实际值 ≠ 外部值」时才滚的同步 effect，用户正在拖动时不抢：
+
+```kotlin
+LaunchedEffect(safeInitial, count, step) {
+    if (state.isScrollInProgress) return@LaunchedEffect
+    val curMod = (((state.firstVisibleItemIndex - base) % count) + count) % count
+    if (curMod != safeInitial) state.animateScrollToItem(base + safeInitial)
+}
+```
+
+真机验证：`08:00 - 08:45` 滑小时一格 → `09:00 - 09:45`（结束时间被自动推后且**结束滚轮跟着滚到 09:45**）；再滑分钟一格 → `09:05 - 09:45`（小时保持 09，不再是 `08:05`）。
+
+### 57.5 自定义时间超出作息表时课表自适应（`ScheduleFragment#renderGrid`）
+
+`yOfMinute()` 早就把越界分钟钳到 `minuteAnchors` 两端，所以块的**位置**从来没出过网格；真正卡住的是行高下界：
+
+```kotlin
+// 错的
+val rowH = (usable / rowCount).coerceIn(dp(32), (dp(160) * textScale).toInt())
+```
+
+32dp 的下界意味着「可用高度 ÷ 行数」一旦小于 32dp 就撑不回去 —— 出现 12 节课、或加了早晚自定义时间的课之后，网格必然超出可视区，只能用滚动条。
+
+改成 `coerceIn(dp(12), …)` 放开下界，让行数多时行高继续往小缩，整张表始终压进一屏。
+
+真机确认：1–10 节全部在一屏内、无滚动条；添加一门时间在 05:05–09:45 的手动课后也能正常渲染（起始钳到第 1 节顶、结束钳到第 2 节底），不溢出边界。
+
+### 57.6 本轮事故与恢复（务必记住这个坑）
+
+`[IO.File]::WriteAllText($path, $null)` **会先把文件截断成 0 字节，再抛 `ArgumentNullException`** —— 异常被 PowerShell 的非终止错误机制吞掉，调用方以为只是「写入失败」，实际三个源文件已经被清空。
+
+起因：脚本里定义了 `function R($p) { ... }` 和 `function W($p,$t) { ... }` 想省字，而 **`R` 是 PowerShell 的 `Invoke-History` 内置别名**，函数定义被别名覆盖，`$t = R $p` 实际执行的是 `Invoke-History`（失败返回 `$null`），接着 `W $p $null` 就把文件截断了。
+
+规则：
+
+- **绝不使用 `R` / `W` / `T` / `?` / `%` / `H` 这类单字母函数名或变量名**，它们大概率撞 PowerShell 别名。用 `Edit-Text` / `Read-Source` 之类可读名字。
+- 写文件前必须 `if ($null -eq $text) { throw }`。
+- 恢复来源只有 `push\repo`（当时落后到第 52 轮），因此第 53/54/55 轮在 `ManualCourseScreen.kt` 里的改动全部重做了一遍。教训：**每轮结束把 `src` 同步进 `push\repo`（或至少打一份 zip），别攒着**。
+## 56. 第五十六轮（2026-10-31）：私信语音闪退加固 / 课表字号随分辨率自适应 / 刷新后日期跳周
+
+用户三条（原话）：①「私信中语音功能有问题，长按松手后自动闪退」；
+②「课表中文字要根据屏幕分辨率自动变大或变小，不应该固定在一个大小」；
+③「课表刷新有问题，参考视频中的问题」（附 6.39 秒录屏，1840×2944 真机，第 14→15→16 周）。
+
+### 56.1 语音闪退：整条链路跑在手势协程里，一处抛异常就把进程打死
+
+「按下录音 → 松手发送」全部写在 `detectTapGestures(onPress = { ... })` 这个 **suspend lambda**
+里。`MediaRecorder.start()` / `stop()` / 融云 `sendMediaMessage()` 三段都可能抛
+`RuntimeException`（录音过短、麦克风被占、上手实例没释放、SDK 读不到本地文件），
+只要有一处漏出，异常就顺着 Compose 的协程冒到主线程 → 直接闪退。
+
+加固（`im/ImScreens.kt`、`im/ImRepository.kt`、`im/ImMedia.kt`）：
+
+1. `onPress` 内三段分别 `runCatching`，失败只 Toast 提示 + `Log.e("ImVoice", ...)`；
+   `recording = false` 放进 `finally`，手势被取消也不会留在「录音中」。
+2. `VoiceRecorder.start()` 改成先 `reset()`/`release()` 旧实例再建新的；
+   启动失败时在 `onFailure` 里把半成品 `r` 一起 `reset/release` 并删掉空文件
+   （以前失败后 `r` 泄漏且占着麦克风，下一次点「按住说话」必然再失败）。
+3. `VoiceRecorder.stop()` 的 `r.stop()` 失败会打日志，便于真机定位。
+4. `ImRepository.sendRich()` 里融云的 `sendMediaMessage` / `sendLocationMessage`
+   包进 `runCatching`，同步抛异常时把那条消息标红并写 `error`，不再闪退。
+
+**本轮未验证**：模拟器无麦克风，`MediaRecorder.start()` 必然失败，走不到 `stop()` 之后，
+无法复现真机的「松手即崩」。以上为防御式加固，真机若仍闪退，
+请抓 `adb logcat -s ImVoice ImSend` 的日志（已埋点），能直接指到是哪一段抛的。
+
+### 56.2 课表字号：从「三档死值」改成按格子像素尺寸连续换算
+
+以前课程名只有 `colW < 30dp → 7.5sp / < 40dp 或 rowH < 40dp → 8.5sp / 否则 9.5sp`
+三档，格子再宽再高也停在 9.5sp —— 高分屏（1840×2944 一类）上课名小到几乎看不清，
+这就是用户说的「固定在一个大小」。
+
+`ScheduleFragment.renderGrid()`：
+
+- **课程名基准档**：`minOf(可用宽/4.2, 可用高/3.2).coerceIn(7.5sp, 19sp)`，
+  宽按「一行排 4.2 个字」、高按「块内塞 3.2 行」估算，随格子实际像素连续变化。
+- **逐课收敛**：在 `render()` 里按当前课名的实测字宽（`textPx`）从基准档往下试
+  （每步 0.5sp，最低 7sp），短名吃满基准档、长名自动降，不会挤成竖排。
+  房间号始终比课名小 1sp（最低 6sp）。
+- **节次列候选档**：`13/12/11` → `17/16/15/14/13/12/11`；时间列 `8/7.5/7` → `11/10.5/10/9/8/7.5/7`。
+  取档逻辑本来就是「从大到小试、第一个放得下就用」，所以行高大的屏自动吃大字号，
+  矮屏仍一路降到 11sp / 7sp —— **窄屏行为完全不变**。
+- **表头**：星期 `13sp` → `colW/2.6` 夹在 `11~17sp`，日期 = 星期 × 0.7（最低 8sp）。
+
+### 56.3 刷新后日期跳周：日期表头不能用「现算的当前周一」推
+
+`renderGrid()` / `renderWeekView()` 原本每帧现算：
+
+```kotlin
+val monday = LocalDate.now().with(DayOfWeek.MONDAY)
+val weekMonday = monday.plusWeeks((currentWeek - actualCurrentWeek).toLong())
+```
+
+而 `actualCurrentWeek` 会在下拉刷新时被服务器返回的「本学期第几周」改写（`applyWeekInfo`）。
+于是**刷新一下、`currentWeek` 没变，日期表头却整体跳了一周** ——
+录屏里「第 14 周」下面挂着第 15 周的 `12/7`、课程块跟着日期重排，就是这条。
+
+修法：新增 `private var termMonday: LocalDate?`，**只在第一次**拿到 `weekInfo` 时
+按当时的本周一往回推 `(当前周 - 1)` 周并固化；之后一律
+`termMonday + (周次 - 1)`。与刷新时机、跨天、跨周都无关。
+未拿到 `weekInfo` 时回退旧算法，行为不变。
+
+（录屏中切周动画的中间帧里「表头出现周二…周一」是**位图跟手滑动的正常表现**，
+不是 bug：旧内容整张位图在滑出、新内容在下层，两者交界处看起来像表头错序。）
+
+---
+
+## 54. 第五十四轮（2026-10-31）：编辑页返回动画对齐 / 时间滚轮 5 分钟格 + 无限循环 + 选中强调
+
+用户三条（原话）：①「从编辑课程页面返回时，过渡动画与应用内的不统一」；
+②「上课时间的范围改为五分钟一格，5 10 15 20 以此类推，滚动方式改为无限滚动，23 点与 0 点衔接，55 与 00 衔接」；
+③「被选中的上课时间不够突出，需要将字号调大，字体加粗，上下的待选数字改为一个，而不是两个」。
+
+### 54.1 返回动画不统一的真因：子页当帧就被摘掉了
+
+二级页的渲染条件原来是 `val target = editing; if (target != null)`。
+`editing = null` 发生在**按下返回的那一帧**，于是子页立刻离开组合，只剩
+「一级页独自滑回原位 + 遮罩独自淡出」这**一半**动作 —— 另一半「子页整体滑出右侧」根本不存在。
+
+而全 App 的二级页走 `MiuiNavStack`：返回时 `leaving = shown`，正在退出的那页**保活到动画结束**
+（`childFraction = p`，0→1 滑出），两半永远成对。同一个动作两种观感，用户就看出来了。
+
+修法：把「编辑的是哪一门课」和「这一层还在不在」拆成两个状态。
+
+```kotlin
+var shownEdit by remember { mutableStateOf<ManualCourse?>(null) }
+LaunchedEffect(editing) { if (editing != null) shownEdit = editing }
+val editSettled = progress == 0f
+LaunchedEffect(editSettled) { if (editSettled) shownEdit = null }
+// 渲染条件改成 shownEdit
+val target = shownEdit
+```
+
+几何 / 时长 / 曲线本来就取自 `NavMotion`（`DURATION_MS = 300`、`FastOutSlowInEasing`、
+`PARENT_TRAVEL = 0.24f`、`PARENT_DIM = 0.18f`），与 `MiuiNavStack` 同源，补上「保活」这一条即成同一个动画。
+
+### 54.2 时间滚轮：5 分钟一格 + 无限循环（第 2 条）
+
+`WheelColumn` 重写，签名加了 `step`：
+
+```kotlin
+private fun WheelColumn(count: Int, initial: Int, modifier: Modifier = Modifier,
+                        step: Int = 1, onChanged: (Int) -> Unit)
+```
+
+- **5 分钟一格**：分钟列 `count = 12`、`step = 5` → 只出 `00/05/10/…/55`；小时列 `count = 24`、`step = 1`；
+- **无限滚动**：把 `count` 项复制 `LOOP = 1000` 份拼成超长列表（总项数 `count * 1000`），
+  初始位置钉在正中那一圈（`base = count * 500`）。于是往任一方向都还有近万项可滚，
+  **23 之后接着是 00、55 之后接着是 00**，再也看不到边界；
+- 显示值 = `(i % count) * step`；回调值 = `(((首项 - base) % count) + count) % count * step`，
+  跨圈自动接上，不用自己接管 touch 与惯性（仍用 `rememberSnapFlingBehavior` 吸附）。
+
+### 54.3 选中项更突出、只露三行（第 3 条）
+
+- 可见行数 `itemH * 5` → `itemH * 3`，`contentPadding` 上下各一行 → **只露「上一行 / 选中 / 下一行」**；
+- 行高 `36.dp` → `44.dp`（大字号需要空间）；
+- 选中行 `MiuixTheme.textStyles.title4 + FontWeight.Bold`（原来统一 `body2 + Medium`），
+  未选中行 `body2 + Normal` + `onSurfaceVariantSummary` 弱化。
+  实测 bounds 从 44×48 变成 60×62，视觉上一眼能认出选中的是哪个数。
+
+### 54.4 本轮验证（模拟器 emulator-5554，1220×2656，第 9 周，深色）
+
+| 项 | 结果 |
+| --- | --- |
+| `assembleRelease` | ✅ `BUILD SUCCESSFUL in 1m 59s` |
+| APK 放根目录 | ✅ `lanhang-miuix-release.apk` 8,622,412 字节 |
+| ③ 时间滚轮 5 分钟格 | ✅ dump：分钟列 `55 / 00 / 05`、`40 / 45 / 50` |
+| ③ 无限衔接 | ✅ 截图：分钟 `00` **上方是 55**、下方是 05（23↔0 同一份代码） |
+| ③ 选中突出 | ✅ 选中 `08`/`00` 明显更大更粗；上下各**只露一行** |
+| ③ 页面内调整 | ✅ 「上课时间 08:00-08:45 ⌃」行下方原地长出「开始时间 / 结束时间」两组滚轮，**无遮罩、无弹窗** |
+| ① 返回动画 | ✅ 按返回后立刻抓帧（`input keyevent 4; screencap` 同一条 shell）：子页仍在屏上（标题仍是「编辑课程」、左上角 `‹`），1 秒后回到「添加课程」页 —— 说明保活生效；逐帧手感仍需录屏确认 |
+| ② 周次全不选（第 53 轮遗留） | ✅ 截图：1~20 全灰、全部/单周/双周三档都不高亮 |
+| ④ 返回层级（第 53 轮遗留） | ✅ 点已保存课程进编辑页 → 系统返回 → 回到「添加课程」页（不是课表） |
+| ⑤ 切 Tab 课表拉伸（第 53 轮遗留） | ✅ 课表 → 我的 → 成绩 → 返回 → 课表：第 9 周 1~10 节完整显示到底，无裁切无拉伸 |
+| 测试数据清理 | ✅ `ZZtest` 已删，周一第 1 节恢复「高等数学B1」 |
+
+本轮未 push（用户未要求），版本号仍是 72 / 1.1.20。
+
+### 54.5 本轮踩坑
+
+- **`am start -n` 在重装后可能报 `Permission Denial: … not exported`**（新实例上 Activity 的
+  exported 标志未按预期解析）。改用 `adb shell monkey -p com.lanhang.miuix -c android.intent.category.LAUNCHER 1`
+  一次成功。
+- **模拟器冷启动 `-no-snapshot-load` 会起不来**：上一轮等了 60s + 120s 都没注册设备，误判成「模拟器坏了」；
+  这一轮去掉该参数（吃快照）**20 秒就就绪**。以后直接 `Start-Process emulator.exe -ArgumentList "-avd","Medium_Phone_API_37.0"`，
+  并在循环里每 5 秒轮询 `adb devices`，最多 120 秒。
+- **抓转场中间帧的办法**：`adb shell "input keyevent 4; screencap -p /sdcard/r1.png"` ——
+  两条命令在**同一个 adb shell 会话**里连跑，间隔只有几十毫秒，才能抢到 300ms 动画内的那一帧。
+  分成两条 `adb shell` 会各多一次往返，抓到的永远是动画结束后的画面。
+- **截图一定要落在纯 ASCII 路径再交给 `read_image`**：中文路径下 `read_image` 会报 not found，
+  先 `adb pull` 到 `%TEMP%` 再读。
+
+---
+### 54.6 后续修正：高亮跑到边行 / 字号再放大（同一批需求的第二次反馈）
+
+用户：「第一，时间页面向上或向下滑时，重点标号会到最上面或最下面的数字。第二，重点不够突出，可以再调大字号」。
+
+**高亮为什么会跳**：上一版用 `i == state.firstVisibleItemIndex` 判高亮。
+`firstVisibleItemIndex` 是「**第一个可见项**」——手指一拖、内容上移超过一整行，它就跳到下一项；
+而视觉上「中间那一行」是按**滚动偏移量**精确落在视口中心的那一项。两者不同步，
+于是拖动时高亮会突然窜到最上面那行，快速滑动时甚至整个跑出可视区。
+
+正确算法（上下各留一行 padding 时）：
+
+```kotlin
+val itemPx = with(LocalDensity.current) { itemH.toPx() }
+val centerHeld = remember(itemPx) {
+    derivedStateOf {
+        state.firstVisibleItemIndex +
+            ((state.firstVisibleItemScrollOffset + itemPx / 2f) / itemPx).toInt()
+    }
+}
+```
+
+推导：静止吸附时「中间行 = 首项」；内容向上移动多少行（`off / itemH`），中心项就往后挪几个。
+用 `derivedStateOf` 包住，只有「高亮真要换行」的那一帧才触发重组，滚动过程本身不重画全部可见项。
+`onChanged` 也改成订阅 `centerHeld`，保证「写回的值」与「高亮看到的数」永远是同一个。
+
+**字号**：`itemH` `44.dp → 46.dp`；选中行用
+`MiuixTheme.textStyles.body2.copy(fontSize = 34.sp, fontWeight = FontWeight.Bold)`，
+未选中 `16.sp / Normal / onSurfaceVariantSummary`。
+（用 `TextStyle.copy` 而不是直接给 `fontSize` 参数，避开 Miuix `Text` 参数表的差异；`sp` / `LocalDensity` / `derivedStateOf` 三个 import 要一起补。）
+
+实测 dump：未选中数字 bounds `52×54`，选中 `114×116` —— 相对上一版的 `44×48 / 60×62` 一眼就能看出选中项。
+
+**验证**（慢速拖动小时列，同一条 shell 里 `input swipe … & sleep 0.45; screencap` 抓拖动中途帧）：
+
+| 帧 | 小时列 | 分钟列 | 顶栏 |
+| --- | --- | --- | --- |
+| m1（拖动 32%） | 08 / **09** / 10 | 55 / **00** / 05 | 09:00 - 09:45 |
+| m2（再推进一行） | 09 / **10** / 11 | 55 / **00** / 05 | 10:00 - 10:45 |
+
+两帧的高亮**都稳在中间行**，没有再窜到首行/末行；顶栏时间与滚轮一致。
+## 53. 第五十三轮（2026-10-31）：周次默认全不选 / 时间改页面内滚轮 / 返回键层级 / 切 Tab 课表拉伸
+
+用户五条（原话）：①「每次更新都要编译出 release 版放到你的工作文件夹的根目录」；
+②「打开添加课程时，上课周次不应为全选，应为全不选」；
+③「上课节次与自定义时间应用同一套交互逻辑，上课节次在页面内调整，自定义时间也应在页面内调整，而不应该再弹出对话框」；
+④「编辑课程应视为添加课程的二级页面，返回时不应回到课表主页而应回到添加课程页」；
+⑤「从课表页点进我的页，再随便点进一个二级页面退出后再进入课表页，课表会被异常拉伸到屏幕下侧，无法显示完全」。
+
+### 53.1 周次默认全不选（第 2 条）
+
+改两行：`weeks` 初值 `(initial?.weeks ?: emptyList()).toSet()`（以前 `(1..MAX_WEEK).toList()`），
+`weekMode` 初值 `initial == null -> ""`（以前 `"all"`）。
+空集合按「每周都上」保存（`ManualCourse.inWeek` 的既有约定），所以「全不选」是合法默认态。
+
+### 53.2 自定义时间改成页面内滚轮（第 3 条）
+
+原来的 `TimeSheetDialog`（全屏 35% 遮罩 + 底部 20dp 圆角面板 + 取消/确定 + 四列滚轮）**整段删除**，
+只留滚轮本体，改成 `TimeWheelRow(minute, onChange)`：一行 `时 : 分`，
+与节次形态的「起始节 / 结束节」两行**同构**。
+
+| | 节次形态 | 时间形态 |
+| --- | --- | --- |
+| 行文案 | 上课节次 / 第 1 - 2 节 | 上课时间 / 08:00 - 08:45 |
+| 点击 | `periodOpen = !periodOpen` | `timeOpen = !timeOpen` |
+| 展开内容 | 起始节 + 结束节 两个 `PeriodGrid` | 开始时间 + 结束时间 两个 `TimeWheelRow` |
+| 箭头 | `⌃` / `›` | `⌃` / `›` |
+
+展开区仍是 `AnimatedVisibility`，长在「上课节次 / 上课时间」那张卡片内部 —— 不再有遮罩、不再开窗。
+滚轮改动即时写回 `startMinute / endMinute`，并保证「结束晚于开始至少 45 分钟」（避免零长度课程）。
+
+### 53.3 返回键的层级（第 4 条）
+
+覆盖层是 `addView` 到 Fragment 根布局上的普通 View，返回键由 `manualCourseBack`
+（`OnBackPressedCallback`）接管；但它看不到 Compose 内部「是否在编辑页」。
+
+新增 `object ManualCourseNav { var onBack: (() -> Boolean)? = null }`（在 ManualCourseScreen.kt）：
+
+- Compose 侧 `DisposableEffect(editing != null)` 注册「若在二级页 → 关掉它并返回 true」；
+- Fragment 侧 `handleOnBackPressed()` 第一句 `if (ManualCourseNav.onBack?.invoke() == true) return`，
+  然后才 `hideManualCourseEditor()`。
+
+于是返回键顺序变成：编辑页 → 添加页 → 课表，与视觉层级一致。
+
+### 53.4 切 Tab 回来课表被拉长（第 5 条）
+
+真因：二级页打开期间底栏隐藏，`fragmentContainer` 从 2046 高变成 2305，课表按那一刻的高度算 `rowH`；
+底栏恢复后容器变矮，但 `onTabSelected()` 只在 `contentFilled() == 0` 时才 `renderAll()`，
+于是一整张网格比可用空间高、底部被裁 —— 用户看到的就是「拉伸到屏幕下侧、显示不全」。
+
+修法：新增 `lastLayoutHeight` 字段，`onTabSelected()` 里 `root.post { }` 比较当前高度，
+不一致就 `renderGrid()` 重算一次再 `ensureContentNotEmpty()`。
+
+### 53.5 发版产物落到项目根目录（第 1 条）
+
+`assembleRelease` 之后把 `app/build/outputs/apk/release/app-release.apk` 复制成
+`<项目根>\lanhang-miuix-release.apk`。以后每轮都这么做。
+
+### 53.6 本轮验证状态（诚实记账）
+
+| 项 | 结果 |
+| --- | --- |
+| `assembleRelease` | ✅ `BUILD SUCCESSFUL in 1m 41s` |
+| APK 放根目录 | ✅ `lanhang-miuix-release.apk` 8,622,412 字节 |
+| ② 周次全不选 / ③ 时间内联 / ④ 返回层级 / ⑤ 课表拉伸 | ⚠️ **未设备验证**：本轮开工时模拟器随隔夜关闭，`adb devices` 为空；启动 `Medium_Phone_API_37.0` 后等 60s + 120s 仍未注册（启动失败），按「单步失败两次就停手」的纪律收手。四项改动均为编译级把握 |
+
+本轮未 push（用户未要求）。
+
+### 53.7 本轮踩坑（重要）
+
+- **PowerShell 函数里 `Write-Output` 与 `return` 混用会污染返回值**：补丁脚本里写成
+  `function Rep($t,$o,$n){ Write-Output "OK"; return $t.Replace($o,$n) }`，
+  外层 `$t = Rep ...` 拿到的是**数组**（`["OK",...,"<全文>"]`），再
+  `[IO.File]::WriteAllText($p,$t)` 会把数组按空格拼成字符串写盘 —— 文件开头多出
+  `OK R5 OK R4 OK R3 OK R2 OK R1 `，差点毁掉整个 964 行文件（靠 `IndexOf("package ...")` 截断救回）。
+  **教训：批处理脚本里日志与返回值必须分开收集（`$log +=` + 单独变量）。**
+- **`read`/`edit`/`grep` 对含中文的工作区路径时好时坏**：同一路径前一次成功、后一次 `not found`。
+  本轮所有源码改动改用 `pwsh` + `[IO.File]::ReadAllText / WriteAllText`（UTF-8 无 BOM）完成，
+  已验证中文读写不乱码。**下次批量改源码优先走这条路，别在工具上反复重试。**
+
+---
+## 52. 第五十二轮（2026-10-30）：叠加块翻转几何 / 胶囊选择器 / 编辑二级页 / 节次时间互斥 / 切换视图下沉
+
+用户五条（原话）：①「课程的叠加设置有问题，比如周四时有一节 1-3 节的课程，我又添加了一节 1-2 节的叠加课程，
+这时这个叠加课程翻转时依旧会显示在 1-3 节的范围」；②「自定义时间、全部、单周、双周的选择器参考这个设计」（附参考图：
+标题在左、右侧一行浅灰药丸、深灰字、无描边）；③「将编辑课程设为添加课程的二级菜单，过渡动画照样设计」；
+④「上课节次与自定义时间只能存在一个，如果打开了自定义时间，则将上课节次替换为上课时间设置，并作过渡动画，
+按照课上时间与课表时间的比例设置课程在课表中所占大小」；⑤「点击课表切换按钮时，课表会异常向下动一下再恢复」。
+
+### 52.1 叠加块翻转：几何必须跟着「当前那门课」走
+
+`renderGrid()` 里一个叠加组只算一次几何（`group.minOf { periodStart }` / `maxOf { periodEnd }` 的**整组并集**），
+`render(index)` 只换文字与底色。于是 1-3 节 + 1-2 节叠在一起时，翻到 1-2 节那门课，块仍占满 3 节。
+
+改法：**几何变成 render 的一部分**。
+
+- 新增 `fun blockRect(ci: CourseItem): Pair<Int, Int>`（顶边 + 高度）；
+- `lp`（`FrameLayout.LayoutParams`）从「render 之后」提到「render 之前」声明
+  （Kotlin 局部函数不能引用其后声明的局部 `val`）；
+- `render(index)` 末尾按 `blockRect(ci)` 重设 `lp.topMargin` / `lp.height` 并 `block.layoutParams = lp`；
+- 首次渲染仍按 `group[0]` 预摆一次，`blockArea.addView(block, lp)` 用同一个对象。
+
+`blockRect` 两条分支：`ci.byClock`（自定义时间）走分钟插值，否则走 `rowIndexOf(periodStart..periodEnd)`。
+
+### 52.2 自定义时间：按「课上时长 / 课表时长」占位
+
+`CourseItem` 新增 `startMinute` / `endMinute`（默认 `-1`）+ `val byClock`，
+`ManualCourse.toCourseItem()` 在 `hasCustomTime` 时把分钟带下去。
+
+`renderGrid()` 里用可见节次当锚点建一张单调递增的「分钟 → 像素」表：
+
+```kotlin
+minuteAnchors += PeriodClock.startMinute(p) to yOfRow(i)
+minuteAnchors += PeriodClock.endMinute(p)   to (yOfRow(i) + rowH)
+fun yOfMinute(m: Int): Int   // 分段线性插值，出界夹到两端
+```
+
+于是 08:20-09:10 这种课自然落在两节之间，块高等于真实时长占比（休息带也被算进去），
+不需要再换算成「第几节」。
+
+### 52.3 节次 / 上课时间互斥（用户第 4 条）
+
+原来是「节次网格照常显示，时间只是补充说明」（`if (periodOpen || customTime)` 展开网格）—— 语义错了。
+现在这一行有两种形态，`AnimatedContent(targetState = customTime)` 切换：
+
+| 形态 | 标题 | 右侧值 | 点击 | 展开内容 |
+| --- | --- | --- | --- | --- |
+| 节次 | 上课节次 | 第 1 - 2 节 ｜ ⌃ | 展开 / 收起 | 起始节 + 结束节 两组 1~12 胶囊 |
+| 时间 | 上课时间 | 08:00 - 08:45 ｜ › | 弹 `TimeSheetDialog` | 无（`AnimatedVisibility(!customTime && periodOpen)`） |
+
+外层套 `Modifier.animateContentSize()`，行切换走 `fadeIn + slideInVertically{it/4}` / `fadeOut`，
+时长取 `NavMotion.DURATION_MS` 的一半（150ms），保证「换形态」比「进出页面」快半拍。
+
+### 52.4 编辑课程 = 添加课程的二级页（用户第 3 条）
+
+以前点「已添加的课程」里的一行，是**就地换标题**（同一个表单把「添加课程」改成「编辑课程」），看不出层级。
+现在 `ManualCoursePage` 里叠两层，参数全取 `NavMotion`（全 App 唯一参数表）：
+
+```kotlin
+val progress by animateFloatAsState(if (editing != null) 1f else 0f,
+    tween(NavMotion.DURATION_MS, easing = NavMotion.Easing))
+Box { 一级页.graphicsLayer { translationX = -PARENT_TRAVEL * progress * size.width } }
+if (progress > 0f) Box.fillMaxSize().background(Color.Black.copy(alpha = PARENT_DIM * progress))
+if (target != null) Box.graphicsLayer { translationX = (1f - progress) * size.width } { 编辑页 }
+```
+
+配套改动：
+
+- `ManualCourseEditor` 新增 `showSavedList: Boolean = true`，编辑页传 `false`（二级页不该再列一遍「已添加的课程」）；
+- 顶栏左键按语义换图标：一级页 `✕`（关掉整页）、二级页 `‹`（返回上一页）；
+- 新增 `editKey`：换一门课进编辑页时 `key(editKey)` 强制重建，否则 `remember` 会把上一门课的值留住。
+
+### 52.5 胶囊选择器照参考重做（用户第 2 条）
+
+参考图是「标题在左、右侧一行等宽药丸、浅灰实心底、深灰字、无描边」。原来的 `Chip` 是 10dp 圆角，
+看着像标签而不是药丸。改两处：`RoundedCornerShape(10.dp)` → `RoundedCornerShape(50)`；
+「全部 / 单周 / 双周」三个加 `Modifier.weight(1f)` 均分标题右侧剩余宽度。
+星期、节次、周次网格共用同一个 `Chip`，一并变成药丸。
+
+### 52.6 切换视图「向下动一下」（用户第 5 条）
+
+`slideSwap()` 只写 `translationX`，理论上不该有竖向位移。真因是**切换瞬间两层内容高度不同**，
+外面的 `SwipeRefreshLayout` 跟着重新测量并把「下拉刷新」的位移抖了一帧；自绘 View 不吃 Compose 的布局缓存，
+看起来就是整块内容下沉一下再弹回。
+
+修法（`switchView` 内）：
+
+1. 切换窗口内 `swipeRefresh.isEnabled = false`，`MainActivity.TAB_SWAP_MS + 60ms` 后恢复；
+2. 两个滚动容器的 `overScrollMode` 钉成 `OVER_SCROLL_NEVER`；
+3. 切换与收尾各把 `contentGrid / contentWeek.translationY` 显式归零。
+
+### 52.7 验证（模拟器 emulator-5554，1220×2656，第 9 周，深色）
+
+| 项 | 结果 |
+| --- | --- |
+| 胶囊选择器 | ✅ 截图：三档与星期 / 节次 / 周次全部变成等宽药丸，未选中浅灰实心、选中主色 + 白字 |
+| 节次 ↔ 上课时间互斥 | ✅ 打开「自定义时间」后该行变为「上课时间 08:00 - 08:45 ›」且节次网格收起；关掉后恢复「上课节次 第 1 节 ⌃」 |
+| 编辑二级页 | ✅ 点「已添加的课程」里的 TTest → 标题「编辑课程」、左上角变 `‹`、名称回填、**不再显示已添加列表** |
+| 保存 / 删除 | ✅ 两门测试课都能存进列表（「2 门」）、点「删除」逐条移除，删空后卡片整体消失 |
+| 课表恢复 | ✅ 清空测试课后周一红点、周四黄点都消失，课表与改动前一致 |
+| 叠加块翻转高度 | ⚠️ **未验证**：`adb shell "input tap x y; input tap x y"` 的两次间隔仍 >300ms，被 `GestureDetector` 判成两次单击（弹出课程详情）。§49.5 的老问题，需真机手指双击确认 |
+| 切换视图不抖 | ⚠️ **未验证**：需要录屏逐帧比对「点按钮瞬间」的内容位移，本轮时间不够 |
+
+本轮未发版（用户未要求 push），`versionCode` 仍是 72 / 1.1.20。
+
+### 52.8 本轮踩坑
+
+- **`input tap` 点到「标签」而不是「输入框」**：`FormRow` 的输入区在右侧，点 `(210,577)` 命中的是左侧标签空白，
+  `input text` 完全没进去（`必填` 占位一直在）。改成点 `(900,577)` 后一次成功，
+  `dumpsys input_method` 里也能看到 `mInputShown=true`。**验证输入类交互，先确认 `mInputShown` 再输入**。
+- **`input text` 之后不要按 `keyevent 4` 收键盘**：添加页挂了 `OnBackPressedCallback`，第一次返回会被它吃掉，
+  整个覆盖层直接关掉（本轮因此白丢一次「已保存的课程」现场）。要收键盘就点页面空白处。
+- **点空白处可能点中别的可点行**：点 `(620,1420)` 想收键盘，结果命中「上课节次」行把网格展开，
+  后面所有坐标整体下移 600+ px。**收键盘用卡片内的死区，或者干脆先做输入再做点击类步骤**。
+- **截图目测列位置会偏一整列**：据 `s6.png` 目测「周四列中心 x=645」，实际 dump 里周四列是 `[701,901]`，
+  645 落在**周三**，双击打到了别的课。**一律用 dump 的 bounds 算列中心**（本文件 §49.6 已记过同款坑）。
 
 ---
 

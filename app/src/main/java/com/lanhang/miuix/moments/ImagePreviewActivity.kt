@@ -33,6 +33,8 @@ import coil.imageLoader
 import coil.load
 import coil.request.ImageRequest
 import coil.request.SuccessResult
+import coil.size.Size
+import android.graphics.drawable.GradientDrawable
 import com.lanhang.miuix.R
 import com.lanhang.miuix.databinding.ActivityImagePreviewBinding
 import com.lanhang.miuix.ui.miuix.showMiuixConfirm
@@ -61,6 +63,45 @@ class ImagePreviewActivity : AppCompatActivity() {
     private lateinit var binding: ActivityImagePreviewBinding
     private val urls by lazy { intent.getStringArrayListExtra(EXTRA_URLS).orEmpty() }
     private var closing = false
+
+    /** 页码对应的适配器：需要单独通知「这一页改用原图」 */
+    private lateinit var adapter: PreviewAdapter
+
+    /**
+     * 2026-11-01 第五十八轮（用户第 3 条：「在屏幕右下角加一个显示原图的按钮，
+     * 只有按这个按钮时才加载原图」）。
+     *
+     * 默认按屏幕尺寸解码 —— 手机拍的照片通常 4000×3000（12M 像素，ARGB 约 48MB），
+     * 压到 1220×915 只要 4.5MB，解码也快得多；需要看细节时再点这个按钮换原图。
+     * 用代码 addView（和 loadingSpinner 一样）而不是改 xml：根布局本身就是
+     * FrameLayout 子类，加个子 View 不影响它自己的拖拽手势。
+     */
+    private val originalButton: TextView by lazy {
+        val d = resources.displayMetrics.density
+        TextView(this).apply {
+            text = getString(R.string.moments_show_original)
+            textSize = 13f
+            setTextColor(0xFFFFFFFF.toInt())
+            gravity = Gravity.CENTER
+            val padH = (14 * d).toInt()
+            val padV = (8 * d).toInt()
+            setPadding(padH, padV, padH, padV)
+            background = GradientDrawable().apply {
+                cornerRadius = 20 * d
+                setColor(0x66000000)
+                setStroke((1 * d).toInt(), 0x40FFFFFF)
+            }
+            layoutParams = FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+            ).apply {
+                gravity = Gravity.BOTTOM or Gravity.END
+                rightMargin = (20 * d).toInt()
+                bottomMargin = (44 * d).toInt()
+            }
+            setOnClickListener { showOriginalForCurrentPage() }
+        }
+    }
 
     /** 点开这张图时它在工作圈里的位置（窗口坐标）；null = 没有来源信息（如发表页预览） */
     private val sourceRect: RectF? by lazy {
@@ -93,7 +134,12 @@ class ImagePreviewActivity : AppCompatActivity() {
             }
         }
 
-        binding.pager.adapter = PreviewAdapter(urls, onLoading = { busy -> showImageLoading(busy) }) { closeSmoothly() }
+        adapter = PreviewAdapter(urls, onLoading = { busy -> showImageLoading(busy) }) { closeSmoothly() }
+        // 压缩解码的目标框：一个屏幕那么大就够看了，再大只是白占内存
+        adapter.screenW = resources.displayMetrics.widthPixels
+        adapter.screenH = resources.displayMetrics.heightPixels
+        binding.pager.adapter = adapter
+        binding.root.addView(originalButton)
         binding.pager.setCurrentItem(
             intent.getIntExtra(EXTRA_INDEX, 0).coerceIn(0, urls.size - 1), false
         )
@@ -178,6 +224,29 @@ class ImagePreviewActivity : AppCompatActivity() {
 
     private fun updateIndex(position: Int) {
         binding.tvIndex.text = if (urls.size > 1) "${position + 1} / ${urls.size}" else ""
+        // 这页已经换成原图了，按钮就没用了；翻到别的页再显出来
+        if (::adapter.isInitialized) {
+            originalButton.visibility =
+                if (position in adapter.originalPages) android.view.View.GONE
+                else android.view.View.VISIBLE
+        }
+    }
+
+    /**
+     * 把当前页从「压缩图」换成「原图」。
+     *
+     * 换完立刻隐藏按钮并显示转圈：重新解码原图要明显久一些，不给反馈会以为没点上。
+     * 通过 notifyItemChanged 让 ViewPager2 重新走一遍 onBindViewHolder，
+     * 那边看到这一页在 originalPages 里就改用 Size.ORIGINAL。
+     */
+    private fun showOriginalForCurrentPage() {
+        if (!::adapter.isInitialized) return
+        val pos = binding.pager.currentItem
+        if (pos !in adapter.originalPages) {
+            adapter.originalPages.add(pos)
+            adapter.notifyItemChanged(pos)
+        }
+        originalButton.visibility = android.view.View.GONE
     }
 
     /**
@@ -482,6 +551,13 @@ class ImagePreviewActivity : AppCompatActivity() {
         private val onClose: () -> Unit
     ) : RecyclerView.Adapter<PreviewAdapter.VH>() {
 
+        /** 这些页用户已经按过「显示原图」，重新绑定时要用全尺寸解码 */
+        val originalPages = mutableSetOf<Int>()
+
+        /** 压缩解码的目标框（一个屏幕）；0 表示还没拿到，退回 Coil 默认 */
+        var screenW = 0
+        var screenH = 0
+
         override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): VH {
             val iv = ZoomImageView(parent.context).apply {
                 layoutParams = ViewGroup.LayoutParams(
@@ -504,6 +580,14 @@ class ImagePreviewActivity : AppCompatActivity() {
             onLoading(true)
             holder.iv.load(url) {
                 crossfade(150)
+                // 第五十八轮第 3 条：默认压缩到屏幕大小；只有点过「显示原图」的页才解全尺寸。
+                // Coil 的 size(w, h) 会保持宽高比缩放到不超过这个框，
+                // 所以 4000×3000 的照片在这里解成 1220×915，内存省十倍左右。
+                if (position in originalPages) {
+                    size(Size.ORIGINAL)
+                } else if (screenW > 0 && screenH > 0) {
+                    size(screenW, screenH)
+                }
                 listener(
                     onSuccess = { _, _ -> onLoading(false) },
                     onError = { _, _ -> onLoading(false) },

@@ -53,6 +53,19 @@ class ScheduleFragment : Fragment() {
     private var maxWeek = 20
     private var startWeek = 1
     private var actualCurrentWeek = 1
+
+    /**
+     * 学期第 1 周的周一（第五十六轮）。
+     *
+     * 日期表头原本每帧现算 `LocalDate.now().with(MONDAY) + (currentWeek - actualCurrentWeek)`，
+     * 而 `actualCurrentWeek` 会在下拉刷新时被服务器返回的「本学期第几周」改写 ——
+     * 于是刷新一下，`currentWeek` 没变、日期表头却整体跳了一周（用户录屏里
+     * 「第 14 周」下面挂着第 15 周的 12/7、课程也跟着日期重排，就是这一条）。
+     *
+     * 现在只在**第一次**拿到 weekInfo 时按当时的本周一往回推一次并固化，
+     * 之后一律 `termMonday + (周次 - 1)`：与刷新时机、跨天、跨周都无关。
+     */
+    private var termMonday: java.time.LocalDate? = null
     private var scheduleData: ScheduleData? = null
     /** 按周缓存的服务端数据（官方 GetSchedule&week=N 每周一份） */
     private val weekData = HashMap<Int, ScheduleData>()
@@ -140,6 +153,19 @@ class ScheduleFragment : Fragment() {
         val weekScroll = view.findViewById<androidx.core.widget.NestedScrollView>(R.id.weekScroll)
         installWeekSwipe(view.findViewById(R.id.contentWeek))
         gridScroll = view.findViewById(R.id.gridScroll)
+        // 第六十三轮第 1 条（用户：「从工作圈页下滑一段位置后，切换回课表页，课表页依旧会被异常截断」）：
+        // 课表顶栏会随滚动收起/展开（ShellScroll → rememberBarCollapse），容器高度因此是变的。
+        // 切回课表时 onTabSelected 里那次 root.post 贴得太早 —— 拿到的是**上一页滚动状态**下的旧高度，
+        // 与 lastLayoutHeight 相等就跳过了重画；随后布局才真正变矮，网格仍按旧行高画，底部就被裁掉。
+        // 这里直接盯住 gridScroll 自身的布局变化：高度真的变了就重画一次，与切 Tab 的时序无关。
+        // 用 postDelayed 防抖 —— 顶栏收起/展开是 300ms 的连续动画，中途每一帧都会改高度，
+        // 逐帧 renderGrid 会卡；等它停下来再判一次就够了。
+        gridScroll.addOnLayoutChangeListener { _, _, top, _, bottom, _, oldTop, _, oldBottom ->
+            if (bottom - top != oldBottom - oldTop) {
+                gridScroll.removeCallbacks(gridRelayoutTask)
+                gridScroll.postDelayed(gridRelayoutTask, 160L)
+            }
+        }
         installWeekSwipe(view.findViewById(R.id.contentGrid))
 
         // 2026-10-25 用户要求：课表也要像工作圈那样，往下滚时顶栏跟着收起/展开。
@@ -242,8 +268,42 @@ class ScheduleFragment : Fragment() {
      * 添加页打开时接管返回键。否则按返回会直接退到桌面 ——
      * 覆盖层是加在同一个 Fragment 上的普通 View，系统返回栈根本不知道它存在。
      */
+    /**
+     * 上一次绘制网格时 Fragment 根视图的高度（2026-10-31 用户第 5 条）。
+     * 详见 onTabSelected 里的说明：底栏隐藏/恢复会让容器高度跳变，网格必须跟着重算。
+     */
+    private var lastLayoutHeight = 0
+
+    /**
+     * 第六十三轮第 1 条：[gridScroll] 的高度变了之后（防抖 160ms）重画一次网格。
+     *
+     * 为什么需要它：课表顶栏跟着滚动收起/展开，`fragmentContainer` 的高度随之变化。
+     * 切 Tab 回到课表时，`onTabSelected()` 里那次 `root.post {}` 常常贴着上一页的旧布局执行，
+     * 拿到的旧高度与 [lastLayoutHeight] 相等 → 跳过重画；紧接着布局才真正变矮，
+     * 于是整张网格比可视区高，最后一行（第 10 节）被 ScrollView 静默裁掉。
+     * 盯住 [gridScroll] 的实际布局变化，就与「谁在什么时候切 Tab」彻底解耦。
+     */
+    private val gridRelayoutTask = Runnable {
+        if (!isAdded || view == null || !::gridScroll.isInitialized) return@Runnable
+        val h = gridScroll.height
+        if (h <= 0 || !showingGrid) return@Runnable
+        // 只在「可用高度变小」时才重画。
+        //
+        // 变大意味着顶栏正在收起（用户往下滚课表），或者正带着上一页的收起态切回来 ——
+        // 这是个过渡中的中间值，不是最终布局高度。按它重排，整张网格会先被拉长、
+        // 等顶栏展开动画走完再弹回原样（用户反馈：「会从拉伸状态弹一下再恢复正常」）。
+        // 变小则必须重画，否则网格比可用区高，最后一行会被 ScrollView 静默裁掉。
+        if (lastLayoutHeight <= 0 || h < lastLayoutHeight) {
+            lastLayoutHeight = h
+            renderGrid()
+        }
+    }
+
     private val manualCourseBack = object : androidx.activity.OnBackPressedCallback(false) {
         override fun handleOnBackPressed() {
+            // 用户第 4 条（2026-10-31）：「编辑课程应视为添加课程的二级页面，返回时不应回到课表主页
+            // 而应回到添加课程页」。覆盖层内部的层级只有 Compose 知道，先问它一句。
+            if (com.lanhang.miuix.schedule.ManualCourseNav.onBack?.invoke() == true) return
             hideManualCourseEditor()
         }
     }
@@ -784,6 +844,11 @@ class ScheduleFragment : Fragment() {
         data.weekInfo?.let { info ->
             info.currentWeek?.toIntOrNull()?.let {
                 actualCurrentWeek = it
+                if (termMonday == null) {
+                    // 只确定一次学期基准日：本周一往回推 (当前周 - 1) 周
+                    termMonday = LocalDate.now().with(DayOfWeek.MONDAY)
+                        .minusWeeks((it - 1).toLong().coerceAtLeast(0L))
+                }
                 if (!keepBrowseWeek) currentWeek = it
             }
             info.endWeek?.toIntOrNull()?.let { maxWeek = it }
@@ -970,12 +1035,33 @@ class ScheduleFragment : Fragment() {
     private fun switchView(grid: Boolean) {
         val layer = activeContentLayer()
         val snapshot = captureSnapshot(layer)
+        // 2026-10-30 用户第 5 条：「点击课表切换按钮时，课表会异常向下动一下再恢复」。
+        // 真因是切换瞬间两层内容高度不同，外面的 SwipeRefreshLayout 跟着重新测量，
+        // 顺手把「下拉刷新」的下拉位移抖了一下（overscroll 一帧）；自绘 View 不吃 Compose 的
+        // 布局缓存，于是整块内容看起来往下沉了一下又弹回来。
+        // 修法：切换窗口内先关掉下拉刷新与 overscroll，动画结束再恢复，并显式把竖向位移归零。
+        swipeRefresh.isEnabled = false
+        (gridScroll as? View)?.overScrollMode = View.OVER_SCROLL_NEVER
+        (view?.findViewById<View>(R.id.weekScroll))?.overScrollMode = View.OVER_SCROLL_NEVER
         showingGrid = grid
         headerState.showingGrid = grid
         contentWeek.visibility = if (grid) View.GONE else View.VISIBLE
         contentGrid.visibility = if (grid) View.VISIBLE else View.GONE
-        if (grid) renderGrid() else renderWeekView()
+        if (grid) {
+            contentGrid.translationY = 0f
+            renderGrid()
+        } else {
+            contentWeek.translationY = 0f
+            renderWeekView()
+        }
         slideSwap(activeContentLayer(), snapshot, if (grid) 1 else -1)
+        layer.postDelayed({
+            if (isAdded) {
+                swipeRefresh.isEnabled = true
+                contentGrid.translationY = 0f
+                contentWeek.translationY = 0f
+            }
+        }, MainActivity.TAB_SWAP_MS.toLong() + 60L)
     }
 
     /**
@@ -1056,6 +1142,36 @@ class ScheduleFragment : Fragment() {
         // 都把整张网格 removeAllViews 再重建 —— 中间那一帧是空的，深浅色都能看见「闪一下」。
         // 现在只在内容层真的空了才重画；有内容就原样复用，只做一次自检。
         if (contentFilled() == 0) renderAll()
+        // 用户第 5 条（2026-10-31）：「从课表页点进我的页，再随便点进一个二级页面退出后再进入课表页，
+        // 课表会被异常拉伸到屏幕下侧，无法显示完全」。
+        // 根因：二级页打开期间底栏隐藏 → fragmentContainer 变高，网格按那一刻的高度算出的行高偏大；
+        // 底栏恢复后容器变矮，而这里以前只在「内容为空」时才重画，于是整张网格比可用空间还高，
+        // 底部被裁掉。补一条：容器高度和上次绘制时不一致，就重画一次网格。
+        //
+        // 2026-11-01 第五十八轮第 2 条（用户：「如果在课表页点击工作圈后再返回，课表会伸长到屏幕之外」）：
+        // 这条自检以前**只挂在 `contentFilled() != 0` 那个 else 分支里**。
+        // 只要上一次离开本页时内容层是空的（renderAll() 那条路），lastLayoutHeight 就一次都没更新，
+        // 于是回来时「高度 != lastLayoutHeight」要么恒假、要么拿到的是很早以前的旧值，
+        // 网格就继续用错误的高度画 —— 表现正是「课表伸长到屏幕之外」。
+        // 现在两条路都走这个自检；renderGrid() 结尾也会回写 lastLayoutHeight（见那里），
+        // 所以刚画完不会被自己再判一次「高度变了」而反复重画。
+        val root = view
+        root?.post {
+            val h = if (::gridScroll.isInitialized && gridScroll.height > 0) gridScroll.height else root.height
+            // 第六十三轮补充（用户：「从工作圈下部直接切换到课表时会从拉伸状态弹一下再恢复正常」）：
+            // 切回来的这一帧，顶栏还在从「上一页的收起态」往课表的展开态过渡，
+            // gridScroll 此刻拿到的是**偏大的中间值**。这一版以前只要 h != lastLayoutHeight 就重画，
+            // 于是先按这个偏大值把网格画一遍 —— 用户看到的是「先被拉长」，等 300ms 顶栏动画走完、
+            // 防抖任务再纠正一次，就成了「弹一下」。
+            // 现在只在「可用高度变小」时立即重画；变大一律不动，交给布局稳定后的防抖任务判 ——
+            // 那一趟里高度已回到展开态，与 lastLayoutHeight 相等，自然也不会再画。
+            // 净效果：切回课表时网格一直是上次展开态的那份正确布局，全程不重排。
+            if (h > 0 && (lastLayoutHeight <= 0 || h < lastLayoutHeight)) {
+                lastLayoutHeight = h
+                renderGrid()
+            }
+            ensureContentNotEmpty()
+        }
         view?.post { ensureContentNotEmpty() }
     }
 
@@ -1160,8 +1276,9 @@ class ScheduleFragment : Fragment() {
         val today = LocalDate.now()
         val dayNames = resources.getStringArray(R.array.schedule_day_names)
         val monday = today.with(DayOfWeek.MONDAY)
-        val offset = week - actualCurrentWeek
-        val weekMonday = monday.plusWeeks(offset.toLong())
+        // 第五十六轮：与 renderGrid 同一口径，避免刷新后日期跳周
+        val weekMonday = termMonday?.plusWeeks((week - 1).toLong())
+            ?: monday.plusWeeks((week - actualCurrentWeek).toLong())
 
         // 相邻的同名同教室连续节次（如高等数学B1 连上 1-2 节）算**一门课**：
         // 统计与预览都必须用合并后的列表，否则周一 3 门课会显示成「6 门」
@@ -1306,6 +1423,21 @@ class ScheduleFragment : Fragment() {
         } else {
             getString(R.string.course_period_range, ci.periodStart, ci.periodEnd)
         }
+        // 2026-11-01 第五十七轮（用户第 2 条）：「点击用户自己手动添加的课程时，
+        // 对话框应多一个编辑按钮，点击后进入编辑课程页面，注意动画的连贯性」。
+        // 教务课不能改（下次同步就被覆盖），所以只有 manualId 非空时才出「编辑」。
+        // 按钮顺序：编辑在前（次要样式）、确定在后（主色）—— 与对话框的按钮样式规则一致；
+        // 点下去先 dismiss 再开覆盖层，靠 showManualCourseEditor 从右侧滑入接上。
+        val actions = buildList {
+            val mid = ci.manualId
+            if (mid != null) {
+                add(getString(R.string.common_edit) to {
+                    com.lanhang.miuix.schedule.ManualCourseNav.pendingEditId = mid
+                    showManualCourseEditor()
+                })
+            }
+            add(getString(R.string.common_ok) to {})
+        }
         showMiuixDialog(
             requireContext(),
             MiuixDialogSpec(
@@ -1316,7 +1448,7 @@ class ScheduleFragment : Fragment() {
                     getString(R.string.course_label_week) to week,
                     getString(R.string.course_label_period) to period,
                 ),
-                actions = listOf(getString(R.string.common_ok) to {}),
+                actions = actions,
             ),
         )
     }
@@ -1343,7 +1475,9 @@ class ScheduleFragment : Fragment() {
         val today = LocalDate.now()
         val dayNames = resources.getStringArray(R.array.schedule_day_names)
         val monday = today.with(DayOfWeek.MONDAY)
-        val weekMonday = monday.plusWeeks((currentWeek - actualCurrentWeek).toLong())
+        // 第五十六轮：优先用固化的学期基准日，刷新不会再把日期表头整体挪一周
+        val weekMonday = termMonday?.plusWeeks((currentWeek - 1).toLong())
+            ?: monday.plusWeeks((currentWeek - actualCurrentWeek).toLong())
 
         // 每天：收集并合并连续节次的同一课程（跨节大块）
         val dayCourses = Array(7) { d -> mergeCourses(getCoursesForDay(data, d, currentWeek)) }
@@ -1406,17 +1540,25 @@ class ScheduleFragment : Fragment() {
         val breakPeriods = listOf(4, 8)
         // 只有「上方有可见行、下方也有可见行」的休息带才画，否则就是一个孤立胶囊
         val visibleBreaks = breakPeriods.filter { k -> rowOrder.any { it <= k } && rowOrder.any { it > k } }
-        val gapH = dp(3)
+        val gapH = dp(5)    // 第五十九轮：对齐参考截图的块间留白（原来 3dp 太挤）
         val availW = contentGrid.let { it.width - it.paddingLeft - it.paddingRight }
             .takeIf { it > 0 }
             ?: (resources.displayMetrics.widthPixels - dp(2 * 2 + 2 * 4))
         val bandH = dp(18)
         val headerRowH = dp(46)
         val panelPad = dp(9)    // 面板上下内边距（3dp×2）+ 表头下方 2px 的真实预留
-        val availH = gridScroll.height
+        val rawAvailH = gridScroll.height
+        // 2026-11-03 第五十九轮（用户：「现在课表的底端没有和 tab 对齐」）：
+        // 第 58 轮按「底栏是浮层」的假设留了 66dp —— 该假设不成立。
+        // activity_main.xml 里 fragmentContainer 是真的
+        // app:layout_constraintBottom_toTopOf="@id/shellBottomNav"，
+        // dump 也证实 fragmentContainer 底边 2397 与 shellBottomNav 顶边 2397 严丝合缝。
+        // 那 66dp 属于重复扣除：gridContent 底边只到 2176，比 gridScroll 底边 2382
+        // 少了 206px 空档，看着就是「课表没铺到底」。现在按真实测量高度铺满。
+        val availH = rawAvailH.coerceAtLeast(dp(200))
         // 只在「完全没量到高度」（首帧）时补一次重绘；量到高度后无论多小都不再重排，
         // 否则可视区高度真的偏小时会自己触发自己（死循环）。
-        if (availH == 0 && !gridRelayoutPending) {
+        if (rawAvailH == 0 && !gridRelayoutPending) {
             gridRelayoutPending = true
             gridScroll.post {
                 gridRelayoutPending = false
@@ -1428,7 +1570,13 @@ class ScheduleFragment : Fragment() {
         // 行高上限随屏幕放大（平板可用高度更多，卡在 96dp 会留一大片空白）。
         // 160dp 只是极端保护（竖着看 4:3 平板别把每行撑成一块广场），正常平板上
         // usable/11 就已经小于它，所以课表会真正铺满到 tab 栏。
-        val rowH = (usable / rowCount).coerceIn(dp(32), (dp(160) * textScale).toInt())
+        // 2026-11-01 第五十七轮（用户第 5 条：「如果设置的课程时间超出课表界限，
+        // 课表应重新计算合适的大小并自适应显示在一个屏幕内」）：
+        // 以前行高有 32dp 下限，一旦课程排到 11/12 节（或自定义时间跨到 22:30），
+        // 12 行 × 32dp + 间隙 + 两条休息带就顶出一屏，网格被迫变成可滚动。
+        // 现在下限降到 12dp：极端情况下整体缩小也要保证「整周一眼看完」，
+        // 字号那套逐档收敛（节次 17→11sp、时间 11→7sp）会跟着一起降，不会糊成一团。
+        val rowH = (usable / rowCount).coerceIn(dp(12), (dp(160) * textScale).toInt())
 
         // ===== 宽度自适应（2026-10-27 第二十轮用户反馈：窄屏上「最左侧的时间被挡住」）=====
         // 以前的写法是「时间列固定 44dp + 列宽夹到至少 30dp」，窄屏里两者一起把总宽顶出容器，
@@ -1447,14 +1595,42 @@ class ScheduleFragment : Fragment() {
             val fm = measure.fontMetrics
             return fm.descent - fm.ascent
         }
+        // 第五十九轮：参考截图里课块之间有明显留白，列间隙整体加宽一档
         val gapW = when {
-            availW < dp(300) -> dp(2)
-            availW < dp(340) -> dp(3)
-            else -> dp(4)
+            availW < dp(300) -> dp(3)
+            availW < dp(340) -> dp(4)
+            else -> dp(6)
         }
-        // 时间格最宽的那一行是「08:45」；窄屏字号会降到 7sp，所以按 8sp 量出来就够用
-        val timeW = (textPx("08:45", ts(8f)) + dp(4)).toInt()
-            .coerceIn(dp(26), dp(52))
+        // 一格要塞「节次号 + 起 + 止」三行字。矮屏 rowH 只有 32dp，三行放不下就会被裁掉
+        // （用户反馈的「最左侧的时间被挡住」就是这个）。这里按实际字高挑一档能放下的组合：
+        // 三行 → 「节次号 + 起始时间」两行 → 只有节次号，永远不会裁字。
+        // 2026-10-31 第五十六轮：候选档从「13/12/11」扩到最大 17sp，时间列最大 11sp。
+        // 下面是「从大往小试、第一个放得下的就用」，所以行高越大字号自动越大；
+        // 矮屏仍会一路降到 11sp / 7sp —— 窄屏行为不变，大屏不再一律小字。
+        val numSizeCandidates = floatArrayOf(17f, 16f, 15f, 14f, 13f, 12f, 11f).map { ts(it) }.toFloatArray()
+        val timeSizeCandidates = floatArrayOf(11f, 10.5f, 10f, 9f, 8f, 7.5f, 7f).map { ts(it) }.toFloatArray()
+        var numSize = numSizeCandidates.last()
+        var timeSize = timeSizeCandidates.last()
+        var timeLines = 0
+        loopPick@ for (ls in intArrayOf(2, 1, 0)) {
+            for (ns in numSizeCandidates) {
+                for (cand in timeSizeCandidates) {
+                    val need = fontH(ns) + (if (ls > 0) ls * fontH(cand) else 0f) + dp(2)
+                    if (need <= rowH) {
+                        numSize = ns
+                        timeSize = cand
+                        timeLines = ls
+                        break@loopPick
+                    }
+                }
+            }
+        }
+        // 2026-11-03 第五十九轮补（用户：「08:45 中的 5 显示不全」）：
+        // 以前 timeW 固定按 8sp 量，可行高够大时实际选中的时间字号会到 11sp，
+        // 于是「08:45」比格子宽出三分之一，被 setSingleLine 从右边直接裁掉。
+        // 现在先定字号档位、再按**真实字号**量时间列宽度，最右边那个数字不会再缺角。
+        val timeW = (textPx("08:45", timeSize) + dp(6)).toInt()
+            .coerceIn(dp(26), dp(64))
         val colW = ((availW - timeW - gapW * colCount - dp(1)) / colCount.toFloat()).toInt()
             .coerceAtLeast(dp(20))
         gridAxisW = timeW + gapW // 切周时要把这一列钉住
@@ -1465,6 +1641,42 @@ class ScheduleFragment : Fragment() {
         // 可见行序号 i 上方叠了几个休息带
         fun bandsAbove(i: Int): Int = visibleBreaks.count { k -> k < rowOrder[i] }
         fun yOfRow(i: Int): Int = i * (rowH + gapH) + bandsAbove(i) * bandH
+
+        // ===== 分钟轴 -> 像素（2026-10-30 用户第 4 条）=====
+        // 「自定义时间」的课不是整节对齐的：08:20-09:10 这种要落在两节之间。
+        // 这里用每个可见节次的「起 -> 顶边 / 止 -> 底边」当锚点做分段线性插值，
+        // 于是块的高度天然等于「课上时长 / 课表时长」的比例，休息带也一并算进去。
+        val minuteAnchors = ArrayList<Pair<Int, Int>>(rowOrder.size * 2)
+        for (i2 in rowOrder.indices) {
+            val p2 = rowOrder[i2]
+            minuteAnchors.add(PeriodClock.startMinute(p2) to yOfRow(i2))
+            minuteAnchors.add(PeriodClock.endMinute(p2) to (yOfRow(i2) + rowH))
+        }
+        fun yOfMinute(m: Int): Int {
+            if (minuteAnchors.isEmpty()) return 0
+            if (m <= minuteAnchors.first().first) return minuteAnchors.first().second
+            for (k in 0 until minuteAnchors.size - 1) {
+                val (m0, y0) = minuteAnchors[k]
+                val (m1, y1) = minuteAnchors[k + 1]
+                if (m in m0..m1) {
+                    return if (m1 <= m0) y0
+                    else (y0 + (m - m0).toFloat() / (m1 - m0) * (y1 - y0)).toInt()
+                }
+            }
+            return minuteAnchors.last().second
+        }
+
+        /** 一个课块的纵向位置与高度：开了自定义时间按分钟比例，否则按节次对齐 */
+        fun blockRect(ci: CourseItem): Pair<Int, Int> {
+            if (ci.byClock) {
+                val top = yOfMinute(ci.startMinute)
+                val bottom = yOfMinute(ci.endMinute).coerceAtLeast(top + dp(20))
+                return top to (bottom - top)
+            }
+            val sIdx = rowIndexOf(ci.periodStart).coerceAtLeast(0)
+            val eIdx = rowIndexOf(ci.periodEnd).let { if (it >= 0) it else sIdx }
+            return yOfRow(sIdx) to ((eIdx - sIdx + 1) * (rowH + gapH) - gapH)
+        }
 
         // ===== 表头行：左占位 + 7 天头（小爱风格：无底色，星期+日期） =====
         val headerRow = LinearLayout(ctx).apply {
@@ -1490,9 +1702,12 @@ class ScheduleFragment : Fragment() {
                     background = s.rounded(density, 10f, s.accentFill)
                 }
             }
+            // 表头字号同样跟着列宽走（第五十六轮）：窄列 11sp 起步，宽列自动放大
+            val headSp = (colW.toFloat() / scaledDensity / 3.0f).coerceIn(ts(11f), ts(16f))
+            val dateSp = (headSp * 0.7f).coerceAtLeast(ts(8f))
             head.addView(TextView(ctx).apply {
                 text = dayNames[d]
-                textSize = ts(13f)
+                textSize = headSp
                 setTypeface(null, android.graphics.Typeface.BOLD)
                 setTextColor(if (isToday) s.onAccentFill else s.onBackground)
                 gravity = Gravity.CENTER
@@ -1502,7 +1717,7 @@ class ScheduleFragment : Fragment() {
             })
             head.addView(TextView(ctx).apply {
                 text = String.format("%d/%d", date.monthValue, date.dayOfMonth)
-                textSize = ts(9f)
+                textSize = dateSp
                 setTextColor(if (isToday) s.onAccentFill else s.onBackgroundVariant)
                 gravity = Gravity.CENTER
                 layoutParams = LinearLayout.LayoutParams(
@@ -1527,33 +1742,16 @@ class ScheduleFragment : Fragment() {
             orientation = LinearLayout.VERTICAL
             layoutParams = LinearLayout.LayoutParams(timeW + gapW, LinearLayout.LayoutParams.WRAP_CONTENT)
         }
-        // 一格要塞「节次号 + 起 + 止」三行字。矮屏 rowH 只有 32dp，三行放不下就会被裁掉
-        // （用户反馈的「最左侧的时间被挡住」就是这个）。这里按实际字高挑一档能放下的组合：
-        // 三行 → 「节次号 + 起始时间」两行 → 只有节次号，永远不会裁字。
-        // 候选档整体乘 textScale：手机上等于原值，平板上上限抬到 15sp / 9.2sp
-        val numSizeCandidates = floatArrayOf(13f, 12f, 11f).map { ts(it) }.toFloatArray()
-        val timeSizeCandidates = floatArrayOf(8f, 7.5f, 7f).map { ts(it) }.toFloatArray()
-        var numSize = numSizeCandidates.last()
-        var timeSize = timeSizeCandidates.last()
-        var timeLines = 0
-        loop@ for (ls in intArrayOf(2, 1, 0)) {
-            for (ns in numSizeCandidates) {
-                for (ts in timeSizeCandidates) {
-                    val need = fontH(ns) + (if (ls > 0) ls * fontH(ts) else 0f) + dp(2)
-                    if (need <= rowH) {
-                        numSize = ns
-                        timeSize = ts
-                        timeLines = ls
-                        break@loop
-                    }
-                }
-            }
-        }
+        // （字号档位的挑选已上移到 timeW 计算之前：时间列宽度要按真实字号来量）
         for (p in rowOrder) {
             val cell = LinearLayout(ctx).apply {
                 orientation = LinearLayout.VERTICAL
                 gravity = Gravity.CENTER
-                layoutParams = LinearLayout.LayoutParams(timeW, rowH).apply { bottomMargin = gapH }
+                layoutParams = LinearLayout.LayoutParams(timeW, rowH).apply {
+                    // 第六十二轮：最后一行不再带尾部间隙 —— 块区高度按「行数 × 行高」
+                    // 收尾，这多出来的一个 gapH 会把第 10 节顶出可视区被 ScrollView 裁掉。
+                    if (p != rowOrder.last()) bottomMargin = gapH
+                }
             }
             cell.addView(TextView(ctx).apply {
                 text = "$p"
@@ -1593,7 +1791,9 @@ class ScheduleFragment : Fragment() {
         body.addView(timeCol)
 
         // 课程块区（FrameLayout 绝对定位）
-        val gridH = yOfRow(rowCount - 1) + rowH + gapH
+        // 第六十二轮：原来这里多加了一个 gapH（最后一行下方的空隙），
+            // 导致整块内容比可用高度高出一个间隙，最后一行被裁。
+            val gridH = yOfRow(rowCount - 1) + rowH
         val blockArea = FrameLayout(ctx).apply {
             layoutParams = LinearLayout.LayoutParams(colCount * colW + (colCount - 1) * gapW, gridH)
         }
@@ -1644,29 +1844,42 @@ class ScheduleFragment : Fragment() {
         for (d0 in 0 until 7) {
             val dayBlocks = dayCourses[d0]
             for (group in overlapGroups(dayBlocks)) {
-                val pStart = group.minOf { dayBlocks[it].periodStart }
-                val pEnd = group.maxOf { dayBlocks[it].periodEnd }
                 // 翻转记忆：同一周同一组刷新后仍停在用户翻到的那一门上
                 val groupKey = "$d0|" + group.joinToString("/") {
                     "${dayBlocks[it].course.name}@${dayBlocks[it].periodStart}"
                 }
                 var flipIdx = (overlapFlip[groupKey] ?: 0).coerceIn(0, group.size - 1)
-                val startIdx = rowIndexOf(pStart).coerceAtLeast(0)
-                val endIdx = rowIndexOf(pEnd).let { if (it >= 0) it else startIdx }
-                val spanRows = endIdx - startIdx + 1
                 // 参考截图的观感：整块浅色胶囊 + 同色系深字，块内居中，不加色条
                 // 窄屏列宽只有 20~30dp，字号再按老值就会把课名挤成竖排；这里一并按列宽降档
-                val nameSize = when {
-                    colW < dp(30) -> ts(7.5f)
-                    colW < dp(40) || rowH < dp(40) -> ts(8.5f)
-                    else -> ts(9.5f)
+                // 2026-10-31 第五十六轮（用户：「课表中文字要根据屏幕分辨率自动变大或变小，
+                // 不应该固定在一个大小」）：以前只有 7.5 / 8.5 / 9.5 三档死值，
+                // 格子再宽再高也停在 9.5sp，高分屏上课名小到几乎看不清。
+                // 现在按「格子实际像素尺寸」连续换算：
+                //   宽度按「一行排 4.2 个字」、高度按「块内要塞 3.2 行」
+                //   （课名最多 2 行 + 房间号 1 行），取较小值后夹在 7.5~19sp。
+                val nameSize = run {
+                    val availWSp = (colW - dp(6)).toFloat() / scaledDensity
+                    val availHSp = (rowH - dp(10)).toFloat() / scaledDensity
+                    // 2026-11-01 第五十八轮（用户第 1 条：「没有铺满整个课程格子」）：
+                    // 旧值 4.2 是「一行排 4.2 个字」，等于给四个汉字留了 5% 余量 ——
+                    // 文字只占格子宽度九成半，左右各空一条缝，看着就是没铺满。
+                    // 改成 4.0：四个汉字正好等于可用宽度，横向顶到格子两侧。
+                    //
+                    // 2026-11-01 第五十八轮补（用户：「你只是将字平铺了，但是字号并没有变大，
+                    // 要将平铺开的文字一并放大」）：只改行距确实只是把行拉开，字号一点没动。
+                    // 这里把基准抬上去 —— 宽度按「一行排 3.5 个字」（4 个字仍然放得下，
+                    // 但不再给那么多富余）、高度按「块内 2.9 行」，上下限从 7.5~19 放到 8~24，
+                    // 高分屏上大格子能真正吃到 24sp。
+                    minOf(availWSp / 3.5f, availHSp / 2.9f).coerceIn(ts(8f), ts(24f))
                 }
                 // 外层 FrameLayout：底色胶囊 + 内容 + 右下角色点
                 val block = FrameLayout(ctx)
                 val blockInner = LinearLayout(ctx).apply {
                     orientation = LinearLayout.VERTICAL
-                    gravity = Gravity.CENTER
-                    setPadding(dp(2), dp(3), dp(2), dp(3))
+                    // 2026-11-03 第五十九轮补（用户：「不要左对齐，居中对齐」）：
+                    // 课名、地点、教师三行一律水平居中，整块内容在块内水平居中。
+                    gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
+                    setPadding(dp(5), dp(4), dp(5), dp(4))
                 }
                 block.addView(blockInner, FrameLayout.LayoutParams(
                     FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT
@@ -1680,48 +1893,179 @@ class ScheduleFragment : Fragment() {
                         bottomMargin = dp(4)
                     })
                 }
+                // 2026-11-01 第五十七轮（用户第 1 条：「课程文字设为四字一行，超过自动换行，
+                // 如果有课程的名字过于长导致无法正确显示（比如超出课程边界），则显示省略」）：
+                // 以前是 MATCH_PARENT 铺满整格，字数多了会把关键字挤到很窄的一行里、
+                // 或者干脆撑出块边界。现在把名字框收成「正好 4 个字」宽并居中 ——
+                // 4 字以内一行放下，超过的自动折行；行数由块高决定，再放不下就省略。
                 val nameView = TextView(ctx).apply {
                     textSize = nameSize
                     setTypeface(null, android.graphics.Typeface.BOLD)
+                    // 第五十九轮补（用户：「居中对齐」）：课名水平居中
                     gravity = Gravity.CENTER
                     includeFontPadding = false
+                    ellipsize = android.text.TextUtils.TruncateAt.END
                     maxLines = if (rowH < dp(40)) 4 else 8
+                    // 高度改成 wrap_content：以前是 weight=1f 撑满剩余空间，
+                    // 配合居中的 gravity 就把文字压在块中央了。
                     layoutParams = LinearLayout.LayoutParams(
-                        LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f
+                        (textPx("国国国国", nameSize).toInt() + dp(3)).coerceAtMost(colW - dp(2)),
+                        LinearLayout.LayoutParams.WRAP_CONTENT,
                     )
                 }
                 blockInner.addView(nameView)
+                // 2026-11-03 第五十九轮补（用户：「置底居中展示教室名与教师名」）：
+                // 课名贴顶、地点+教师贴底，中间放一个 weight=1f 的空占位把两边顶开。
+                // 块高不够的极端情况由 render() 里的字号收敛兜住（先降字号再谈布局），
+                // 所以这里不会再出现「教师行被顶出块底」。
+                blockInner.addView(View(ctx), LinearLayout.LayoutParams(1, 0, 1f))
+                // 地点行：直接显示教室名（用户：「不要用at」）
                 val roomView = TextView(ctx).apply {
                     textSize = nameSize - ts(1f)
                     alpha = 0.8f
                     gravity = Gravity.CENTER
                     includeFontPadding = false
+                    ellipsize = android.text.TextUtils.TruncateAt.END
                     maxLines = 2
                     layoutParams = LinearLayout.LayoutParams(
                         LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
                     )
                 }
                 blockInner.addView(roomView)
+                // 2026-11-03 第五十九轮：参考截图的块内是「课名 / @地点 / 教师」三行，
+                // 教师单独一行、同样弱化（alpha 0.8），跟在地点后面贴底。
+                val teacherView = TextView(ctx).apply {
+                    textSize = nameSize - ts(1f)
+                    alpha = 0.8f
+                    gravity = Gravity.CENTER
+                    includeFontPadding = false
+                    ellipsize = android.text.TextUtils.TruncateAt.END
+                    maxLines = 1
+                    layoutParams = LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+                    )
+                }
+                blockInner.addView(teacherView)
+
+                // 块的尺寸先按「组里第一门课」摆好，翻转时整体换成当前那门课的几何
+                val (firstTop, firstH) = blockRect(dayBlocks[group[0]])
+                val lp = FrameLayout.LayoutParams(colW, firstH)
+                lp.leftMargin = colIndexOf(d0).coerceAtLeast(0) * (colW + gapW)
+                lp.topMargin = firstTop
 
                 // 把「组内第 i 门课」画到这个块上
                 fun render(index: Int) {
                     val ci = dayBlocks[group[index]]
                     val color = courseColor(ci.course.name ?: "?")
                     val tint = style.onCourseTint(color)
-                    block.background = s.rounded(density, 10f, style.courseFill(color))
-                    nameView.text = ci.course.name ?: ""
-                    nameView.setTextColor(tint)
+                    // 第五十九轮：参考截图的块圆角更大（约 14dp），10dp 看着偏方
+                    block.background = s.rounded(density, 14f, style.courseFill(color))
+                    val nameText = ci.course.name ?: ""
                     val room = ci.course.room ?: ""
+                    val teacher = ci.course.teacher ?: ""
+                    // 块的几何先算出来：下面的字号收敛要用到块高 h
+                    val (top, h) = blockRect(ci)
+                    val limit = (colW - dp(12)).toFloat()
+                    // 课名长的自动降字号：从基准档往下试到这一行放得下（不低于 7sp），
+                    // 短名（如「体育」）吃满基准档，大屏上能到 19sp。
+                    var fitNameSize = nameSize
+                    // 2026-11-01 第五十八轮补（用户：「字号并没有变大」）：
+                    // 旧条件量的是**整串课名**的宽度，于是「焊接技术与工程导论」这种 10 字长名
+                    // 会被一路压到 7sp —— 明明它是折成好几行显示的，根本不需要整串塞进一行。
+                    // 结果就是长课名的字比短课名小一大截。现在只保证「一行放得下 4 个字」，
+                    // 总长度交给折行处理，长名短名字号一致。
+                    while (fitNameSize > ts(8f) && textPx("国国国国", fitNameSize) > limit) {
+                        fitNameSize -= 0.5f
+                    }
+                    // 房间号同样要收敛：字号大起来后「综合楼中305」会被折成两行，很难看
+                    var fitRoomSize = (fitNameSize - ts(1f)).coerceAtLeast(ts(6f))
+                    while (fitRoomSize > ts(6f) && room.isNotEmpty() && textPx(room, fitRoomSize) > limit) {
+                        fitRoomSize -= 0.5f
+                    }
+                    // 2026-11-03 第五十九轮补（用户：「第十节课被截断了」）：
+                    // 只跨 2 个节次的块（第 9-10 节实测 231px）装不下
+                    // 「课名 2 行 + 地点 1 行 + 教师 1 行 + 上下内边距」，
+                    // 超出的部分被 FrameLayout 直接裁掉 —— 截图上教师名整行消失、地点只剩半行。
+                    // 这里按块高逐档回落字号，直到三行确实塞得下为止（下限 7sp）。
+                    run {
+                        val padV = dp(10)
+                        var guard = 0
+                        while (fitNameSize > ts(7f) && guard < 80) {
+                            guard++
+                            val nameLines = kotlin.math.ceil(textPx(nameText, fitNameSize) / limit)
+                                .toInt().coerceIn(1, 8)
+                            val sub = (fitNameSize - ts(1f)).coerceAtLeast(ts(6f))
+                            val roomH = if (room.isEmpty()) 0f else
+                                kotlin.math.ceil(textPx(room, sub) / limit).toInt().coerceIn(1, 2) * fontH(sub)
+                            val teachH = if (teacher.isEmpty()) 0f else fontH(sub)
+                            val need = nameLines * fontH(fitNameSize) + roomH + teachH + padV
+                            if (need <= h) break
+                            fitNameSize -= 0.5f
+                        }
+                        fitRoomSize = (fitNameSize - ts(1f)).coerceAtLeast(ts(6f))
+                        while (fitRoomSize > ts(6f) && room.isNotEmpty() && textPx(room, fitRoomSize) > limit) {
+                            fitRoomSize -= 0.5f
+                        }
+                    }
+                    nameView.textSize = fitNameSize
+                    roomView.textSize = fitRoomSize
+                    teacherView.textSize = fitRoomSize
+                    nameView.text = nameText
+                    nameView.setTextColor(tint)
+                    // 第五十九轮：参考截图的地点带「@」前缀，独立成行、弱化显示
                     roomView.text = room
                     roomView.setTextColor(tint)
                     roomView.visibility = if (room.isEmpty()) View.GONE else View.VISIBLE
+                    // 教师单独一行，与地点同样弱化，贴在最底部
+                    teacherView.text = teacher
+                    teacherView.setTextColor(tint)
+                    teacherView.visibility = if (teacher.isEmpty()) View.GONE else View.VISIBLE
                     if (group.size > 1) dot.background = s.rounded(density, 3f, color)
+                    // 2026-10-30 用户第 1 条：叠加块翻转时的高度/位置必须跟着「当前这门课」走。
+                    // 以前块高取的是整组的最大跨度（1-3 节），翻到只占 1-2 节的那门课时仍占满 3 节，
+                    // 看起来就像节次没生效。现在每翻一次都按当前这门课重算 top/height；
+                    // 开了自定义时间的课按分钟比例（见 blockRect / yOfMinute）。
+                    // （top / h 已在 render() 开头算好，字号收敛要用到块高）
+                    lp.topMargin = top
+                    lp.height = h
+                    block.layoutParams = lp
+                    // 第五十七轮第 1 条：名字框固定「4 字宽」，能塞几行由块高决定，
+                    // 塞不下的部分交给 ellipsize 显示省略号（不再撑出块边界）。
+                    val nameW = (textPx("国国国国", fitNameSize).toInt() + dp(3))
+                        .coerceAtMost(colW - dp(12))
+                    val nameLp = nameView.layoutParams as LinearLayout.LayoutParams
+                    if (nameLp.width != nameW) {
+                        nameLp.width = nameW
+                        nameView.layoutParams = nameLp
+                    }
+                    val lineH = fontH(fitNameSize).coerceAtLeast(1f)
+                    // 2026-11-01 第五十八轮补：房间号也可能折行（「综合楼南310」放不进一行），
+                    // 以前这里只按 1 行估算，导致课名多算一行出来 —— 实际渲染时那行被房间号挤掉，
+                    // 出现在截图上就是「大学计算机基础训练」少了最后一个「练」。
+                    // 第五十九轮：地点行带 @ 前缀，按前缀后的长度估算折行
+                    val roomLines = if (room.isEmpty()) 0 else
+                        kotlin.math.ceil(textPx(room, fitRoomSize) / limit).toInt().coerceIn(1, 2)
+                    val roomBlockH = roomLines * fontH(fitRoomSize)
+                    // 教师固定一行（maxLines = 1），同样要占掉一块高度
+                    val teacherBlockH = if (teacher.isEmpty()) 0f else fontH(fitRoomSize)
+                    // 上下内边距各 6dp（见 blockInner.setPadding）
+                    val nameAvailH = (h - dp(14) - roomBlockH - teacherBlockH).coerceAtLeast(lineH)
+                    val maxLinesByH = (nameAvailH / lineH).toInt().coerceIn(1, 8)
+                    nameView.maxLines = maxLinesByH
+                    // 2026-11-01 第五十八轮（用户第 1 条：「导致所有文字都挤在一个小范围里，
+                    // 要将文字在课程范围内均匀铺开」）：
+                    // 横向由上面 nameSize 顶到两侧；竖向的问题在这里 ——
+                    // 一个占 2 节的块高约 305px，而「高等数学/B1/E302」三行文字才 150px，
+                    // 外层 blockInner 又是 gravity=CENTER，于是文字整团挤在块正中，
+                    // 上下各留一大片空白，看着就是「挤在一个小范围里」。
+                    // 按「实际会用到的行数」反算行距，把这几行均匀摊到整个 nameAvailH 上。
+                    // 2026-11-01 第五十八轮补（用户：「取消过大的行间距，所有文字向上对齐」）：
+                    // 上一版用 setLineSpacing 把几行字硬摊到整个块高，2 节的块里行距被拉到 2 倍多，
+                    // 行与行之间空得能塞下一行字，反而更难看，而且最后一行常被框底裁掉。
+                    // 现在恢复紧凑行距，靠 blockInner 的 TOP 对齐让文字从顶部排下来。
+                    nameView.setLineSpacing(0f, 1f)
                 }
                 render(flipIdx)
-
-                val lp = FrameLayout.LayoutParams(colW, spanRows * (rowH + gapH) - gapH)
-                lp.leftMargin = colIndexOf(d0).coerceAtLeast(0) * (colW + gapW)
-                lp.topMargin = yOfRow(startIdx)
                 // 单击看详情；双击在叠加的课之间翻转。
                 // 用 onSingleTapConfirmed（等双击窗口过去再确认）而不是 onSingleTapUp，
                 // 否则双击的第一下就会先把详情弹出来（§多次踩过的坑）。
@@ -1775,6 +2119,13 @@ class ScheduleFragment : Fragment() {
         }
         body.addView(blockArea)
         container.addView(body)
+        // 2026-11-01 第五十八轮第 2 条：把「这次画网格时容器有多高」记下来，
+        // 供 onTabSelected 里那条「高度变了就重画」的自检比对。
+        // 不记的话自检永远认为高度变了 → 每次切回本页都重画一遍，白白闪一下。
+        // 第六十三轮第 1 条：这里记的必须是**决定 rowH 的那个高度**，也就是 gridScroll 的高度。
+        // 以前记的是 Fragment 根视图高度，它和 gridScroll 的高度在「顶栏收起」时并不同步，
+        // 于是自检拿两个不同基准的值互相比，永远判不出「该重画」。
+        lastLayoutHeight = if (gridScroll.height > 0) gridScroll.height else (view?.height ?: lastLayoutHeight)
     }
 
     // ==================== 数据处理 ====================
