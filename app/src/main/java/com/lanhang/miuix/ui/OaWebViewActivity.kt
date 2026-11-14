@@ -245,7 +245,10 @@ class OaWebViewActivity : AppCompatActivity() {
                     SmallTopAppBar(
                         title = titleText,
                         navigationIcon = {
-                            IconButton(onClick = { onBackPressedDispatcher.onBackPressed() }) {
+                            // 2026-11-14 第七十四轮（用户：「在 web 页面内，触发返回手势就是返回页面中的上一级，
+// 点击屏幕右上方的返回键则直接退出整个 web 页面」）：顶栏这个 ✕/← 现在是「退出本页」，
+// 网页内的历史回退交给系统返回手势（见下面的 OnBackPressedCallback → goBackOrFinish）。
+IconButton(onClick = { finishNow() }) {
                                 Icon(
                                     imageVector = MiuixIcons.Back,
                                     contentDescription = getString(R.string.common_back),
@@ -432,6 +435,56 @@ class OaWebViewActivity : AppCompatActivity() {
         backFallback = null
     }
 
+    /**
+     * 把非 http(s) 的链接交给系统（拉起微信/支付宝/拨号/邮件，或 `intent://` 打包跳转）。
+     *
+     * 2026-11-14 第七十四轮（用户：「缴电费界面充值无法拉起微信/支付宝，修复这些问题」）：
+     * 原来这里只有一句 `runCatching { startActivity(ACTION_VIEW, uri) }`，失败被完全吞掉，
+     * 用户看到的就是「点充值没反应」。两个真实原因：
+     *  1. Android 11+ 的包可见性（package visibility）—— manifest 里没有 `<queries>` 时，
+     *     系统根本不告诉我们设备上装了微信/支付宝，Intent 解析必然失败。已在清单里补齐。
+     *  2. 支付跳转常用 `intent://…#Intent;scheme=alipays;package=…;end` 这种打包形式，
+     *     直接 ACTION_VIEW 打不开，得先用 `Intent.parseUri` 解包；解出来的 Intent 如果
+     *     还带了 `browser_fallback_url`，那是应用商给的网页兜底地址。
+     * 现在按「解包 → 直接 VIEW → 兜底地址 → 明确提示」四级依次尝试，绝不再静默失败。
+     */
+    private fun openExternal(raw: String, uri: Uri) {
+        fun fail() {
+            android.widget.Toast.makeText(
+                this,
+                getString(R.string.oa_open_app_failed),
+                android.widget.Toast.LENGTH_SHORT,
+            ).show()
+        }
+
+        if (raw.startsWith("intent:", ignoreCase = true)) {
+            val parsed = runCatching { Intent.parseUri(raw, Intent.URI_INTENT_SCHEME) }.getOrNull()
+            if (parsed != null) {
+                if (runCatching { startActivity(parsed) }.isSuccess) return
+                val fallback = parsed.getStringExtra("browser_fallback_url")
+                if (!fallback.isNullOrBlank()) {
+                    if (runCatching {
+                            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(fallback)))
+                        }.isSuccess
+                    ) return
+                }
+            }
+            // `intent://` 里可能是 weixin:// 之类，再按普通 scheme 试一次
+            val scheme = raw.substringAfter("scheme=", "").substringBefore(";")
+            if (scheme.isNotBlank()) {
+                if (runCatching {
+                        startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("$scheme://")))
+                    }.isSuccess
+                ) return
+            }
+            fail()
+            return
+        }
+
+        val view = Intent(Intent.ACTION_VIEW, uri)
+        if (runCatching { startActivity(view) }.isSuccess) return
+        fail()
+    }
     private fun finishNow() {
         cancelBackFallback()
         restoringHistory = false
@@ -539,6 +592,23 @@ class OaWebViewActivity : AppCompatActivity() {
         com.lanhang.miuix.net.ApiClient.allCookies().forEach { (domain, cookie) ->
             setCookies(cm, "http://$domain", cookie)
             setCookies(cm, "https://$domain", cookie)
+            // 2026-11-14 第七十四轮（用户：「修改密码、修改手机号两个功能全部失效，
+            // 一直提示身份鉴权失败」）。
+            //
+            // 学校的统一身份认证摊在好几个子域上：`nginx-1.app.nchu.edu.cn` 发票，
+            // `go.nchu.edu.cn` 是真正的 SSO 页面（改密码 / 改手机号都挂在这儿，见原版
+            // SettingActivity 的 id=79 与 id=83）。而 CookieJar 收上来的这些票大多
+            // **host-only**，只在自己那个主机名下有效 —— 跳到 go.nchu.edu.cn 时一个都
+            // 带不过去，页面于是报「身份鉴权失败」。
+            //
+            // 校内这些站点本来就在同一套 SSO 后面，这里把票据补写一份到根域与 go 子域，
+            // 让 *.nchu.edu.cn 共用。只在校内域生效，不会外溢到公网站点。
+            if (domain.endsWith("nchu.edu.cn")) {
+                setCookies(cm, "http://nchu.edu.cn", cookie)
+                setCookies(cm, "https://nchu.edu.cn", cookie)
+                setCookies(cm, "http://go.nchu.edu.cn", cookie)
+                setCookies(cm, "https://go.nchu.edu.cn", cookie)
+            }
         }
         // 工作模块预检时拿到的 Cookie：只给校内域名，同样逐条写
         if (campusHost) {
@@ -606,11 +676,11 @@ class OaWebViewActivity : AppCompatActivity() {
                 val target = request.url.toString()
                 // 回退期间的那次加载：不拦截（这是我们自己发起的 loadUrl）
                 if (restoringHistory) return false
-                // 非 http(s)（tel:、mailto:、唤起别的 App）：交系统，别丢给 WebView
+                // 非 http(s)（tel:、mailto:、weixin://、alipays://、intent://）：交系统，别丢给 WebView。
+                // 2026-11-14 第七十四轮：原来只有一句 runCatching{ startActivity }，失败被吞成
+                // 「点了毫无反应」，详见 openExternal 的注释。
                 if (!target.startsWith("http://") && !target.startsWith("https://")) {
-                    runCatching {
-                        startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, request.url))
-                    }
+                    openExternal(target, request.url)
                     return true
                 }
                 // 刚被返回离开的那一页，若**不是用户点的**（页面自己重定向回去），拦掉：

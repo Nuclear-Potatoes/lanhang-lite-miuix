@@ -218,16 +218,28 @@ object ImMedia {
             runCatching { recorder?.reset() }
             runCatching { recorder?.release() }
             recorder = null
+            // 2026-11-14 第七十四轮（用户：「语音无法正常发送，一直显示发送失败」）：
+            // 原来固定录 AAC/m4a。融云的语音消息（VoiceMessage）默认按 AMR 走，
+            // m4a 在部分链路会被上传端直接拒收 —— 表现就是本条必失败，而文字/图片正常。
+            // 现在优先录 AMR-NB（8kHz、单声道，就是融云推荐的那套），录不了再回退 AAC/m4a。
+            if (startWith(MediaRecorder.OutputFormat.AMR_NB, MediaRecorder.AudioEncoder.AMR_NB, "amr", 8000, 0)) {
+                return true
+            }
+            return startWith(MediaRecorder.OutputFormat.MPEG_4, MediaRecorder.AudioEncoder.AAC, "m4a", 16000, 32000)
+        }
+
+        /** [bitRate] 传 0 表示不显式设置（AMR-NB 设了反而可能抛异常） */
+        private fun startWith(fmt: Int, enc: Int, ext: String, sampleRate: Int, bitRate: Int): Boolean {
             @Suppress("DEPRECATION")
             val r = MediaRecorder()
-            val target = File(cacheDir(context), "voice_${System.currentTimeMillis()}.m4a")
+            val target = File(cacheDir(context), "voice_${System.currentTimeMillis()}.$ext")
             return runCatching {
                 r.setAudioSource(MediaRecorder.AudioSource.MIC)
-                r.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
-                r.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
-                r.setAudioSamplingRate(16000)
+                r.setOutputFormat(fmt)
+                r.setAudioEncoder(enc)
+                r.setAudioSamplingRate(sampleRate)
                 r.setAudioChannels(1)
-                r.setAudioEncodingBitRate(32000)
+                if (bitRate > 0) r.setAudioEncodingBitRate(bitRate)
                 r.setOutputFile(target.absolutePath)
                 r.prepare()
                 r.start()
@@ -236,7 +248,7 @@ object ImMedia {
                 startedAt = System.currentTimeMillis()
                 true
             }.onFailure {
-                android.util.Log.e("ImVoice", "MediaRecorder 启动失败", it)
+                android.util.Log.e("ImVoice", "MediaRecorder 启动失败 fmt=$fmt", it)
                 runCatching { r.reset() }
                 runCatching { r.release() }
                 runCatching { target.delete() }
@@ -276,7 +288,29 @@ object ImMedia {
         var playingKey by mutableStateOf<String?>(null)
             private set
 
+        /**
+         * 当前这条语音的播放进度 0..1。
+         *
+         * 2026-11-14 第七十四轮：用户反馈「播放语音时进度条没有随播放进度而变化」。
+         * 原来 [playingKey] 只够切换图标，没有任何位置信息。这里用主线程 Handler 每 80ms
+         * 采一次 `currentPosition / duration`，气泡上的前景条读它即可跟手。
+         */
+        var progress by mutableStateOf(0f)
+            private set
+
         private var player: MediaPlayer? = null
+
+        private val handler = android.os.Handler(android.os.Looper.getMainLooper())
+
+        private val tick = object : Runnable {
+            override fun run() {
+                val p = player ?: return
+                val total = runCatching { p.duration }.getOrDefault(0)
+                val pos = runCatching { p.currentPosition }.getOrDefault(0)
+                progress = if (total > 0) (pos.toFloat() / total).coerceIn(0f, 1f) else 0f
+                handler.postDelayed(this, 80L)
+            }
+        }
 
         fun toggle(context: Context, key: String, uri: String) {
             if (playingKey == key) {
@@ -297,6 +331,9 @@ object ImMedia {
                 player.start()
                 this.player = player
                 playingKey = key
+                progress = 0f
+                handler.removeCallbacks(tick)
+                handler.post(tick)
             }.onFailure {
                 runCatching { player.release() }
                 playingKey = null
@@ -305,6 +342,8 @@ object ImMedia {
 
         fun stop() {
             playingKey = null
+            progress = 0f
+            handler.removeCallbacks(tick)
             val p = player ?: return
             player = null
             runCatching { if (p.isPlaying) p.stop() }

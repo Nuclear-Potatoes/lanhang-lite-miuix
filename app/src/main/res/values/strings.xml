@@ -308,7 +308,7 @@
     <string name="error_content_empty">文字或图片至少需要一项</string>
     <string name="web_title_fallback">应用</string>
     <!-- 2026-10-27 第十八轮：OA 应用页的空白/失败出路 -->
-    <string name="oa_page_blank_hint">页面可能是空白的</string>
+    <string name="oa_open_app_failed">没有找到能打开它的应用</string>    <string name="oa_page_blank_hint">页面可能是空白的</string>
     <string name="oa_page_reload">重新加载</string>
     <string name="oa_page_open_browser">用浏览器打开</string>
     <string name="menu_debug_schedule">调试课表接口</string>
@@ -551,6 +551,9 @@
     <string name="im_record_failed">录音启动失败，检查麦克风是否被占用</string>
     <string name="im_keyboard">键盘</string>
     <string name="im_file">文件</string>
+    <!-- 2026-11-14 第七十四轮：私信视频预览页 -->
+    <string name="im_video_open_other">用其他应用打开</string>
+    <string name="im_video_play_failed">这个视频播放不了，已交给其他应用</string>
     <string name="im_file_tap_open">点击打开</string>
     <string name="im_location">位置</string>
     <string name="im_location_failed">暂时取不到当前位置</string>

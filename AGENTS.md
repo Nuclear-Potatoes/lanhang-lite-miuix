@@ -1,3 +1,112 @@
+## 74. 第七十四轮（2026-11-14）：私信时间/视频预览/语音/返回键/支付拉起
+
+### 74.1 用户原话（八条）
+
+> 第一，修改密码、修改手机号两个功能全部失效，一直提示身份鉴权失败。第二，校园网登录功能异常，一直提示无法连接认证服务器。第三，私信发送的消息需要显示日期-时间，而非只显示发送时间。第四，私信中发送视频或图片时，应该添加一个预览功能直接预览发送的图片与视频，具体动效参考工作圈中打开图片的效果。第五，语音无法正常发送，一直显示发送失败，另外，播放语音时进度条没有随播放进度而变化。第六，赣青二课页面点击我的活动后无法正常加载内容。第七，在 web 页面内，触发返回手势就是返回页面中的上一级，点击屏幕右上方的返回键则直接退出整个 web 页面。第八，缴电费界面充值无法拉起微信/支付宝，修复这些问题。
+
+随后补充：「现在的网络环境是校园网，理论上所有功能都能正常使用，做好之后 push 到 github」。
+
+### 74.2 第三条：消息时间要带日期
+
+`im/ImScreens.kt` 新增 `messageTime()`，`BubbleBody` 下方那行从 `clockTime()`（只有 `HH:mm`）换成它：
+
+- 当天 → `HH:mm`（不啰嗦）
+- 昨天 → `昨天 HH:mm`
+- 今年 → `MM-dd HH:mm`
+- 跨年 → `yyyy-MM-dd HH:mm`
+
+`clockTime()` 保留不动，会话列表的 `shortTime()` 还在用。
+
+### 74.3 第四条：视频预览（对齐工作圈图片那套动效）
+
+新建 `moments/VideoPreviewActivity.kt`（约 300 行，纯代码搭 UI，不写 XML）：
+
+- 根布局复用现成的 `DragDismissLayout`（工作圈图片预览的下拉关闭容器），黑底全屏；
+- 进入：`stage` 0.92→1.0 缩放 + 根布局 alpha 0→1，路径 `PathInterpolator(0.4f, 0f, 0.2f, 1f)`；
+- 下拉：画面跟手缩小到 0.72、下移、背景变透明；松手超过 110dp 或速度 >1200 关闭，否则回弹；
+- 关闭：顺着当前拖动量再缩到 0.86 + 淡出后 `finish()`（不会「先弹回原样再消失」）；
+- 视频用 `VideoView`，`setOnPreparedListener` 里按 `videoWidth/videoHeight` 算比例铺满，避免竖屏视频被拉扁；
+- 右上 ✕ 关闭、底部「用其他应用打开」兜底，`setOnErrorListener` 播不了时自动转系统播放器；
+- `AndroidManifest.xml` 注册，主题沿用 `Theme.LanhangLite.ImagePreview`。
+
+`ImScreens.kt` 视频气泡的点击从 `ImMedia.openFile(...)`（`ACTION_VIEW` 丢给系统）改成
+`VideoPreviewActivity.start(context, message.uri)`。图片那条本来就走 `ImagePreviewActivity`，未动。
+
+### 74.4 第五条：语音发不出去 + 进度条不动
+
+**发不出去**：`im/ImMedia.kt` 的 `VoiceRecorder` 原来固定录 `MPEG_4/AAC`（`.m4a`）。
+融云的语音消息默认按 AMR 走，m4a 在部分链路会被上传端直接拒收 —— 症状就是「语音必失败，
+而文字/图片正常」。改成**优先 AMR_NB**（8kHz、单声道，即融云推荐那套），失败再回退 AAC/m4a；
+抽成 `startWith(fmt, enc, ext, sampleRate, bitRate)`，`bitRate = 0` 表示不显式设置
+（AMR-NB 设了反而可能抛异常）。
+
+**进度条不动**：`Player` 原来只有 `playingKey`，没有任何位置信息。新增
+`var progress by mutableStateOf(0f)` + 主线程 `Handler` 每 80ms 采样
+`currentPosition / duration`，`toggle()` 起播时 `handler.post(tick)`、`stop()` 里移除。
+气泡那条原来是静态灰条，现在叠一层按 `progress` 增长的白色前景（`fillMaxWidth(frac)`）。
+
+### 74.5 第七条：返回手势 / 右上返回键语义分离
+
+`ui/OaWebViewActivity.kt` 顶栏的 `IconButton` 从
+`onBackPressedDispatcher.onBackPressed()`（= 退一级网页）改成 `finishNow()`（= 直接退出整页）。
+系统返回手势那条 `OnBackPressedCallback → goBackOrFinish()` 保持不变。
+（第 72 轮用户要求「两个都退一级」，本轮改成「手势退一级、按钮退出」，二者不再共用一条路径。）
+
+### 74.6 第八条：微信/支付宝拉不起来 —— Android 11+ 包可见性
+
+`AndroidManifest.xml` 原来**没有 `<queries>`**。Android 11（API 30）起有包可见性限制：
+不声明的话系统根本不告诉我们设备上装了微信/支付宝，`startActivity(ACTION_VIEW, weixin://…)`
+必然抛 `ActivityNotFoundException`，被 `runCatching` 吞掉之后用户看到的就是「点了没反应」。
+
+两处修：
+
+1. 清单里补 `<queries>`：`com.tencent.mm`、`com.eg.android.AlipayGphone`、`com.unionpay.uppay`
+   三个包，外加 `weixin` / `weixinpay` / `alipays` / `alipay` / `tencent` / `mqq` / `uppay`
+   七个 scheme 的 `VIEW` intent，以及 `mailto`（SENDTO）、`tel`（DIAL）。
+2. `OaWebViewActivity` 新增 `openExternal(raw, uri)`，替换原来那句静默的 `runCatching`：
+   先按 `intent://` 用 `Intent.parseUri(..., URI_INTENT_SCHEME)` 解包（支付跳转常见这种打包形式），
+   解出来还带 `browser_fallback_url` 就用它兜底；再退到普通 `ACTION_VIEW`；全都失败才
+   Toast「没有找到能打开它的应用」。**绝不再静默失败。**
+
+### 74.7 第一条：校内 cookie 要跨子域（推测性修复，待真机确认）
+
+`OaWebViewActivity` 写 cookie 时，`ApiClient.allCookies()` 收上来的票大多是 **host-only**
+（只在 `nginx-1.app.nchu.edu.cn` 下有效）。而学校 SSO 摊在多个子域：`nginx-1.app.*` 发票、
+`go.nchu.edu.cn` 才是改密码（`?id=79`）与改手机号（`?id=83`）的页面。跳过去时一个票都带不上，
+页面于是报「身份鉴权失败」。
+
+修法：`domain.endsWith("nchu.edu.cn")` 时把这些票再补写一份到 `nchu.edu.cn` 根域与
+`go.nchu.edu.cn`。只在校内域生效，不外溢到公网站点。
+
+### 74.8 第二、六条：模拟器验不了，需真机信息
+
+模拟器走 QEMU NAT（`10.0.2.15`，网关 `10.0.2.2`），**不在校园网内网**：
+
+- `ping 10.1.88.4` 100% 丢包（深澜门户不可达）→ 第二条无从复现；
+- `ping gqhw.jxmediacenter.com` unknown host（模拟器 DNS 未继承宿主），
+  `adb root` 报 `adbd cannot run as root in production builds`，改不了 DNS → 第六条无从复现。
+
+宿主本身是通的（`Test-NetConnection 10.1.88.4:80 = True`、`gqhw` 解析到 `36.133.146.115`），
+所以这两条要么在真机上验，要么需要用户提供页面上的具体错误文案/错误码。
+
+### 74.9 产物
+
+- `versionCode 76` / `versionName "1.1.24"`
+- APK **8,708,624 字节 / SHA256 `BD4DCE91885521CADF4D0BEC03AF1037DD47C7393ABEF2001D7F875112117B85`**
+- `strings.xml` 56,476 → 56,788 字节（新增 `im_video_open_other` / `im_video_play_failed` / `oa_open_app_failed`）
+- `AndroidManifest.xml` 5,763 → 8,889 字节（`<queries>` + `VideoPreviewActivity`）
+
+### 74.10 三条教训
+
+1. **备份文件不能放进 `res/`**。给 `res/values/strings.xml` 做 `Copy-Item *.bak74c` 之后，
+   `mergeReleaseResources` 报 `The file name must end with .xml` —— 资源合并会把 values 目录下
+   所有文件都当资源。备份一律放 `scratch/bak74/`。
+2. **「点了没反应」多半是异常被 `runCatching` 吞掉**。第八条表面看是支付 SDK 问题，
+   实际是 Android 11+ 包可见性导致 `ActivityNotFoundException` 被静默吞掉。凡是给用户
+   触发的跳转包 `runCatching`，都要在 `onFailure` 里留一句可见提示。
+3. **模拟器验不了的不要硬撑**。QEMU NAT 出不了校园网内网，DNS 也改不了（无法 root）。
+   与其在模拟器上反复试，不如把宿主侧的证据（`Test-NetConnection`、`Resolve-DnsName`）
+   写清楚，明确告诉用户「这条需要真机」，并把代码层的确定性缺陷该修的修掉。
 ## 73. 第七十三轮（2026-11-14）：私信图标、媒体发送修复、账号与安全 + 权限控制
 
 ### 73.1 用户原话

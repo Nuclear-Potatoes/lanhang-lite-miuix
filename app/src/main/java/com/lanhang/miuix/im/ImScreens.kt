@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -1078,7 +1079,7 @@ private fun MessageBubble(
                 text = when (message.state) {
                     ImMessage.STATE_SENDING -> stringResource(R.string.im_sending)
                     ImMessage.STATE_FAILED -> stringResource(R.string.im_send_failed)
-                    else -> clockTime(message.time)
+                    else -> messageTime(message.time)
                 },
                 style = MiuixTheme.textStyles.footnote2,
                 color = if (message.state == ImMessage.STATE_FAILED) {
@@ -1138,13 +1139,14 @@ private fun BubbleBody(message: ImMessage, mine: Boolean, onHint: (String) -> Un
                 .clip(RoundedCornerShape(12.dp))
                 .background(Color.Black.copy(alpha = 0.06f))
                 .clickable {
+                    // 2026-11-14 第七十四轮（用户：「私信中发送视频或图片时，应该添加一个
+                    // 预览功能直接预览发送的图片与视频」）：原来直接 ACTION_VIEW 丢给系统
+                    // 播放器，会跳出 App 且没有转场。改成和图片一样的全屏预览（黑底 +
+                    // 下拉关闭 + 缩放淡入），播不了时预览页自己再兜底给系统播放器。
                     if (message.uri.isNotBlank()) {
-                        ImMedia.openFile(
-                            context = context,
-                            uri = message.uri,
-                            name = "video_${message.key.takeLast(6)}.mp4",
-                            onError = onHint,
-                        )
+                        runCatching {
+                            com.lanhang.miuix.moments.VideoPreviewActivity.start(context, message.uri)
+                        }.onFailure { onHint("") }
                     }
                 },
         ) {
@@ -1238,14 +1240,30 @@ private fun BubbleBody(message: ImMessage, mine: Boolean, onHint: (String) -> Un
             ) {
                 Text(text = if (playing) "■" else "▶", color = textColor, fontSize = 13.sp)
                 Spacer(Modifier.width(8.dp))
-                // 时长越长条越宽（微信那种），60 秒封顶
+                // 时长越长条越宽（微信那种），60 秒封顶。
+                //
+                // 2026-11-14 第七十四轮（用户：「播放语音时进度条没有随播放进度而变化」）：
+                // 原来这里是一条静态灰条，播起来毫无反馈。现在叠一条按真实播放位置增长的
+                // 前景条，进度来自 ImMedia.Player.progress（0..1），由播放器每 80ms 刷新。
+                val barWidth = (28 + message.duration.coerceIn(1, 60) * 2.4f).dp
+                val barFrac = if (playing) ImMedia.Player.progress else 0f
                 Box(
                     modifier = Modifier
-                        .width((28 + message.duration.coerceIn(1, 60) * 2.4f).dp)
-                        .height(2.dp)
-                        .clip(RoundedCornerShape(1.dp))
-                        .background(textColor.copy(alpha = 0.45f)),
-                )
+                        .width(barWidth)
+                        .height(3.dp)
+                        .clip(RoundedCornerShape(2.dp))
+                        .background(textColor.copy(alpha = 0.30f)),
+                ) {
+                    if (playing && barFrac > 0f) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxHeight()
+                                .fillMaxWidth(barFrac.coerceIn(0f, 1f))
+                                .clip(RoundedCornerShape(2.dp))
+                                .background(textColor),
+                        )
+                    }
+                }
                 Spacer(Modifier.width(8.dp))
                 Text(
                     text = "${message.duration}″",
@@ -1483,6 +1501,30 @@ private fun ImStateBox(message: String, action: String?, hint: String? = null, o
 
 private fun clockTime(millis: Long): String =
     SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(millis))
+
+/**
+ * 气泡下方的发送时间。
+ *
+ * 2026-11-14 第七十四轮（用户：「私信发送的消息需要显示日期-时间，而非只显示发送时间」）：
+ * 原来这里只给 `HH:mm`，翻几屏历史消息就分不清是哪天发的。现在一律带上日期：
+ * 当天仍是 `HH:mm`（不啰嗦），昨天写「昨天 HH:mm」，今年写 `MM-dd HH:mm`，
+ * 跨年写 `yyyy-MM-dd HH:mm`。日期部分用 24 小时制，避免与「下午」的时分混淆。
+ */
+private fun messageTime(millis: Long): String {
+    if (millis <= 0) return ""
+    val now = Calendar.getInstance()
+    val then = Calendar.getInstance().apply { timeInMillis = millis }
+    val sameDay = now.get(Calendar.YEAR) == then.get(Calendar.YEAR) &&
+        now.get(Calendar.DAY_OF_YEAR) == then.get(Calendar.DAY_OF_YEAR)
+    if (sameDay) return clockTime(millis)
+    val hm = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(millis))
+    val yesterday = Calendar.getInstance().apply { add(Calendar.DAY_OF_YEAR, -1) }
+    val isYesterday = yesterday.get(Calendar.YEAR) == then.get(Calendar.YEAR) &&
+        yesterday.get(Calendar.DAY_OF_YEAR) == then.get(Calendar.DAY_OF_YEAR)
+    if (isYesterday) return "昨天 $hm"
+    val pattern = if (now.get(Calendar.YEAR) == then.get(Calendar.YEAR)) "MM-dd HH:mm" else "yyyy-MM-dd HH:mm"
+    return SimpleDateFormat(pattern, Locale.getDefault()).format(Date(millis))
+}
 
 /** 会话列表用：今天只给时分，昨天写「昨天」，更早给月-日 */
 private fun shortTime(millis: Long): String {

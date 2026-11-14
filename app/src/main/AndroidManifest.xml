@@ -102,6 +102,12 @@
             android:name=".moments.ImagePreviewActivity"
             android:exported="false"
             android:theme="@style/Theme.LanhangLite.ImagePreview" />
+        <!-- 2026-11-14 第七十四轮：私信里的视频预览（与图片预览同一套黑底主题 / 下拉关闭动效） -->
+        <activity
+            android:name=".moments.VideoPreviewActivity"
+            android:exported="false"
+            android:configChanges="orientation|screenSize|keyboardHidden"
+            android:theme="@style/Theme.LanhangLite.ImagePreview" />
 
         <!-- 2026-10-26：小米推送（MiPush）已移除（用户要求改用普通通知）。
              新消息提示走 im/ImNotify.kt 的系统通知，不需要任何推送 SDK / 组件。 -->
@@ -130,5 +136,52 @@
     </receiver>
 
 </application>
+
+    <!-- 2026-11-14 第七十四轮（用户：「缴电费界面充值无法拉起微信/支付宝」）。
+
+         Android 11（API 30）起有「包可见性」限制：不在 <queries> 里声明，系统就不告诉
+         我们设备上装了微信/支付宝，startActivity(ACTION_VIEW, weixin://…) 必然抛
+         ActivityNotFoundException —— 被 runCatching 吞掉之后，用户看到的就是「点了没反应」。 -->
+    <queries>
+        <package android:name="com.tencent.mm" />
+        <package android:name="com.eg.android.AlipayGphone" />
+        <package android:name="com.unionpay.uppay" />
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:scheme="weixin" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:scheme="weixinpay" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:scheme="alipays" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:scheme="alipay" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:scheme="tencent" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:scheme="mqq" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:scheme="uppay" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.SENDTO" />
+            <data android:scheme="mailto" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.DIAL" />
+            <data android:scheme="tel" />
+        </intent>
+    </queries>
 
 </manifest>
