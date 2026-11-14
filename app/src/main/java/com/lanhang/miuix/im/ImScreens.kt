@@ -1512,17 +1512,17 @@ private fun clockTime(millis: Long): String =
  */
 private fun messageTime(millis: Long): String {
     if (millis <= 0) return ""
+    // 2026-11-14 第七十四轮修正（用户：「私信发送的消息需要显示日期-时间，而非只显示
+    // 发送时间」）。第一版保留了「当天只给 HH:mm」的聊天软件惯例，实测下来用户看到的
+    // 仍然是一串光秃秃的 05:40，正是他要改掉的东西 —— 所以这里不再分「当天/昨天」，
+    // **每条都带日期**；跨年再补年份，免得去年的 12-25 和今年的 12-25 混在一起。
     val now = Calendar.getInstance()
     val then = Calendar.getInstance().apply { timeInMillis = millis }
-    val sameDay = now.get(Calendar.YEAR) == then.get(Calendar.YEAR) &&
-        now.get(Calendar.DAY_OF_YEAR) == then.get(Calendar.DAY_OF_YEAR)
-    if (sameDay) return clockTime(millis)
-    val hm = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(millis))
-    val yesterday = Calendar.getInstance().apply { add(Calendar.DAY_OF_YEAR, -1) }
-    val isYesterday = yesterday.get(Calendar.YEAR) == then.get(Calendar.YEAR) &&
-        yesterday.get(Calendar.DAY_OF_YEAR) == then.get(Calendar.DAY_OF_YEAR)
-    if (isYesterday) return "昨天 $hm"
-    val pattern = if (now.get(Calendar.YEAR) == then.get(Calendar.YEAR)) "MM-dd HH:mm" else "yyyy-MM-dd HH:mm"
+    val pattern = if (now.get(Calendar.YEAR) == then.get(Calendar.YEAR)) {
+        "MM-dd HH:mm"
+    } else {
+        "yyyy-MM-dd HH:mm"
+    }
     return SimpleDateFormat(pattern, Locale.getDefault()).format(Date(millis))
 }
 
