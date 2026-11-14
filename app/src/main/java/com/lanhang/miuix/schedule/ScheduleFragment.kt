@@ -84,6 +84,11 @@ class ScheduleFragment : Fragment() {
     private lateinit var gridScroll: android.view.View
     private var gridRelayoutPending = false
 
+    // 第六十八轮：静止 320ms 后确认下来的可用高度。渲染一律用它，绝不现读 gridScroll.height，
+    // 否则会把 Tab 过渡期的中间值（实测 810px，正常约 1900px）当成真实高度排出扁课表。
+    private var stableAvailH = 0
+
+
     /** 换周/切视图过渡用的「旧内容快照」View 的标记（清理残留时按它识别） */
     private val GHOST_TAG = "schedule_swap_ghost"
 
@@ -163,7 +168,19 @@ class ScheduleFragment : Fragment() {
         gridScroll.addOnLayoutChangeListener { _, _, top, _, bottom, _, oldTop, _, oldBottom ->
             if (bottom - top != oldBottom - oldTop) {
                 gridScroll.removeCallbacks(gridRelayoutTask)
-                gridScroll.postDelayed(gridRelayoutTask, 160L)
+                val now = android.os.SystemClock.uptimeMillis()
+                // 第六十五轮二次修复：切回课表后的过渡窗口内，顶栏还在收放，高度每帧都在变。
+                // 这时绝不能重排 —— 按中间值算出来的行高就是用户看到的「被拉长」，
+                // 等动画停下再纠正一次就是「弹一下」。把任务一路推到窗口结束，只排一次。
+                // 第六十八轮：320ms 内没有新的布局变化，就认为高度已经静止、可以采信。
+                // 顶栏收放是 300ms 的连续动画，160ms 太短，会采到动画中途的中间值。
+                // 冷启动首次（还没建立过稳定高度）用 80ms，别让首屏白等。
+                val wait = when {
+                    tabSettleUntil > now -> (tabSettleUntil - now) + 40L
+                    stableAvailH == 0 -> 80L
+                    else -> 320L
+                }
+                gridScroll.postDelayed(gridRelayoutTask, wait)
             }
         }
         installWeekSwipe(view.findViewById(R.id.contentGrid))
@@ -275,6 +292,16 @@ class ScheduleFragment : Fragment() {
     private var lastLayoutHeight = 0
 
     /**
+     * 切回课表后的「顶栏还在动」过渡窗口截止时刻（uptimeMillis）。
+     *
+     * 第六十五轮第 2 条（用户：「在工作圈下滑一段距离后点击课表页依然会出现异常拉伸后又回弹」）：
+     * 从上一页切回来的这几百毫秒里，顶栏正从「上一页的收起态」往课表的展开态过渡，
+     * gridScroll 测到的高度是**偏大的中间值**。按它算行高就会先把网格拉长，
+     * 等动画结束再按真实高度画一遍，就成了「弹一下」。
+     */
+    private var tabSettleUntil = 0L
+
+    /**
      * 第六十三轮第 1 条：[gridScroll] 的高度变了之后（防抖 160ms）重画一次网格。
      *
      * 为什么需要它：课表顶栏跟着滚动收起/展开，`fragmentContainer` 的高度随之变化。
@@ -283,18 +310,27 @@ class ScheduleFragment : Fragment() {
      * 于是整张网格比可视区高，最后一行（第 10 节）被 ScrollView 静默裁掉。
      * 盯住 [gridScroll] 的实际布局变化，就与「谁在什么时候切 Tab」彻底解耦。
      */
-    private val gridRelayoutTask = Runnable {
+    // 显式标注类型：任务体内部会 postDelayed 它自己，不标就会触发 Kotlin 的类型递归推断错误。
+    private val gridRelayoutTask: Runnable = Runnable {
         if (!isAdded || view == null || !::gridScroll.isInitialized) return@Runnable
         val h = gridScroll.height
         if (h <= 0 || !showingGrid) return@Runnable
-        // 只在「可用高度变小」时才重画。
-        //
-        // 变大意味着顶栏正在收起（用户往下滚课表），或者正带着上一页的收起态切回来 ——
-        // 这是个过渡中的中间值，不是最终布局高度。按它重排，整张网格会先被拉长、
-        // 等顶栏展开动画走完再弹回原样（用户反馈：「会从拉伸状态弹一下再恢复正常」）。
-        // 变小则必须重画，否则网格比可用区高，最后一行会被 ScrollView 静默裁掉。
-        if (lastLayoutHeight <= 0 || h < lastLayoutHeight) {
+        val now = android.os.SystemClock.uptimeMillis()
+        // 第六十五轮二次修复：过渡窗口内高度还在变，这一趟画下去必然是中间值 —— 继续等。
+        if (tabSettleUntil > now) {
+            gridScroll.removeCallbacks(gridRelayoutTask)
+            gridScroll.postDelayed(gridRelayoutTask, (tabSettleUntil - now) + 40L)
+            return@Runnable
+        }
+        // 走到这里说明顶栏已经稳定，h 就是最终可用高度。这时不论变大变小都要对齐：
+        //  · 变小不重排 → 网格比可用区高，最后一行被 ScrollView 静默裁掉（第 62 轮的病）；
+        //  · 变大不重排 → 底部留一大片空白。
+        // 因为只在「稳定之后」比较一次，所以不会出现「先拉长再弹回」的抖动。
+        // 第六十八轮：这里是 stableAvailH 唯一的写入点 —— 只有「布局静止 320ms 之后」量到的高度
+        // 才算可信。renderGrid() 只读 stableAvailH，过渡中间值因此进不了排布。
+        if (lastLayoutHeight <= 0 || h != lastLayoutHeight || stableAvailH != h) {
             lastLayoutHeight = h
+            stableAvailH = h
             renderGrid()
         }
     }
@@ -467,6 +503,26 @@ class ScheduleFragment : Fragment() {
     /** 跟手切周的现场 */
     /** 网格视图的时间轴宽度（renderGrid 里算出来的 timeW + gapW） */
     private var gridAxisW = 0
+    /*
+     * 第六十六轮第 1 条：泳道动画只允许位移「课程列」。
+     * 时间轴在 gridContent -> body 的 0 号子 View 里，这两个字段指向表头行与课程块区，
+     * slideSwap() 只动它们，时间轴因此天然静止（用户反馈的「左侧时间栏重叠」就是它跟着动导致的）。
+     */
+    private var courseHeaderRow: View? = null
+    private var courseBlockArea: View? = null
+
+    /*
+     * 第六十九轮第 1 条（用户：「课表的另一个视图即周视图的过渡动画切换异常」）。
+     *
+     * slideSwap() 原来只位移 courseHeaderRow / courseBlockArea，而这两个都属于网格视图。
+     * 周视图的两个滚动内容容器是 dayStrip（顶部日期摘要条）与 daySections（每天的日程卡），
+     * 从来没有登记给动画用过。于是在周视图里翻周时 movers 要么为空、要么指向网格那边
+     * 已被 removeAllViews 摘掉的孤儿 View —— 「动的那一下」根本没发生，屏幕上只剩
+     * 一张旧快照横着扫过去，看起来就是硬切 + 一道莫名的横移。
+     *
+     * 这里把周视图的两个容器也登记进来，让两种视图都能走同一条泳道动画。
+     */
+    private var weekMovers: List<View> = emptyList()
 
     private var pagerGhost: ImageView? = null
     private var pagerNew: ImageView? = null
@@ -567,9 +623,18 @@ class ScheduleFragment : Fragment() {
     private fun axisWidthPx(): Int {
         val active = runCatching { activeContentLayer() }.getOrNull()
         val gridW = if (gridAxisW > 0) gridAxisW else dp(40)
-        val listW = runCatching { daySections.left + daySections.width }.getOrDefault(0)
-        val w = if (active === contentGrid) gridW else (if (listW > 0) listW else dp(40))
-        return w
+        /*
+         * 第六十九轮第 1 条补：周视图没有左侧时间轴，轴线宽度必须是 0。
+         *
+         * 这里原来是 `daySections.left + daySections.width`，而 daySections 是
+         * match_parent —— 算出来就是整屏宽，随后被 startPager 里的
+         * `coerceIn(0, layer.width / 2)` 夹到**半屏**。于是左右滑动切周时：
+         * 0..半屏 被当成「钉住的时间轴」原地不动，只有右半边在滑，界面直接裂成两半。
+         * 用户 2026-11-14 原话：「左半边的内容不会移动，只有右半边的内容在移动」。
+         *
+         * 网格视图仍然返回 gridAxisW（timeW + gapW），保证时间轴不进入快照、也不跟着滑。
+         */
+        return if (active === contentGrid) gridW else 0
     }
 
     /**
@@ -1054,7 +1119,9 @@ class ScheduleFragment : Fragment() {
             contentWeek.translationY = 0f
             renderWeekView()
         }
-        slideSwap(activeContentLayer(), snapshot, if (grid) 1 else -1)
+        // 第六十九轮：视图互切时两张快照形状不同，用整宽滑出（axisOverride = 0），
+        // 不再用当前视图的轴宽去裁旧快照。
+        slideSwap(activeContentLayer(), snapshot, if (grid) 1 else -1, axisOverride = 0)
         layer.postDelayed({
             if (isAdded) {
                 swipeRefresh.isEnabled = true
@@ -1070,15 +1137,48 @@ class ScheduleFragment : Fragment() {
      * 网格是自绘 View，做不了 Compose 的共享元素转场，这里用最朴素的位移+透明度动画，
      * 但足以让「翻周」不再是一帧硬切（用户反馈「翻课程表时没有过渡动画」）。
      */
-    private fun slideSwap(layer: FrameLayout, snapshot: Bitmap?, direction: Int) {
+    private fun slideSwap(
+        layer: FrameLayout,
+        snapshot: Bitmap?,
+        direction: Int,
+        axisOverride: Int? = null,
+    ) {
         val width = layer.width.takeIf { it > 0 } ?: resources.displayMetrics.widthPixels
-        val shift = width.toFloat() * if (direction >= 0) 1f else -1f
-        val others = (0 until layer.childCount).map { layer.getChildAt(it) }
-        if (snapshot == null) {
-            // 首帧/未量到尺寸：没有旧内容快照，只让新内容滑入
-            others.forEach {
+        val layerH = layer.height
+        /*
+         * 第六十六轮第 1 条（用户：「泳道动画被改坏了，快速点击会重影」）。
+         *
+         * 第六十五轮把这里改成「旧快照原地淡出、新内容完全不动」，方向感没了，观感比原来的
+         * 泳道差；连点时几份半透明残影同时叠在一起，正是用户说的重影。现在恢复泳道：
+         * 旧的一列整列滑出、新的一列整列从另一侧滑入。
+         *
+         * 与最早那版唯一的不同是**时间轴彻底不参与**：时间轴在 gridContent -> body 的
+         * 0 号子 View（timeCol）里，而本函数只位移 courseHeaderRow 与 courseBlockArea
+         * 这两个课程列容器；ghost 的 leftMargin = gridAxisW，正好从时间轴右边缘起画，
+         * 也不会盖住它。所以无论连点多快，屏幕上永远只有一份时间轴。
+         */
+        clearTransitionLeftovers(layer)
+        // 第六十九轮：周视图没有左侧时间轴，整宽都是内容，快照不必裁掉左边；
+        // 网格视图仍按 timeW + gapW 裁，保证时间轴不进入快照。
+        // 第六十九轮：网格 ↔ 周视图互切时，两张快照的形状压根不同（一个有左侧时间轴、
+        // 一个没有），绝不能拿当前视图的轴宽去裁另一张快照 —— 那会把旧画面的左边一截
+        // 削掉，看起来像「先少一块再补齐」。互切一律整宽滑出，由调用方传 axisOverride = 0。
+        val axisW = axisOverride ?: if (showingGrid) gridAxisW.coerceIn(0, width / 2) else 0
+        val ghostW = (width - axisW).coerceAtLeast(1)
+        // direction >= 0 表示「往后翻」（下一周）：旧列向左滑出，新列从右侧滑入
+        val ghostShift = if (direction >= 0) -ghostW.toFloat() else ghostW.toFloat()
+        // 第六十九轮：两种视图各有自己的内容容器，按当前视图取，
+        // 不要拿网格的字段去动画一个看不见的层。
+        val movers = if (showingGrid) {
+            listOfNotNull(courseHeaderRow, courseBlockArea)
+        } else {
+            weekMovers
+        }
+        if (movers.isEmpty() || snapshot == null || axisW >= snapshot.width || layerH <= 0) {
+            movers.forEach {
                 it.animate().cancel()
-                it.translationX = shift
+                it.translationX = -ghostShift
+                it.alpha = 1f
                 it.animate().translationX(0f)
                     .setDuration(MainActivity.TAB_SWAP_MS)
                     .setInterpolator(MainActivity.TAB_INTERPOLATOR)
@@ -1086,29 +1186,51 @@ class ScheduleFragment : Fragment() {
             }
             return
         }
-        // 参照 Tab 切换：旧内容（快照）整幅滑出，新内容从另一侧滑入，纯位移 220ms
-        val ghost = ImageView(requireContext()).apply {
-            tag = GHOST_TAG
-            setImageBitmap(snapshot)
-            scaleType = ImageView.ScaleType.FIT_XY
+        val part = runCatching {
+            Bitmap.createBitmap(
+                snapshot,
+                axisW,
+                0,
+                ghostW.coerceAtMost(snapshot.width - axisW),
+                snapshot.height,
+            )
+        }.getOrNull()
+        if (part != null) {
+            val ghost = ImageView(requireContext()).apply {
+                tag = GHOST_TAG
+                setImageBitmap(part)
+                scaleType = ImageView.ScaleType.FIT_XY
+            }
+            /*
+             * ghost 也放进一个同宽的裁剪盒：它要整列滑出，位移过程中右边缘会扫过
+             * 时间轴所在的左侧区域，不裁的话就把时间轴压住了（这正是用户反复看到的
+             * 「左侧时间栏重叠」的最后一条来源）。
+             */
+            val ghostBox = FrameLayout(requireContext()).apply {
+                tag = GHOST_TAG
+                clipChildren = true
+            }
+            ghostBox.addView(ghost, FrameLayout.LayoutParams(ghostW, layerH))
+            layer.addView(ghostBox, FrameLayout.LayoutParams(ghostW, layerH).apply { leftMargin = axisW })
+            ghost.animate().cancel()
+            ghost.animate().translationX(ghostShift).alpha(1f)
+                .setDuration(MainActivity.TAB_SWAP_MS)
+                .setInterpolator(MainActivity.TAB_INTERPOLATOR)
+                .start()
+            // 兜底：连点时下一段动画会 cancel 这一段，动画结束回调可能不执行，ghost 会永久留下
+            val dropGhost = Runnable { runCatching { layer.removeView(ghostBox) } }
+            layer.postDelayed(dropGhost, MainActivity.TAB_SWAP_MS + 80L)
         }
-        layer.addView(ghost, FrameLayout.LayoutParams(width, layer.height))
-        ghost.animate().cancel()
-        ghost.animate().translationX(-shift)
-            .setDuration(MainActivity.TAB_SWAP_MS)
-            .setInterpolator(MainActivity.TAB_INTERPOLATOR)
-            .withEndAction { layer.removeView(ghost) }
-            .start()
-        others.forEach {
+        movers.forEach {
             it.animate().cancel()
-            it.translationX = shift
+            it.translationX = -ghostShift
+            it.alpha = 1f
             it.animate().translationX(0f)
                 .setDuration(MainActivity.TAB_SWAP_MS)
                 .setInterpolator(MainActivity.TAB_INTERPOLATOR)
                 .start()
         }
     }
-
     private fun renderAll() {
         if (showingGrid) renderGrid() else renderWeekView()
     }
@@ -1123,11 +1245,9 @@ class ScheduleFragment : Fragment() {
      */
     fun onTabSelected() {
         if (!isAdded || view == null || !::contentGrid.isInitialized) return
-        android.util.Log.d(
-            TAG,
-            "onTabSelected: grid=$showingGrid week=$currentWeek data=${scheduleData != null} " +
-                "weekKeys=${weekData.keys} gridVis=${contentGrid.visibility} weekVis=${contentWeek.visibility}"
-        )
+        // 第六十五轮第 2 条：从现在起 500ms 内算「顶栏还在动」的过渡窗口，
+        // renderGrid() 在这个窗口里不会采用比上次稳定值更大的可用高度。
+        tabSettleUntil = android.os.SystemClock.uptimeMillis() + 900L
         clearTransitionLeftovers(contentGrid as android.view.ViewGroup)
         clearTransitionLeftovers(contentWeek as android.view.ViewGroup)
         // 视图是 detach/attach **复用**的：把「当前模式」和实际可见层重新对齐一遍。
@@ -1156,21 +1276,23 @@ class ScheduleFragment : Fragment() {
         // 现在两条路都走这个自检；renderGrid() 结尾也会回写 lastLayoutHeight（见那里），
         // 所以刚画完不会被自己再判一次「高度变了」而反复重画。
         val root = view
-        root?.post {
-            val h = if (::gridScroll.isInitialized && gridScroll.height > 0) gridScroll.height else root.height
-            // 第六十三轮补充（用户：「从工作圈下部直接切换到课表时会从拉伸状态弹一下再恢复正常」）：
-            // 切回来的这一帧，顶栏还在从「上一页的收起态」往课表的展开态过渡，
-            // gridScroll 此刻拿到的是**偏大的中间值**。这一版以前只要 h != lastLayoutHeight 就重画，
-            // 于是先按这个偏大值把网格画一遍 —— 用户看到的是「先被拉长」，等 300ms 顶栏动画走完、
-            // 防抖任务再纠正一次，就成了「弹一下」。
-            // 现在只在「可用高度变小」时立即重画；变大一律不动，交给布局稳定后的防抖任务判 ——
-            // 那一趟里高度已回到展开态，与 lastLayoutHeight 相等，自然也不会再画。
-            // 净效果：切回课表时网格一直是上次展开态的那份正确布局，全程不重排。
-            if (h > 0 && (lastLayoutHeight <= 0 || h < lastLayoutHeight)) {
-                lastLayoutHeight = h
-                renderGrid()
-            }
-            ensureContentNotEmpty()
+        root?.post { ensureContentNotEmpty() }
+        /*
+         * 第六十五轮二次修复（用户：「工作/工作圈内下滑一段距离后，返回课表页依旧会异常回弹一下」）。
+         *
+         * 前几版都是「切回这一帧立刻判一次高度、该重画就重画」。但切回的那一瞬间顶栏正在
+         * 从上一页的状态往课表紧凑形态过渡，`gridScroll.height` 会在几百毫秒里连续变化：
+         * 先按中间值画一遍（被拉长），等动画结束再按最终值画一遍（弹回）。判据怎么改都绕不开这一点 ——
+         * 因为**在过渡窗口内做任何重排，用的都是错的高度**。
+         *
+         * 所以现在窗口期内一次都不排：只把重排任务推到窗口结束之后（tabSettleUntil + 40ms）。
+         * 到那时顶栏已静止，h 就是最终可用高度，第一张画出来的就是对的，
+         * 网格全程保持上一次的正确布局，用户看不到任何跳动。
+         */
+        if (::gridScroll.isInitialized) {
+            gridScroll.removeCallbacks(gridRelayoutTask)
+            val now = android.os.SystemClock.uptimeMillis()
+            gridScroll.postDelayed(gridRelayoutTask, (tabSettleUntil - now).coerceAtLeast(0L) + 40L)
         }
         view?.post { ensureContentNotEmpty() }
     }
@@ -1198,11 +1320,6 @@ class ScheduleFragment : Fragment() {
         } else {
             dayStrip.childCount + daySections.childCount
         }
-        android.util.Log.d(
-            TAG,
-            "ensureContentNotEmpty: grid=$showingGrid filled=$filled data=${scheduleData != null} " +
-                "week=$currentWeek progress=${progress.visibility}"
-        )
         if (filled > 0) {
             if (tvEmpty.visibility == View.VISIBLE && !showingGrid) tvEmpty.visibility = View.GONE
             return
@@ -1242,7 +1359,7 @@ class ScheduleFragment : Fragment() {
     private fun clearTransitionLeftovers(layer: ViewGroup) {
         for (i in layer.childCount - 1 downTo 0) {
             val c = layer.getChildAt(i)
-            if (c is ImageView && c.tag == GHOST_TAG) {
+            if (c.tag == GHOST_TAG) {
                 layer.removeViewAt(i)
                 continue
             }
@@ -1267,6 +1384,8 @@ class ScheduleFragment : Fragment() {
             )
             daySections.addView(noDataHint())
             tvEmpty.visibility = View.GONE   // noDataHint 自己有文案，空态不要再叠一层
+            // 第六十九轮：空周也要登记动画对象，否则下一周翻回来时 movers 还是空的
+            weekMovers = listOf(dayStrip, daySections)
             return
         }
 
@@ -1372,10 +1491,8 @@ class ScheduleFragment : Fragment() {
         if (totalCourses == 0) {
             daySections.addView(noDataHint(R.string.schedule_week_no_course))
         }
-        android.util.Log.d(
-            TAG,
-            "renderWeekView 完成: week=$week 有课天数=$totalCourses 空态=${totalCourses == 0}"
-        )
+        // 第六十九轮：把周视图的两个内容容器登记给 slideSwap 使用
+        weekMovers = listOf(dayStrip, daySections)
     }
 
     private fun addLessonRow(parent: LinearLayout, ci: CourseItem) {
@@ -1456,6 +1573,40 @@ class ScheduleFragment : Fragment() {
     // ==================== 网格视图 ====================
 
     private fun renderGrid() {
+        /*
+         * 第六十六轮第 2 条（用户：「工作圈内下滑一段距离后，返回课表页依旧会异常回弹一下」）。
+         *
+         * 只要在「切换 Tab 后的过渡窗口」里排一次版，用到的就一定是错的高度：顶栏还没停稳，
+         * gridScroll 的高度正从上一页的值线性过渡到课表的值。先按中间值排一遍（屏幕上表现为
+         * 被拉长），过渡结束再按最终值排一遍（表现为弹一下）。前几轮分别改过比较方向、改过
+         * 采样时机，都绕不开这一点 —— 问题不在判据，而在于「窗口内根本不该排」。
+         *
+         * 现在把守卫提到 renderGrid() 最前面：窗口内任何调用（切 Tab、ensureContentNotEmpty、
+         * 数据刷新……）一律不排，只把 gridRelayoutTask 推到窗口结束后统一排一次。
+         */
+        if (tabSettleUntil > android.os.SystemClock.uptimeMillis()) {
+            /*
+             * 第六十八轮：这个守卫不许再加「内容非空」之类的放行条件。
+             *
+             * 上一版写成 `&& contentFilled() > 0`，本意是别让首次进入白屏，结果恰好放走了
+             * 唯一会出事的那条路径 —— 从别的页面切回来时，Fragment 的 view 可能刚 attach、
+             * gridContent 还没挂上子 View，contentFilled() 返回 0，守卫放行，
+             * 于是按「第一帧还没量完的高度」排了一整张网格：行高被算得极小，
+             * 整张课表被挤压得又扁又密，等布局结算完再排一次才恢复正常 ——
+             * 这正是用户反复反馈的「切回课表时被挤压到很扁又恢复」。
+             *
+             * 冷启动首次进入课表不经过 onTabSelected，tabSettleUntil 是 0，不会被拦，
+             * 所以去掉放行条件不会造成白屏。
+             */
+            if (::gridScroll.isInitialized) {
+                gridScroll.removeCallbacks(gridRelayoutTask)
+                gridScroll.postDelayed(
+                    gridRelayoutTask,
+                    (tabSettleUntil - android.os.SystemClock.uptimeMillis()) + 40L,
+                )
+            }
+            return
+        }
         val container = requireView().findViewById<LinearLayout>(R.id.gridContent)
         container.removeAllViews()
         val data = dataForWeek(currentWeek)
@@ -1547,24 +1698,29 @@ class ScheduleFragment : Fragment() {
         val bandH = dp(18)
         val headerRowH = dp(46)
         val panelPad = dp(9)    // 面板上下内边距（3dp×2）+ 表头下方 2px 的真实预留
-        val rawAvailH = gridScroll.height
-        // 2026-11-03 第五十九轮（用户：「现在课表的底端没有和 tab 对齐」）：
-        // 第 58 轮按「底栏是浮层」的假设留了 66dp —— 该假设不成立。
-        // activity_main.xml 里 fragmentContainer 是真的
-        // app:layout_constraintBottom_toTopOf="@id/shellBottomNav"，
-        // dump 也证实 fragmentContainer 底边 2397 与 shellBottomNav 顶边 2397 严丝合缝。
-        // 那 66dp 属于重复扣除：gridContent 底边只到 2176，比 gridScroll 底边 2382
-        // 少了 206px 空档，看着就是「课表没铺到底」。现在按真实测量高度铺满。
-        val availH = rawAvailH.coerceAtLeast(dp(200))
-        // 只在「完全没量到高度」（首帧）时补一次重绘；量到高度后无论多小都不再重排，
-        // 否则可视区高度真的偏小时会自己触发自己（死循环）。
-        if (rawAvailH == 0 && !gridRelayoutPending) {
-            gridRelayoutPending = true
-            gridScroll.post {
-                gridRelayoutPending = false
-                if (isAdded && view != null) renderAll()
+        /*
+         * 第六十八轮第 3 版（参考 NexioSchedule 的做法）。
+         *
+         * 那边的课表几何是**预先算好再传进去**的（ScheduleGridGeometry），绘制时绝不回头去问容器
+         * 此刻多高；我们这里反过来，每次都现读 gridScroll.height —— 于是在 Tab 过渡的那一帧读到
+         * 810px 这种中间值，就排出一张扁课表。
+         *
+         * 现在改成同一个思路：可用高度只认 stableAvailH，它由「尺寸静止 320ms 后」才更新，
+         * 过渡期的中间值根本进不来。stableAvailH 还没建立时（冷启动首帧）直接不画，
+         * 由 gridRelayoutTask 在 80ms 后用真实高度补上，不会出现扁课表。
+         */
+        val availH = stableAvailH
+        if (availH <= 0) {
+            if (!gridRelayoutPending) {
+                gridRelayoutPending = true
+                gridScroll.postDelayed({
+                    gridRelayoutPending = false
+                    if (isAdded && view != null) renderAll()
+                }, 80L)
             }
+            return
         }
+
         val usable = availH - panelPad - headerRowH - bandH * visibleBreaks.size -
             gapH * (rowCount - 1).coerceAtLeast(0)
         // 行高上限随屏幕放大（平板可用高度更多，卡在 96dp 会留一大片空白）。
@@ -1727,6 +1883,7 @@ class ScheduleFragment : Fragment() {
             headerRow.addView(head)
         }
         container.addView(headerRow)
+        courseHeaderRow = headerRow
         container.addView(View(ctx).apply { layoutParams = LinearLayout.LayoutParams(1, dp(2)) })
 
         // ===== 主体：左时间列 + 块区 =====
@@ -1794,8 +1951,10 @@ class ScheduleFragment : Fragment() {
         // 第六十二轮：原来这里多加了一个 gapH（最后一行下方的空隙），
             // 导致整块内容比可用高度高出一个间隙，最后一行被裁。
             val gridH = yOfRow(rowCount - 1) + rowH
+        // 第六十六轮第 1 条：课程列的总宽度，外层裁剪盒与块区共用
+        val colTotalW = colCount * colW + (colCount - 1) * gapW
         val blockArea = FrameLayout(ctx).apply {
-            layoutParams = LinearLayout.LayoutParams(colCount * colW + (colCount - 1) * gapW, gridH)
+            layoutParams = FrameLayout.LayoutParams(colTotalW, gridH)
         }
 
         // 横向网格线（有休息带的行不画）
@@ -2117,7 +2276,21 @@ class ScheduleFragment : Fragment() {
                 blockArea.addView(block, lp)
             }
         }
-        body.addView(blockArea)
+        /*
+         * 第六十六轮第 1 条（用户：「快速点击翻页键时，左侧时间栏 UI 依旧会发生重叠」）。
+         *
+         * 翻周时只位移课程列，但位移是绘制阶段的事，不改变布局占位：块区左移时会滑过
+         * 并**盖住左侧时间轴**（它在同一个横向 LinearLayout 里，且后添加所以画在上面）。
+         * 这里给课程列套一个同样宽高的裁剪盒，clipChildren = true，块区滑出盒子边界的
+         * 部分直接被裁掉，时间轴因此永远不可能被压到。
+         */
+        val blockClip = FrameLayout(ctx).apply {
+            layoutParams = LinearLayout.LayoutParams(colTotalW, gridH)
+            clipChildren = true
+        }
+        blockClip.addView(blockArea)
+        body.addView(blockClip)
+        courseBlockArea = blockArea
         container.addView(body)
         // 2026-11-01 第五十八轮第 2 条：把「这次画网格时容器有多高」记下来，
         // 供 onTabSelected 里那条「高度变了就重画」的自检比对。

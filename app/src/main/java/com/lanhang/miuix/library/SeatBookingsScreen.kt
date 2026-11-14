@@ -35,12 +35,15 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import com.lanhang.miuix.ui.miuix.CardActionBar
+import com.lanhang.miuix.ui.miuix.CardActionChip
 import com.lanhang.miuix.R
 import com.lanhang.miuix.core.isCancellation
 import com.lanhang.miuix.core.userDetail
 import com.lanhang.miuix.ui.miuix.showMiuixConfirm
 import com.lanhang.miuix.ui.miuix.showMiuixInfo
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -69,6 +72,7 @@ fun SeatBookingsScreen(
     var hint by remember { mutableStateOf("") }
     var busyId by remember { mutableStateOf<String?>(null) }
     var reload by remember { mutableIntStateOf(0) }
+    var syncing by remember { mutableStateOf(false) }
 
     LaunchedEffect(reload) {
         loading = true
@@ -81,6 +85,34 @@ fun SeatBookingsScreen(
             hint = context.getString(R.string.library_seat_load_failed, e.userDetail(context))
         } finally {
             loading = false
+        }
+    }
+
+    /*
+     * 第六十五轮：有「待签到」的订单时，每 15 秒静默重拉一次。
+     *
+     * 签到这一步往往不是在 App 里点的 —— 用户走到馆内的签到机前扫码，或者用别的设备完成，
+     * 本机不主动重拉就会一直停在「待签到」，于是出现「已经扫码签到却提示尚未签到」。
+     * 只在存在待签到订单时才轮询：全部变成使用中/已结束就自然停下，不会白白耗流量。
+     *
+     * 失败一律静默：屏幕上是一份仍然可用的旧数据，弹出错误条只会打断用户。
+     */
+    val pendingCount = bookings.count { it.isPendingSign }
+    LaunchedEffect(pendingCount) {
+        if (pendingCount == 0) return@LaunchedEffect
+        while (true) {
+            delay(15_000)
+            syncing = true
+            try {
+                bookings = withContext(Dispatchers.IO) { LibrarySeatApi.myBookings() }
+                hint = ""
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Throwable) {
+                // 静默
+            } finally {
+                syncing = false
+            }
         }
     }
 
@@ -154,6 +186,18 @@ fun SeatBookingsScreen(
                 modifier = Modifier.fillMaxSize(),
                 contentPadding = PaddingValues(bottom = 28.dp),
             ) {
+                if (pendingCount > 0) {
+                    item("sync") {
+                        Text(
+                            text = stringResource(
+                                if (syncing) R.string.seat_sync_now else R.string.seat_sync_auto,
+                            ),
+                            style = MiuixTheme.textStyles.footnote2,
+                            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                            modifier = Modifier.padding(horizontal = 22.dp, vertical = 6.dp),
+                        )
+                    }
+                }
                 if (hint.isNotEmpty()) {
                     item("hint") {
                         Text(
@@ -246,53 +290,53 @@ private fun BookingCard(
                 color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
             )
             Spacer(Modifier.height(4.dp))
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.End,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
+            // 第六十九轮：动作按钮统一为 32dp 胶囊（原来用 Miuix TextButton，两个并排会顶满一行）
+            CardActionBar {
                 if (busy) {
                     InfiniteProgressIndicator(modifier = Modifier.size(18.dp))
-                    Spacer(Modifier.width(10.dp))
                 }
                 if (booking.canCheckIn()) {
-                    TextButton(
+                    CardActionChip(
                         text = stringResource(R.string.seat_action_check_in),
                         onClick = { onAction(SeatAction.CHECK_IN) },
+                        primary = true,
                         enabled = !busy,
                     )
                 }
                 if (booking.isInUse) {
-                    TextButton(
+                    CardActionChip(
                         text = stringResource(R.string.seat_action_step_out),
                         onClick = onStepOut,
+                        primary = true,
                         enabled = !busy,
                     )
-                    TextButton(
+                    CardActionChip(
                         text = stringResource(R.string.seat_action_check_out),
                         onClick = onCheckOut,
                         enabled = !busy,
                     )
                 }
                 if (booking.isAway) {
-                    TextButton(
+                    CardActionChip(
                         text = stringResource(R.string.seat_action_come_back),
                         onClick = { onAction(SeatAction.COME_BACK) },
+                        primary = true,
                         enabled = !busy,
                     )
-                    TextButton(
+                    CardActionChip(
                         text = stringResource(R.string.seat_action_check_out),
                         onClick = onCheckOut,
                         enabled = !busy,
                     )
                 }
                 if (booking.isPendingSign) {
-                    TextButton(
+                    CardActionChip(
                         text = stringResource(R.string.seat_sign_code_action),
                         onClick = onSignCode,
+                        primary = true,
                         enabled = !busy,
                     )
-                    TextButton(
+                    CardActionChip(
                         text = stringResource(R.string.seat_action_cancel),
                         onClick = onCancel,
                         enabled = !busy,
@@ -381,9 +425,10 @@ fun SeatSignCodeScreen(modifier: Modifier = Modifier) {
                     )
                 }
                 Spacer(Modifier.height(12.dp))
-                TextButton(
+                CardActionChip(
                     text = stringResource(R.string.seat_sign_code_refresh),
                     onClick = { if (!loading) reload++ },
+                    primary = true,
                     enabled = !loading,
                 )
             }

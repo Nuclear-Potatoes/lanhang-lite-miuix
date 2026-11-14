@@ -41,6 +41,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.graphics.drawable.toBitmap
+import com.lanhang.miuix.ui.miuix.CardActionChip
 import com.lanhang.miuix.R
 import com.lanhang.miuix.core.isCancellation
 import com.lanhang.miuix.core.userDetail
@@ -321,7 +322,7 @@ fun LibrarySeatScreen(
                 color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
             )
             Spacer(Modifier.weight(1f))
-            TextButton(
+            CardActionChip(
                 text = stringResource(R.string.library_seat_my_bookings),
                 onClick = onOpenBookings,
             )
@@ -502,9 +503,10 @@ fun LibrarySeatScreen(
                 Spacer(Modifier.width(8.dp))
             }
             Spacer(Modifier.weight(1f))
-            TextButton(
+            CardActionChip(
                 text = stringResource(R.string.library_seat_book),
                 onClick = { book() },
+                primary = true,
                 enabled = selected != null && !booking,
             )
         }

@@ -30,7 +30,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import com.lanhang.miuix.ui.miuix.ActionRow
 import com.lanhang.miuix.R
 import com.lanhang.miuix.moments.FilterDivider
 import com.lanhang.miuix.moments.FilterSectionLabel
@@ -175,16 +178,11 @@ fun ClassReminderScreen(
         if (enabled && !canNotify) {
             item("notifyWarning") {
                 Card(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
-                    Column(Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
-                        Text(
-                            text = stringResource(R.string.class_reminder_no_permission),
-                            style = MiuixTheme.textStyles.footnote1,
-                            color = MiuixTheme.colorScheme.primary,
-                        )
-                        TextButton(
-                            text = stringResource(R.string.class_reminder_open_settings),
+                    Column(Modifier.padding(vertical = 4.dp)) {
+                        ActionRow(
+                            title = stringResource(R.string.class_reminder_no_permission),
+                            action = stringResource(R.string.class_reminder_open_settings),
                             onClick = { context.openNotificationSettings() },
-                            modifier = Modifier.padding(top = 4.dp),
                         )
                     }
                 }
@@ -361,10 +359,10 @@ fun ClassReminderScreen(
                 )
                 if (!dndOk) {
                     FilterDivider()
-                    TextButton(
-                        text = stringResource(R.string.class_reminder_dnd_open),
+                    ActionRow(
+                        title = stringResource(R.string.class_reminder_dnd_perm),
+                        action = stringResource(R.string.class_reminder_dnd_open),
                         onClick = { ClassDnd.openSettings(context) },
-                        modifier = Modifier.padding(start = 8.dp, top = 2.dp, bottom = 2.dp),
                     )
                 } else if (autoDndOn) {
                     FilterDivider()
@@ -501,37 +499,30 @@ fun ClassReminderScreen(
         }
 
         item("test") {
-            Card(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
-                Column(Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
-                    Text(
-                        text = if (exactOk) {
-                            stringResource(R.string.class_reminder_test_hint)
-                        } else {
-                            stringResource(R.string.class_reminder_no_exact)
-                        },
-                        style = MiuixTheme.textStyles.footnote1,
-                        color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+            Card(modifier = Modifier.padding(horizontal = 12.dp)) {
+                // 第六十九轮：提示文字降为卡片尾注，动作本身做成两行（右侧主题色动词）
+                if (!exactOk) {
+                    ActionRow(
+                        title = stringResource(R.string.class_reminder_exact_perm),
+                        action = stringResource(R.string.class_reminder_open_settings),
+                        onClick = { context.openExactAlarmSettings() },
                     )
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(top = 4.dp),
-                        horizontalArrangement = Arrangement.End,
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        if (!exactOk) {
-                            TextButton(
-                                text = stringResource(R.string.class_reminder_open_settings),
-                                onClick = { context.openExactAlarmSettings() },
-                                modifier = Modifier.padding(end = 8.dp),
-                            )
-                        }
-                        TextButton(
-                            text = stringResource(R.string.class_reminder_test),
-                            onClick = { ClassReminder.scheduleTest(context) },
-                        )
-                    }
                 }
+                ActionRow(
+                    title = stringResource(R.string.class_reminder_test),
+                    action = stringResource(R.string.class_reminder_test_action),
+                    onClick = { ClassReminder.scheduleTest(context) },
+                )
+                Text(
+                    text = if (exactOk) {
+                        stringResource(R.string.class_reminder_test_hint)
+                    } else {
+                        stringResource(R.string.class_reminder_no_exact)
+                    },
+                    style = MiuixTheme.textStyles.body2.copy(fontSize = 14.sp),
+                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                    modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 14.dp),
+                )
             }
         }
     }
@@ -539,28 +530,30 @@ fun ClassReminderScreen(
 
 /** 值行：左边名字，右边当前值 + 箭头，点开是单选对话框 */
 @Composable
+/** 值行：左边名字，右边当前值 + 箭头，点开是单选对话框 */
 private fun ValueRow(title: String, value: String, onClick: () -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .pressableRow(onClick = onClick, corner = 16.dp)
-            .padding(horizontal = 16.dp, vertical = 13.dp),
+            .padding(horizontal = 16.dp, vertical = 14.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
             text = title,
-            style = MiuixTheme.textStyles.body1,
+            style = MiuixTheme.textStyles.body2.copy(fontSize = 17.sp, fontWeight = FontWeight.Medium),
             color = MiuixTheme.colorScheme.onSurface,
             modifier = Modifier.weight(1f),
         )
+        Spacer(Modifier.width(12.dp))
         Text(
             text = value,
-            style = MiuixTheme.textStyles.body1,
+            style = MiuixTheme.textStyles.body2.copy(fontSize = 14.5.sp),
             color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
         )
         Text(
             text = "  \u203A",
-            style = MiuixTheme.textStyles.body1,
+            style = MiuixTheme.textStyles.body2.copy(fontSize = 14.5.sp),
             color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
         )
     }
@@ -568,6 +561,7 @@ private fun ValueRow(title: String, value: String, onClick: () -> Unit) {
 
 /** 一行「标题 + 说明 + 开关」（Card 内部用，自己不带卡片背景） */
 @Composable
+/** 一行「标题 + 说明 + 开关」（Card 内部用，自己不带卡片背景） */
 private fun SwitchLine(
     title: String,
     summary: String?,
@@ -578,21 +572,21 @@ private fun SwitchLine(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 13.dp),
+            .padding(horizontal = 16.dp, vertical = 14.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Column(Modifier.weight(1f)) {
             Text(
                 text = title,
-                style = MiuixTheme.textStyles.body1,
+                style = MiuixTheme.textStyles.body2.copy(fontSize = 17.sp, fontWeight = FontWeight.Medium),
                 color = MiuixTheme.colorScheme.onSurface,
             )
             if (summary != null && summary.isNotBlank()) {
                 Text(
                     text = summary,
-                    style = MiuixTheme.textStyles.footnote1,
+                    style = MiuixTheme.textStyles.body2.copy(fontSize = 14.sp),
                     color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                    modifier = Modifier.padding(top = 2.dp),
+                    modifier = Modifier.padding(top = 3.dp),
                 )
             }
         }
@@ -622,17 +616,18 @@ private fun OptionRow(label: String, selected: Boolean, onClick: () -> Unit) {
 
 /** 权限一行：左边名字，右边「已授权 / 未授权」，点一下去对应系统页 */
 @Composable
+/** 权限一行：左边名字，右边「已授权 / 未授权」，点一下去对应系统页 */
 private fun PermRow(title: String, granted: Boolean, onClick: () -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .pressableRow(onClick = onClick, corner = 16.dp)
-            .padding(horizontal = 16.dp, vertical = 13.dp),
+            .padding(horizontal = 16.dp, vertical = 14.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
             text = title,
-            style = MiuixTheme.textStyles.body1,
+            style = MiuixTheme.textStyles.body2.copy(fontSize = 17.sp, fontWeight = FontWeight.Medium),
             color = MiuixTheme.colorScheme.onSurface,
             modifier = Modifier.weight(1f),
         )
@@ -640,7 +635,7 @@ private fun PermRow(title: String, granted: Boolean, onClick: () -> Unit) {
             text = stringResource(
                 if (granted) R.string.class_reminder_perm_granted else R.string.class_reminder_perm_missing
             ),
-            style = MiuixTheme.textStyles.footnote1,
+            style = MiuixTheme.textStyles.body2.copy(fontSize = 14.5.sp),
             color = if (granted) {
                 MiuixTheme.colorScheme.onSurfaceVariantSummary
             } else {
@@ -649,6 +644,7 @@ private fun PermRow(title: String, granted: Boolean, onClick: () -> Unit) {
         )
     }
 }
+
 
 @Composable
 private fun advanceLabelText(minutes: Int): String =

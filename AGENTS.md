@@ -1,3 +1,567 @@
+### 69.11 发版 1.1.22（用户 2026-11-14 指定版本号）
+
+用户原话：「push发版，版本号应为1.1.22」。
+
+- `versionCode 73` → **74**、`versionName "1.1.21"` → **"1.1.22"**（`app/build.gradle.kts` L26-27）。
+- `VERSION.md` 37,494 → 38,056 字节，在版本表分隔线后插入 `| 1.1.22 | 74 | …` 一行，覆盖第 65–69 轮全部内容。
+- 编译 `BUILD SUCCESSFUL in 1m 48s`、退出码 0、错误 0（日志 `%TEMP%\b70.txt`）。
+- APK **8,676,448 字节**，SHA256 `D873D675B291AD3638F97A75970D32F303CD27273095674F15B75E2CEE7C63CF`，已复制为项目根 `lanhang-miuix-release.apk`。
+- 本轮顺带把第 65–69 轮（课表抖动架构改造、周视图动画、Nexio 规范重做、全站按钮统一）一并发布，此前一直停留在 `versionCode 72` / `1.1.20`。
+### 69.8 第 2 条第 1 步：添加课程页按 Nexio 规范重做
+
+设计口径先落成 `scratch/nexio-design.md`（148 行），再逐条落到代码。`schedule/ManualCourseScreen.kt` 53,056 → 56,979 字节（1,086 → 1,185 行）。
+
+- 行规范：`FormRow` 标签 `body2.copy(fontSize = 17.sp, fontWeight = Medium)` + `weight(1f)`（不再钉死 88dp）；输入 `BasicTextField` 用 `weight(1.86f)`（≈ 35% : 65%，等价 `fillMaxWidth(0.65f)` 但不与 weight 抢测量）；`TextAlign.End`；三行基本信息**去掉两个 `Divider()`**，首行 17dp / 中间 14dp / 末行 17dp。
+- 星期按钮：44dp 高胶囊 → `Chip` 内部钉死 `height(32.dp)` + `RoundedCornerShape(10.dp)` + `clickable(interactionSource = null, indication = null)` + 13sp，调用侧只传 `weight(1f)`，间距 8dp → 6dp。
+- 周次快捷态：圆形单选 `RadioTag` → **三态方框**（`TriState.OFF/ON/PARTIAL` + `TriBox`，20dp 方块、6dp 圆角、ON 打勾、PARTIAL 横条）。**没有直接用 Miuix `Checkbox`** ——它自带 48dp 行高会把卡片顶爆，所以自己画框、点击交给外层可点 Row。
+- 周次与节次网格：`spacedBy(8.dp)` → `6.dp`，6 列 × 32dp × 13sp，末行不满左对齐。
+
+实测（`scratch/a69_1.png`、`a69_3.png`、`a69_4.png`）：三态逻辑正确 —— 点周次 3 后再点「单周」→「单周」打勾、「全部」半选、「双周」空框；再点 3 取消后仍保持半选。
+
+### 69.9 第 2 条第 2 步：上课提醒页按 Nexio 规范重做
+
+`schedule/ClassReminderScreen.kt` 32,571 → 32,725 字节。核心是把「卡片里的独立按钮」换成「卡片里的行」。
+
+- `ValueRow` / `SwitchLine` / `PermRow` 三个组件统一为 17sp Medium 标签 + 14.5sp 右侧值，行内边距 13dp → 14dp，开关说明 footnote1（13sp）→ 14sp。
+- 新增 `ActionRow`（后提到 `ui/miuix/MiuixActions.kt` 共享）：整行可点、左侧 17sp Medium、右侧主题色动词 14.5sp + `›`。替换掉全部四处 `TextButton`：
+  - 「发一条测试提醒」→ 「立即发送 ›」（用户点名的那颗按钮）
+  - 「去授权」（勿扰）→ 「勿扰权限 / 去授权 ›」
+  - 通知权限缺失 → 「通知权限缺失 / 去系统设置 ›」
+  - 精确闹钟缺失 → 「「闹钟和提醒」权限 / 去系统设置 ›」
+- 提示语降为卡片尾注 14sp。新增三个字符串：`class_reminder_test_action`=立即发送、`class_reminder_dnd_perm`=勿扰权限、`class_reminder_exact_perm`=「闹钟和提醒」权限。
+
+实测（`scratch/r69_2.png`、`r69_3.png`）：三张卡片的标签、副标题、值、动作行字号与行高一致，动作行右侧是主题色动词而不是实心按钮。
+
+### 69.10 第 2 条第 3 步：全站卡片动作按钮统一
+
+新建 `ui/miuix/MiuixActions.kt`（4,982 字节），三个共享件：
+
+- `CardActionChip(text, onClick, modifier, primary, enabled)`：**32dp 高 + 10dp 圆角 + 13sp + 无涟漪**。`primary = true` 用主题色文字 + 12% 主题色底（表示「这条记录现在最该点的那个」），其余灰字 + `surfaceContainerHighest` 底。存在的理由是 Miuix 的 `TextButton` 自带 40dp 最小高度，两个并排就顶满一行还把卡片撑高。
+- `CardActionBar { }`：右对齐、8dp `spacedBy` 的一排胶囊。
+- `ActionRow`：从 `ClassReminderScreen.kt` 的 private 版提上来的公共版。
+
+替换了 7 个文件共 16 处 `TextButton`：
+
+| 文件 | 处数 | 说明 |
+|---|---|---|
+| `library/SeatBookingsScreen.kt` | 8 | 签到 / 暂离 / 退座 / 返回 / 取消 / 扫码 / 刷新，主操作标 `primary` |
+| `campusnet/CampusNetScreen.kt` | 3 | 刷新 / 登录（primary）/ 退出 |
+| `library/LibrarySeatScreen.kt` | 2 | 我的预约 / 预约（primary） |
+| `im/FriendRequestsScreen.kt` | 1 | 接受（primary） |
+| `mine/UserProfilePage.kt` | 1 | 发私信（primary，去掉 `fillMaxWidth()`） |
+| `moments/MomentsFilterScreen.kt` | 1 | 添加规则（primary） |
+| `schedule/ClassReminderScreen.kt` | 4 | 改用共享 `ActionRow`，删除本地 private 版 39 行 |
+
+**有意保留 `TextButton` 的地方**：`ui/miuix/MiuixDialog.kt`（对话框按钮，Miuix 规范就是文字按钮）、`ui/shell/ShellBars.kt`（工具栏）、`im/ImScreens.kt` 的 L287/L289（对话框「取消 / 加入」）、L859/L867（键盘 / 语音切换）、L879（发送）—— 这些都不是「卡片内的记录动作」，换掉会破坏既有交互位置。
+
+实测（`scratch/r69_4.png`、`r69_5.png`、`r69_6.png`）：图书馆首页右上「我的预约」、底部「预约」（未选座时置灰）、校园网右下「登录」均为 32dp 胶囊，与添加课程页的星期胶囊同一套语法。
+
+产物：`versionCode 72` / `versionName "1.1.20"`，APK 8,676,452 字节 / SHA256 `CFC82E5DC309A4514A9B308026FC47331D0CCDF1655D1E40AF303C514F4E3C4B`。用户本轮未提 push，故不升版本、不推送。
+
+教训：
+1. **同一个 UI 概念在不同组件里各写一遍，就一定会分叉。** `ActionRow` 先在 `ClassReminderScreen.kt` 里当 private 函数写，第二步要复用时只能复制，于是提出到 `ui/miuix/` 并删掉本地版 —— 跨页面的视觉统一必须以「共享组件」为前提，不能靠各处照着改。
+2. **`Find-Block` + 整函数替换会留下原函数上方的 `@Composable` 和 KDoc。** 第一次编译报三处 `This annotation is not repeatable.`，就是新体里又写了一份注解。修法是行级去重：遇到 `@Composable` 时向上跳过空行与注释行，若已经有一份就丢弃本行；单行 `/** ... */` 与上一非空行重复时也丢弃。之后再 `WriteAllText`，花括号 net/min 双零校验。
+3. **路径里 `miuix` 又拼成 `muix` 了。** 新建 `MiuixActions.kt` 时写成了 `com/lanhang/muix/ui/miuix/`，`write` 工具直接建了目录并写成功（父目录不存在会一路创建）。发现后 `Move-Item` 到正确路径、确认误建目录为空再 `Remove-Item`。**新建文件前必须先把目标目录 `Test-Path` 一遍，不能靠写成功后回看。**
+## 69. 第六十九轮（2026-11-14）：周视图过渡动画异常
+
+### 69.1 用户原话
+
+> 第一，课表的另一个视图即周视图的过渡动画切换异常。第二，根据nexio的设计重做你的添加课程页面、上课提醒与所有的交互按钮（如上课提醒中的"发一条测试提醒"按钮。
+
+### 69.2 第 1 条：周视图没有过渡动画
+
+**现象**：在列表（周）视图里翻周，没有泳道滑入滑出的动画，只有一张旧画面横着扫过去，看起来像硬切。
+
+**根因**：`slideSwap()` 里那一行
+
+```kotlin
+val movers = listOfNotNull(courseHeaderRow, courseBlockArea)
+```
+
+这两个字段都属于**网格视图**——它们是 `renderGrid()` 里建的 `headerRow` 与 `blockArea`。
+周视图的两个滚动内容容器是 `dayStrip`（顶部日期摘要条）与 `daySections`（每天的日程卡），
+**从来没有登记给动画用过**。于是周视图翻周时 `movers` 要么为空、要么指向网格那边已被
+`removeAllViews` 摘掉的孤儿 View：
+
+- 「动的那一下」根本没发生在任何可见 View 上；
+- 只剩下 ghost 快照横着扫过去。
+
+这就是用户看到的「过渡动画切换异常」。
+
+第六十七轮把动画从「整层位移」收敛成「只位移课程列」时，只处理了网格那一条路径，
+周视图这条路从那时起就已经断了——只是网格视图太常用，一直没被发现。
+
+**修法（`schedule/ScheduleFragment.kt`，130,614 → 132,895 字节）**
+
+1. 新增字段，把周视图的两个容器登记进来：
+
+```kotlin
+private var weekMovers: List<View> = emptyList()
+```
+
+2. `renderWeekView()` 的**两个出口**都要赋值（漏一个就会出现「某周翻过去之后又不动的」）：
+
+```kotlin
+weekMovers = listOf(dayStrip, daySections)
+```
+
+无数据早退分支（`data == null`）与正常结尾各一处。
+
+3. `slideSwap()` 按当前视图取 movers：
+
+```kotlin
+val movers = if (showingGrid) {
+    listOfNotNull(courseHeaderRow, courseBlockArea)
+} else {
+    weekMovers
+}
+```
+
+4. 轴宽也按视图分：周视图没有左侧时间轴，整宽都是内容，快照不必裁左边：
+
+```kotlin
+val axisW = axisOverride ?: if (showingGrid) gridAxisW.coerceIn(0, width / 2) else 0
+```
+
+5. 视图互切（网格 ↔ 列表）时传 `axisOverride = 0`：两张快照形状压根不同（一个有左侧
+   时间轴、一个没有），绝不能拿当前视图的轴宽去裁另一张快照，否则会把旧画面的左边一截削掉。
+
+```kotlin
+slideSwap(activeContentLayer(), snapshot, if (grid) 1 else -1, axisOverride = 0)
+```
+
+### 69.3 验证（模拟器 1220×2656）
+
+切到列表视图后连点「下一周」9 次并连拍 6 张：
+
+- `v1.png`（352,224 字节）是**动画中间帧**：第 13 周的内容整体向左位移、右侧露出空白，
+  内容只有一份，无重叠——这正是泳道动画在跑的证据（改前这一下是完全不动的）。
+- `v2`–`v6`（253,460 / 260,435 / 258,842 / 258,848 / 259,464 字节）为连续翻周过程，
+  每张都是单份内容、日期摘要条与日程卡对齐正常，无残影、无重影、无卡死。
+- 落点第 14 周，日期摘要条周一~周五与下方日程卡逐项一致。
+
+### 69.4 产物
+
+- `ScheduleFragment.kt` 130,614 → **132,895 字节**（花括号净 0）
+- APK **8,675,160 字节**，SHA256 `15CC24D6EDAA3F599613C37A5CC3776BC5A7CDFE1E3A3D78FECD7BA19B5EC59C`
+- 已复制为项目根 `lanhang-miuix-release.apk`，`adb install -r` 输出 `Success`
+- 版本仍 `versionCode 72` / `versionName "1.1.20"`（本轮用户未要求 push）
+
+### 69.5 第 2 条：尚未开始
+
+用户第 2 条要求「根据 nexio 的设计重做添加课程页面、上课提醒与所有的交互按钮」。
+这是一次**结构性重做**，涉及：
+
+- `schedule/ManualCourseScreen.kt`（53 KB，添加/编辑课程整个表单）
+- 上课提醒页（`class_reminder_*` 共 80 余个字符串键，含超级岛、勿扰、次日提醒等分组）
+- 全站交互按钮的视觉统一
+
+参考对象是 `NexioSchedule` 的 `AddCourseDialog.kt`（66 KB）、`TimeConfigEditScreen.kt`（125 KB）、
+`CourseReminderScreen.kt`（100 KB）。按每轮 40 分钟的执行纪律，这一条需要单独安排轮次，
+本轮先交付第 1 条。
+
+### 69.6 教训
+
+1. **同一条动画代码被两种视图共用时，两种视图的内容容器都要登记。** 只处理常用的那一条，
+   另一条会静默失效——而且失效得很像「没有设计动画」，不容易被当成 bug 报出来。
+2. **`renderXxx()` 的所有出口都要维护同一份状态。** 早退分支（无数据、无权限、无网络）
+   最容易漏，漏了之后表现为「某些数据下正常、某些数据下失效」。
+3. **快照裁剪宽度必须与快照自身来源一致。** 拿 A 视图的轴宽去裁 B 视图的快照，
+   会静默丢内容，而且只在互切的那一帧出现。
+### 69.7 补正（用户 2026-11-14 二次反馈）：手势拖动切周时「左右分裂」
+
+**用户原话**：「不同周次间滑动切换时，左半边的内容不会移动，只有右半边的内容在移动。导致周次界面直接分裂」。
+
+**这是另一条路径，69.2 改的 `slideSwap()` 管不到它。**
+
+点「‹ / ›」按钮走的才是 `slideSwap()`；**左右滑动切周走的是 `startPager()`**（第三十八轮那套
+「手势期间只跟静态位图走」的实现）。两者共用同一个「轴线宽度」概念，但取法不同：
+
+```kotlin
+private fun axisWidthPx(): Int {
+    val active = runCatching { activeContentLayer() }.getOrNull()
+    val gridW = if (gridAxisW > 0) gridAxisW else dp(40)
+    val listW = runCatching { daySections.left + daySections.width }.getOrDefault(0)   // ← 病灶
+    val w = if (active === contentGrid) gridW else (if (listW > 0) listW else dp(40))
+    return w
+}
+```
+
+周视图分支返回的是 `daySections.left + daySections.width`。而 `daySections` 在
+`fragment_schedule.xml` 里是 **`match_parent`** —— 算出来就是**整屏宽 1220**，
+紧接着在 `startPager()` 里被夹了一道：
+
+```kotlin
+val axisW = (content.left + axisWidthPx()).coerceIn(0, layer.width / 2)   // → 610，半屏
+```
+
+后果（`startPager()` 全部按 `axisW` 分栏）：
+
+- L668 `if (axisW > 0)` 成立 → 把旧快照的 `0..610` 裁成一条 `axis`，`addView` 钉在原位；
+- L704 `colsW = w - axisW` → 新周位图只截了**右半边**；
+- L729/741/779 所有位移都带 `axisW` 偏移。
+
+于是拖动切周时：**左半边被当成「钉住的时间轴」原地不动，只有右半边在滑** —— 正是用户说的
+「左半边不动、右半边动、界面裂成两半」。
+
+**修法**：周视图没有左侧时间轴，轴线宽度必须是 **0**，与 69.2 里 `slideSwap()`
+的 `else 0` 保持一致。
+
+```kotlin
+private fun axisWidthPx(): Int {
+    val active = runCatching { activeContentLayer() }.getOrNull()
+    val gridW = if (gridAxisW > 0) gridAxisW else dp(40)
+    return if (active === contentGrid) gridW else 0
+}
+```
+
+`axisW = 0` 之后：`if (axisW > 0)` 不成立（不添加钉住的轴条）、`colsW = 全屏宽`、
+新周位图整幅截取、位移不带偏移 —— 整幅画面一起平移。
+
+**验证**（模拟器 1220×2656，周视图，用 `input motionevent` 逐段拖动并抓中途帧）：
+`m1.png`（240,416 B）与 `m3.png`（240,380 B）都是「整幅画面同步左移」——
+旧周的周二/周三/周四/周五依次向左退出、新周的周一/周二从右侧进入，左右两半**位移量一致**，
+没有任何一半停在原地。修复前同样操作会看到左 610px 完全静止。
+
+**教训**：同一个概念（「轴线宽度」）在两套动画实现里各算各的，改了一处另一处照旧出错。
+周视图的轴宽本来是「整屏宽」，这个值在**钉住时间轴**的语义下毫无意义 ——
+它唯一的作用就是把画面切成两半。凡是「取一个宽度当分栏依据」的地方，都要先问：
+这个视图**真的有**那一栏吗？没有就必须给 0，不能给「一个看起来合理的数」。
+## 68. 第六十八轮（2026-11-13）：切回课表被压缩到很扁
+
+### 68.1 用户原话
+
+「从另一个页面的下方切换到课表页时，课表显示被挤压到很扁又恢复」（附真机录屏 `Screenrecorder-2026-11-13-22-09-27-199.mp4`）。
+
+### 68.2 五轮试错（全部无效，记下来免得再犯）
+
+| 尝试 | 做法 | 结果 |
+|---|---|---|
+| 第 1 版 | `renderGrid()` 入口拦「过渡窗口内」，条件写成 `&& contentFilled() > 0`（想避免白屏） | 无效。恰好放走唯一会出事的路径：切回来时 `gridContent` 可能还没有子 View，`contentFilled()` 返回 0，守卫放行 |
+| 第 2 版 | 去掉放行条件，窗口 400 → 450ms | 无效 |
+| 第 3 版 | 高度不可信时 `return` 且不清容器 | **更糟：永久白屏**。视图重建后容器本来就是空的，一 `return` 就再没人画 |
+| 第 4 版 | `availH` 退化成 `lastLayoutHeight` 兜底 | 无效 |
+| 第 5 版 | 窗口 450 → 900ms | 无效。扁的那一帧不在窗口边界上，是**窗口内某次重排**吃到了 810px |
+| 第 6 版 | 入口和取值处各加「高度 < 屏幕 55% 就跳过」 | 无效。入口检查时 `gridScroll.height` 还是 0（放行），等到取值处已经变成 810px — 而 810px 本身「看起来是合法高度」，判断不出对错 |
+
+### 68.3 真正的原因
+
+`renderGrid()` 每次都现读 `gridScroll.height`。切回课表的那一段时间里，这个值会先经过 **约 810px** 的中间态再到正常的 **约 1900px**。810px 不是「0 或异常」，它就是个能算出行高的正常数字 —— 于是排出一张十行挤在半屏的课表。任何「判断这个高度对不对」的写法都拦不住它，因为从数值上看它没毛病。
+
+### 68.4 参考 NexioSchedule 得到的思路
+
+用户提供了 `NexioSchedule-master.zip`。它的课表把几何**预先算好再传进去**：
+
+```kotlin
+data class ScheduleGridGeometry(
+    val dayBounds: Map<Int, FloatArray>,
+    val sectionHeightPx: Float,
+    val morningSections: Int,
+    ...
+    val sectionTopDp: Map<Int, Float>,
+)
+```
+
+绘制时绝不回头问容器「你现在多高」。而我们是反过来的：每次渲染都现读容器高度 —— 所以过渡中间值必然渗进来。
+
+### 68.5 最终修法（`schedule\ScheduleFragment.kt`，133 KB 上下）
+
+引入 `stableAvailH`，**渲染只认它，绝不现读 `gridScroll.height`**：
+
+```kotlin
+// 字段
+private var stableAvailH = 0
+```
+
+写入点只有一处 —— `gridRelayoutTask`，而它只在「布局静止 320ms 之后」才被允许跑：
+
+```kotlin
+val wait = when {
+    tabSettleUntil > now -> (tabSettleUntil - now) + 40L
+    stableAvailH == 0 -> 80L      // 冷启动首次，别让首屏白等
+    else -> 320L                  // 320ms 内没有新的布局变化，才采信这个高度
+}
+gridScroll.postDelayed(gridRelayoutTask, wait)
+```
+
+```kotlin
+if (lastLayoutHeight <= 0 || h != lastLayoutHeight || stableAvailH != h) {
+    lastLayoutHeight = h
+    stableAvailH = h
+    renderGrid()
+}
+```
+
+`renderGrid()` 里：
+
+```kotlin
+val availH = stableAvailH
+if (availH <= 0) { /* 推迟 80ms 重试 */ return }
+```
+
+顶栏收放是 300ms 连续动画，原来 160ms 的防抖太短，采到的正是动画中途值；改 320ms 后中间值根本进不来。
+
+### 68.6 验证
+
+模拟器 1220×2656：工作页下滑三段 → 点回课表 → 连拍 12 张。第 1 张是工作页，**第 2–12 张字节完全相同（364,113）**，没有任何扁的中间帧（修改前第 2、3 张是 163,056 的扁课表）。
+
+极端交替连点 `>`×20 次后：时间轴单份、位置正确，第 18 周网格铺满，无重影。
+
+### 68.7 三条教训
+
+1. **「看起来合法的错误值」比「明显的异常值」难防。** 810px 不是 0、不是负数，任何 `coerceAtLeast`、任何下限判断都放行。真正的解法不是判断它对不对，而是**从架构上不让它进来** —— 只在尺寸静止后采样一次，写进字段，渲染只读字段。
+2. **`return` 要慎用。** 第 3 版为了「不排错」而 `return`，结果把「排错」换成了「永远不排」。判断一个提前返回是否安全，必须回答：**谁负责在条件满足后重新调用我？** 答不上来就不该 return。
+3. **时序问题的修法不该是「等更久」。** 900ms 仍然无效，因为有别的路径在窗口内触发重排。时间窗口只能挡住「已知路径」，挡不住「还没想到的路径」；状态量（稳定高度）+ 唯一写入点才能挡住全部。
+## 67. 第六十七轮（2026-11-13）：泳道动画恢复 + 时间轴彻底静止 + 切回课表不再回弹
+
+### 67.1 用户原话（m02548）
+> 第一，泳道动画被改坏了，快速点击会重影。第二，异常回弹问题还是没有解决，参考视频 Screenrecorder-2026-11-13-19-55-16-641.mp4
+
+### 67.2 第 1 条：泳道动画
+第六十五轮为了消灭「左侧时间栏重叠」，把 `slideSwap` 改成了「旧快照原地淡出、新内容完全不动」。
+方向感没了、观感比原来的泳道差；连点时几份半透明残影同时叠着 —— 这就是用户说的重影。
+
+**真正的病因**（第六十六轮彻查得到）：菜单层级是
+
+```
+contentGrid (SwipePagerLayout)
+└─ gridScroll (NestedScrollView)
+   └─ gridContent (LinearLayout, vertical)
+      ├─ headerRow          ← 周一~周五表头
+      └─ body (LinearLayout, horizontal)
+         ├─ timeCol         ← 左侧时间轴
+         └─ blockArea       ← 课程块（FrameLayout 绝对定位）
+```
+
+`slideSwap(layer = contentGrid)` 位移的是 `contentGrid` 的子 View —— 也就是整个 `gridScroll`，
+时间轴在里面，必然跟着滑。旧快照又是整屏截图，于是「旧轴线 + 新轴线」同时出现。
+
+**修法（三处）**
+1. `slideSwap` 只位移两个课程列容器，时间轴不参与：
+   ```kotlin
+   val movers = listOfNotNull(courseHeaderRow, courseBlockArea)
+   val ghostShift = if (direction >= 0) -ghostW.toFloat() else ghostW.toFloat()
+   // 旧列整列滑出、新列整列从另一侧滑入；时间轴既位移也不被覆盖
+   ```
+2. `renderGrid()` 里给课程块区套一个同宽同高的裁剪盒 `blockClip`（`clipChildren = true`），
+   块区滑出边界的部分直接被裁掉，不会再压到左边的 `timeCol`。
+3. `ghost` 也放进 `ghostBox`（同样 `clipChildren = true`、`leftMargin = gridAxisW`），
+   它整列滑出时右边缘会扫过时间轴区域，不裁就会把时间轴盖住。
+   `clearTransitionLeftovers()` 的判定从 `c is ImageView && c.tag == GHOST_TAG` 放宽成
+   `c.tag == GHOST_TAG`，以便连点后把 ghostBox 一起清掉。
+
+### 67.3 第 2 条：切回课表不再回弹
+前几轮（63/64/65/66）分别在改「比较方向」「采样时机」，都绕不开同一件事：
+**只要在切换 Tab 后的过渡窗口里排一次版，用到的就一定是错的高度。**
+顶栏正在从上一页的形态线性过渡到课表的形态，`gridScroll.height` 在这几百毫秒里持续变化；
+先按中间值排一遍（屏幕上表现为被拉长），过渡结束再按最终值排一遍（表现为弹一下）。
+
+**修法**：把守卫从「比较高度」提升为「禁止排布」，并提到 `renderGrid()` 最前面：
+
+```kotlin
+if (tabSettleUntil > android.os.SystemClock.uptimeMillis() && contentFilled() > 0) {
+    if (::gridScroll.isInitialized) {
+        gridScroll.removeCallbacks(gridRelayoutTask)
+        gridScroll.postDelayed(gridRelayoutTask, (tabSettleUntil - now) + 40L)
+    }
+    return
+}
+```
+
+`contentFilled() > 0` 这个条件是必须的：首次进入课表或切到空周时界面上什么都没有，
+白屏 400ms 比轻微跳动更糟，那种情况必须立刻排。
+
+### 67.4 实测（模拟器 1220×2656，density 2.925，第 9→20 周）
+- 极端交替连点（`>`×5、`<`×5、`>`×4 共 14 次）+ 连拍 5 张：时间轴**单份、清晰**，
+  帧 `scratch\v66d\r1.png`（动画中）与 `r9.png`（稳定）对比，时间轴坐标逐像素不变。
+- 稳定态 dump：`第 13 周`、表头周一~周五、时间轴 `1 [18,630]` / `08:00 [18,688]` /
+  `08:45 [18,726]` … `14:55 [18,1560]`，全部单份。
+- 切回课表：工作页下滑三段（顶栏收起）→ 点课表 tab → 连拍 8 张，
+  `t2`–`t8` **字节完全相同**（362,985），即从第一张完整帧起就没有二次重排。
+
+### 67.5 产物
+- `ScheduleFragment.kt` 126,049 → **129,418 字节**
+- APK **8,675,160 字节**，SHA256 `D0F1EBA245267B2F0754441754955842CC66D296FA57BDF06A83560AA0127F6B`
+- 已复制为项目根 `lanhang-miuix-release.apk`，`adb install -r` 输出 `Success`
+- 版本仍为 `versionCode 72` / `versionName "1.1.20"`（本轮用户未要求 push）
+
+### 67.6 教训
+1. **「位移一个容器」之前先看清容器里有什么。** `contentGrid` 里塞着整棵滚动树，
+   位移它等于把时间轴一起拖走；正确的粒度是「只位移课程列」。
+2. **`translationX` 不改变布局占位，但会改变绘制位置。** 兄弟 View 位移后会画到别人身上，
+   靠 `clipChildren` 的裁剪盒才能真正隔开。
+3. **过渡窗口内的重排是无解的，只能禁止。** 改判据只能把「拉长」换成「跳动」，
+   换个方向再换回来；把排布整体推到窗口结束后，才是一次到位。
+4. **`gridRelayoutTask` 内部 `postDelayed` 它自己会触发 Kotlin 类型推断递归**，
+   报 `Type checking has run into a recursive problem`，必须显式标注
+   `private val gridRelayoutTask: Runnable = Runnable { … }`。
+5. **PowerShell 函数里 `Write-Output` 会被调用处的赋值一起捕获**，
+   `$t = Rep …` 会把 "OK xxx" 和文件内容拼进 `$t`，写盘后文件开头多出一串垃圾。
+   诊断输出一律用 `Write-Host`。
+## 66. 第六十六轮（2026-11-13）：翻页连点时左侧时间栏重叠、切回课表仍回弹
+
+### 66.1 用户原话
+
+> 第一，快速点击翻页键时，左侧时间栏UI依旧会发生重叠。第二，工作/工作圈内下滑一段距离后，返回课表页依旧会异常回弹一下。彻查问题并修复
+
+### 66.2 第 1 条：左侧时间栏重叠
+
+**现象**：快速连点「下一周 / 上一周」时，左侧那条时间轴会出现两条，重影停在中途不消失。
+
+**彻查**：`ScheduleFragment.slideSwap(layer, snapshot, direction)` 是切周动画的唯一实现。它做的事是：
+
+1. `captureSnapshot(layer)` 把 **整个 `contentGrid`**（FrameLayout，里面装着 `gridScroll`，也就是「时间轴 + 课程列」一整条）画成一张位图；
+2. 把这张位图作为 ghost 盖在最上层；
+3. 把 `layer` 的**所有子 View**（即整个 `gridScroll`）`translationX` 从 ±屏宽 推回 0；
+4. 动画结束后 `removeView(ghost)`。
+
+而代码里第 **570-576 行**早就写明设计意图：
+
+> 两种视图各有自己的轴……切周时这一列**不该跟着滑** —— 它每周都一样，滑出去再滑回来看着就像坏了。
+
+也就是说，「时间轴不动」是当初就定下的规矩，但 `slideSwap` 根本没遵守：它把含时间轴在内的整块内容一起推，ghost 也是整屏快照。于是切周的一瞬间，**旧快照里的时间轴**和**正在滑回来的新时间轴**同时出现 → 用户看到两条。连点时前一次动画被 `cancel()`，`withEndAction` 不执行，重影就永久停在中间。
+
+**修法**（`scratch\p65b_1.ps1`，整段重写 `slideSwap`）：
+
+- 开头先 `clearTransitionLeftovers(layer)` 清场，把上一次没走完的动画与残留 ghost 一并收掉；
+- ghost **只截轴线右侧的课程列**：`axisW = gridAxisW.coerceIn(0, width / 2)`，`Bitmap.createBitmap(snapshot, axisW, 0, ghostW, snapshot.height)`，再用 `LayoutParams(ghostW, layerH).apply { leftMargin = axisW }` 贴回原位。`gridAxisW` 是 `renderGrid()` 里算好的 `timeW + gapW`，就是时间轴实际宽度；
+- ghost 只做 `translationX(-nudge).alpha(0f)` 淡出，`nudge = width * 0.05f * 方向`，即 5% 屏宽的方向性位移，不再是整屏推拉；
+- **新内容完全不做位移动画**，只用 `others.forEach { it.animate().cancel(); it.translationX = 0f; it.alpha = 1f }` 归位。
+
+净效果：时间轴从头到尾不位移、也不会被快照盖住，不管连点多快，屏幕上永远只有一份。
+
+### 66.3 第 2 条：切回课表仍回弹
+
+**现象**：在工作 / 工作圈里下滑一段距离（顶栏收起），再点回课表，课表会先被拉长一下再弹回正常行高。
+
+**为什么前三轮都没修掉**：第 63、64、65 轮改的都是「切回这一帧怎么判高度、判到了要不要重画」：
+
+- 第 63 轮：高度变了就重画；
+- 第 64 轮：只在高度**变小**时重画（下滚收起顶栏会变大，变大会误伤）；
+- 第 65 轮：加 `tabSettleUntil` 过渡窗口，窗口内拒绝采用「更大」的高度。
+
+第 65 轮那一版尤其能说明问题：它只拒「变大」，可**实际高度是单调变小的**（从工作页收起态的中间值，一路收敛到课表的紧凑值），每一步都「比上次小」，守卫一次都没生效，等于白写。
+
+真正的结论是：**在过渡窗口内做任何重排，用的都是错的高度。** 判据怎么调都是在「错的时刻干活的」这条错路上打补丁。
+
+- 先按中间值画一遍 → 用户看到「被拉长」；
+- 顶栏动画走完再按最终值画一遍 → 用户看到「弹一下」。
+
+**修法**（`scratch\p65b_2.ps1`）：窗口期内**一次都不排**，只把任务一路推到窗口结束后，让第一次画出来就是对的。
+
+- `gridScroll.addOnLayoutChangeListener`：高度变化时按 `val wait = if (tabSettleUntil > now) (tabSettleUntil - now) + 40L else 160L` 延后；
+- `gridRelayoutTask`：进任务先查窗口，`if (tabSettleUntil > now) { removeCallbacks; postDelayed((tabSettleUntil - now) + 40L); return }`；出了窗口判据放宽回 `h != lastLayoutHeight`（此时已稳定，方向无关，只求与最终高度对齐）；
+- `onTabSelected()`：删掉原来 `root?.post { … if (h < lastLayoutHeight) { lastLayoutHeight = h; renderGrid() } … }` 整段，改成 `root?.post { ensureContentNotEmpty() }` + 把 `gridRelayoutTask` 推到 `(tabSettleUntil - now) + 40L`；`if (contentFilled() == 0) renderAll()` 保留作白屏兜底；
+- 窗口 `500ms` → `400ms`。
+
+### 66.4 一个 Kotlin 编译坑
+
+`gridRelayoutTask` 的任务体里要 `postDelayed` 它自己，`private val gridRelayoutTask = Runnable { … gridRelayoutTask … }` 会让 Kotlin 报：
+
+```
+e: ScheduleFragment.kt:308:40 Type checking has run into a recursive problem.
+   Easiest workaround: specify the types of your declarations explicitly.
+```
+
+修法就是它字面说的方法 —— 显式标注类型：`private val gridRelayoutTask: Runnable = Runnable { … }`。
+
+### 66.5 验证
+
+- 第 1 条：交替连点 `>`×3 → `<`×3 → `>`×3 → `<`×3 → `>`×2 共 14 次，落第 11 周。`uiautomator dump` 里时间轴文字各一份、坐标正确（`08:00 [18,688][115,726]`、`14:00 [18,1396][115,1434]`、`20:40 [18,2306][115,2344]`），截图 `scratch\s66_03.png` 目视单份、无重影。
+- 第 2 条：工作页下滑三段（顶栏收起）→ 点课表 tab，同一次操作里连抓两帧。t≈0.3s 那帧正处在 Tab 水平转场中间（工作页右滑出、课表左滑入），课表内容**已经就位、行高正确**；t≈2.3s 那帧与稳定态完全一致。整个过程没有出现垂直方向的拉伸与回弹。截图 `scratch\s66_01.png`（第 19 周连点后）、`s66_02.png`（第 18 周交替连点后）、`s66_04.png`（工作页下滑后切回课表）。
+
+### 66.6 教训
+
+1. **先读设计意图注释，再动手改代码。** 第 1 条的正解就写在 `ScheduleFragment.kt` 第 570 行 ——「时间轴不该跟着滑」。改了三轮都在调动画参数，而真正的错是「根本不该动画的东西被动画了」。
+2. **同一个 bug 连修三轮不愈，说明模型错了，不是参数错了。** 第 2 条前三轮都在「判据」上做文章（变大/变小/窗口/阈值），但没变过的那件事才是病灶 —— 在高度还没稳定的时候去排布。换成「窗口内一律不排」之后一次就过。
+3. **诊断日志在 release 构建里没用。** 本轮为了看 `gridScroll.height` 加过 4 处 `Log.d`，`logcat` 一条也抓不到（`adb logcat -d` 整机只有 107 行）。调试这类问题只能靠「分时抓帧 + `uiautomator dump` 读坐标」，别指望日志。收尾时那 4 段日志已全部删除（`scratch\p66_clean.ps1`）。
+4. **`uiautomator dump` 会等界面 idle 再拍。** 所以它只能证明「稳定后是什么样」，证明不了「过渡期有没有抖」。要覆盖过渡期只能连拍截图，而连拍时 `screencap` 在模拟器上偶尔返回全黑（18,550 字节）—— 遇到就唤醒屏幕、`svc power stayon true` 重来。
+
+## 65. 第六十五轮（2026-11-13）：翻页连点重叠卡死、切回仍拉伸、座位预约刷新不灵敏
+
+### 65.1 用户原话
+
+> 第一，在课表页快速点击翻页键时，课表会发生重叠最后卡死。第二，在工作圈下滑一段距离后点击课表页依然会出现异常拉伸后又回弹的情况。第三，图书馆预约座位功能中，刷新状态不够灵敏，导致有时已经扫码签到但却提示尚未签到，修复这些问题
+
+本轮用户没有提 push，按其一贯规则「说了才 push + release」，**不升版本、不推送**，版本仍是 `versionCode 72` / `versionName "1.1.20"`，只在本地编译、装机验证。
+
+### 65.2 课表连点翻页：重叠 + 卡死
+
+**现象**：在课表页快速连点 `‹` / `›`，几轮之后整张课表变成好几张叠在一起，再点就彻底不动了。
+
+**根因**（`schedule/ScheduleFragment.kt` 的 `slideSwap()`，三处叠加）：
+
+1. `val others = (0 until layer.childCount).map { layer.getChildAt(it) }` 在 `layer.addView(ghost)` **之前**取值。上一段过渡遗留的 ghost 还在层里，于是被一起当成「当前内容」做 `translationX = shift → 0` 的入场动画，位置完全错乱。
+2. 新 ghost 只是 `addView`，**没有先清理旧 ghost**。连点时每次切周都往同一层里加一张整屏位图，几张课表就叠在了一起 —— 这就是「重叠」。
+3. `ghost.animate()...withEndAction { layer.removeView(ghost) }`。连点时下一段动画会 `cancel()` 这一段，而 **ViewPropertyAnimator 被 cancel 后 `withEndAction` 不会执行**，那张 ghost 就永远留在层里；更糟的是它的 `translationX` 停在半途，正好盖住整屏 —— 这就是「卡死」。
+
+**修法**：
+
+- `slideSwap()` 开头先 `clearTransitionLeftovers(layer)`（这个方法第 58 轮就写好了，本用于 `onTabSelected()`，这里复用：倒序移除所有 `tag == GHOST_TAG` 的 ImageView，并取消其余子 View 的位移动画、复位 `translationX/translationY/alpha`）。
+- `others` 再 `.filter { it.tag != GHOST_TAG }` 兜一层，保证动画对象表里不会混进快照。
+- `withEndAction` 内容包 `runCatching`，并追加一条 `layer.postDelayed({ runCatching { layer.removeView(ghost) } }, MainActivity.TAB_SWAP_MS + 80L)` 兜底 —— 即使动画被打断，80ms 后这张快照也一定会被摘掉。
+
+**验证**：连点「下一周」8 次 → 落在第 17 周（9+8）；再点「回到本周」后连点 12 次 → 落在第 20 周（上限 clamp）。两次结果都是**完整的一张课表**，无残影、无卡死，第 1–10 节齐全、底部与 tab 对齐。随时抓到的过渡帧只是正常的水平滑入（见 65.3 的对比图）。
+
+### 65.3 切回课表仍「先拉伸再回弹」
+
+**现象**：第 64 轮改过之后，从工作圈（或任何会把顶栏滚成收起态的页面）切回课表，课表仍然会先被拉长再弹回去。
+
+**根因**：第 64 轮只改了**两个触发点**（`gridRelayoutTask` 与 `onTabSelected()` 里的 `root?.post{}`），把判据统一成「只在实际高度变小时才重画」。但 `onTabSelected()` 里还有一条**更靠前**的路径没被覆盖：
+
+```
+if (contentFilled() == 0) renderAll()      // ← 这一行在 root.post{} 之前同步执行
+```
+
+切回的那一瞬间内容层可能正好是空的（Fragment 是 detach/attach 复用，回来时可能已清空），于是 `renderAll() → renderGrid()` 立刻按此刻 `gridScroll.height` 画了一整张网格 —— 而此刻顶栏还在从「上一页的收起态」往「课表展开态」过渡，这个高度是**偏大的中间值**。用户看到的就是「被拉长」；`renderGrid()` 末尾又把这个偏大值写进了 `lastLayoutHeight`，等 300ms 后顶栏动画走完、`root.post{}` 里发现 `h < lastLayoutHeight` 成立，再画一遍 —— 就是「弹一下」。
+
+**修法**：引入一个**过渡窗口**。
+
+- 新增字段 `private var tabSettleUntil = 0L`。
+- `onTabSelected()` 第一行有效语句之后：`tabSettleUntil = SystemClock.uptimeMillis() + 500L`。
+- `renderGrid()` 里把 `val rawAvailH = gridScroll.height` 换成：
+
+```kotlin
+val measuredH = gridScroll.height
+val rawAvailH = if (lastLayoutHeight > 0 &&
+    measuredH > lastLayoutHeight &&
+    SystemClock.uptimeMillis() < tabSettleUntil
+) lastLayoutHeight else measuredH
+```
+
+即在窗口内**只认「不变大」**：测量值比上次稳定值大就沿用旧值。窗口一过自然回到实测值，不需要额外定时器。
+
+**验证**：「我的」页（替代工作圈 —— 模拟器无外网连不上工作圈接口，但两者同为 Compose LazyColumn + `ReportListScroll` 上报顶栏收起，机制相同）下滑三段使顶栏收起 → 点课表 tab → 同一条 `adb shell` 内连拍 4 张。过渡帧与稳定帧叠放对比：内容只是整体水平滑入，**行高逐像素一致**（第 1 节、第 10 节 y 坐标相同），没有任何纵向拉伸；稳定后两张截图字节完全相同（363,623 B）。
+
+### 65.4 图书馆座位预约：刷新不灵敏
+
+**现象**：去馆内签到机扫码签到后，回到「我的预约」仍显示「待签到」；有时签到按钮该出现了却一直不出。
+
+**根因两条**：
+
+1. `SeatBookingsScreen` 只在**首次进入**（`LaunchedEffect(reload)`）和**操作成功后** `reload++` 时才拉数据。签到这件事往往不是在本机 App 里点的（馆内机器、别人的手机），本机不主动重拉就永远停在旧状态。
+2. `SeatBooking.canCheckIn()` 用的是 `serverNow` —— 那是**拉取那一刻**服务端下发的时间戳，是个定值。页面停留越久，它离「现在」就越远，签到窗口永远不推进，于是按钮该出不出。
+
+**修法**：
+
+- `SeatModels.kt`：`SeatBooking` 增加 `val fetchedAtMs: Long = System.currentTimeMillis()`（data class 最后一个参数、带默认值，`myBookings()` 不用改），并新增 `fun serverNowSec(): Long = serverNow + (System.currentTimeMillis() - fetchedAtMs) / 1000`；`canCheckIn()` 改用它。这样既保留「以服务端时间为准」（不受手机时钟偏差影响），又能在页面停留期间持续推进。
+- `LibrarySeatApi.kt`：暂离的 `comeBackTime` 同样改用 `serverNowSec() + limitLeftBack`。
+- `SeatBookingsScreen.kt`：存在待签到订单时，**每 15 秒静默重拉一次**（`LaunchedEffect(pendingCount)` 里的 `while + delay(15_000)`，全部使用中/已结束就自然停下）；失败一律静默，不用错误条打断用户；列表顶部加一行小字「每 15 秒自动同步签到状态 / 正在同步签到状态…」。
+
+**验证**：编译通过、页面可正常进入。「我的预约」在模拟器上因无内网 DNS 解析不到 `lib-zw.lib.nchu.edu.cn`，只能看到「加载失败：Unable to resolve host ...」，**真实轮询与签到状态变化待真机确认**。
+
+### 65.5 产物
+
+- `app/build/outputs/apk/release/app-release.apk` = 8,675,160 字节，SHA256 `CCD30166F6B6347A5433E125A4E04550C241345DB1B899A2CC6C17CB49EC78F8`，已复制为项目根 `lanhang-miuix-release.apk` 并 `adb install -r` 装机。
+- 改动的文件：`schedule/ScheduleFragment.kt`（122,478 → 125,111）、`library/SeatModels.kt`（7,466 → 8,560）、`library/LibrarySeatApi.kt`（20,043 → 20,190）、`library/SeatBookingsScreen.kt`（16,571 → 18,441）、`res/values/strings.xml`（53,924 → 54,071）。
+- 版本未升（用户未要求 push）。
+
+### 65.6 教训
+
+1. **同一个症状可能有多条触发路径，改完一条不代表修好。** 第 64 轮已经把「高度变了就重画」改成「只在变小时重画」，但 `onTabSelected()` 里 `if (contentFilled() == 0) renderAll()` 是**在 `root.post{}` 之前同步执行**的，绕过了新判据。定位这类问题的正确姿势是：把「谁在什么时候读了那个会变的值」全部列出来，而不是只改自己上一轮动过的那两行。
+2. **ViewPropertyAnimator 的 `withEndAction` 不保证执行。** 只要有 `cancel()` 参与（连点、快速切换、页面销毁），就必须配一个不依赖动画完成回调的兜底移除，否则就是资源残留 —— 而整屏位图残留的视觉效果恰好是「界面卡死」，很容易被误判成别的问题。
+3. **「服务端时间」要区分「拉取时刻」与「现在」。** 服务端下发的时间戳只是快照，页面停留期间必须自己往前推（本次用「抓取时刻 → 现在」的差值补偿，而不是直接读手机时钟，这样既实时又不受时区/时钟偏差影响）。
+4. 模拟器无内网时，本项目的三类接口表现各不相同：融云 IM 页面是「加载失败 + 空态」，工作圈直接「加载失败」，图书馆是**先无限 loading 十秒以上**再出失败文案。做 UI 验证时按现象分别判断，别把「还在转圈」当成卡死。
 ## 64. 第六十四轮（2026-11-12）：切回课表时「先拉伸再弹回」
 
 ### 64.1 用户原话

@@ -60,6 +60,7 @@ import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.lanhang.miuix.ui.miuix.MiuiNavStack
@@ -345,15 +346,15 @@ private fun ManualCourseEditor(
                 .weight(1f)
                 .verticalScroll(rememberScrollState())
                 .padding(horizontal = 12.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             // ── 名称 / 地点 / 教师 ───────────────────────────────────────
             SectionCard {
-                FormRow("课程名称", name, "必填") { name = it; hint = null }
-                Divider()
+                // 第七十轮：按 NexioSchedule 的行规范去掉行间分隔线，靠内边距拉开；
+                // 首行上沿 17dp、末行下沿 17dp、中间行 14/14，形成等差呼吸感。
+                FormRow("课程名称", name, "必填", topPad = 17.dp) { name = it; hint = null }
                 FormRow("地点", room, "非必填") { room = it }
-                Divider()
-                FormRow("教师", teacher, "非必填") { teacher = it }
+                FormRow("教师", teacher, "非必填", bottomPad = 17.dp) { teacher = it }
             }
 
             // ── 上课星期（右侧挂「自定义时间」开关）───────────────────────
@@ -373,32 +374,40 @@ private fun ManualCourseEditor(
                     // 就在「上课星期」这一行右侧 —— 按视频放这里（周次区已经有 20 个格子和三档快捷态，
                     // 再塞一个开关会很挤）。
                     // 第六十轮：按参考图把胶囊开关换成「圆形选择框 + 文字」，语义仍是开关（点一下取反）。
-                    RadioTag(
-                        label = "自定义时间",
-                        selected = customTime,
-                        onClick = {
-                            customTime = !customTime
-                            if (customTime) hint = null
-                        },
-                    )
+                    // 第七十轮：圆形单选 → 三态方框 + 文字，与下方周次快捷态同一套控件形态。
+                    Row(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(10.dp))
+                            .clickable(interactionSource = null, indication = null) {
+                                customTime = !customTime
+                                if (customTime) hint = null
+                            }
+                            .padding(horizontal = 6.dp, vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        TriBox(state = if (customTime) TriState.ON else TriState.OFF)
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            text = "自定义时间",
+                            style = MiuixTheme.textStyles.body2.copy(fontSize = 14.sp),
+                            color = if (customTime) scheme.onSurface else scheme.onSurfaceVariantSummary,
+                        )
+                    }
                 }
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 12.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
                     DAY_LABELS.forEachIndexed { index, label ->
                         Chip(
                             text = label,
                             selected = day == index,
                             onClick = { day = index },
-                            // 第七日：七个胶囊均分整行宽度、统一 44dp 高，左右与卡片其它行对齐 16dp。
-                            // 原来没给 weight，宽度只跟着单个汉字走、横向只留 6dp 间隙，
-                            // 七个胶囊挤成一小团还互相贴住（用户：「上课星期挤在一起了」）。
-                            modifier = Modifier
-                                .weight(1f)
-                                .height(44.dp),
+                            // 第七十轮：高度交给 Chip 自己钉 32dp（NexioSchedule 规范），
+                            // 这里只负责 weight(1f) 把七格均分。
+                            modifier = Modifier.weight(1f),
                         )
                     }
                 }
@@ -528,31 +537,50 @@ private fun ManualCourseEditor(
                         color = scheme.onSurface,
                     )
                     Spacer(Modifier.weight(1f))
+                    // 第七十轮：按 NexioSchedule 把三档快捷态从圆形单选改成三态方框 ——
+                    // 圆形只能说「选了哪一档」，方框才能说「这一档只选了一部分」
+                    // （用户在网格里手动改过之后就是这个状态）。
                     listOf("全部" to "all", "单周" to "1", "双周" to "2").forEach { (label, code) ->
-                        RadioTag(
-                            label = label,
-                            selected = weekMode == code,
-                            onClick = {
-                                if (weekMode == code) {
-                                    // 再点一次就取消。三档可以一个都不选（用户原话），
-                                    // 取消时把这一档带出来的周次也撤掉 —— 「都不选」就是全空，
-                                    // 之后由用户自己在网格里挑特殊周次。
-                                    weekMode = ""
-                                    weeks = emptySet()
-                                    oddEven = ""
-                                } else {
-                                    weekMode = code
-                                    oddEven = if (code == "1" || code == "2") code else ""
-                                    weeks = when (code) {
-                                        "1" -> (1..MAX_WEEK).filter { it % 2 == 1 }.toSet()
-                                        "2" -> (1..MAX_WEEK).filter { it % 2 == 0 }.toSet()
-                                        else -> (1..MAX_WEEK).toSet()
+                        val target = when (code) {
+                            "1" -> (1..MAX_WEEK).filter { it % 2 == 1 }.toSet()
+                            "2" -> (1..MAX_WEEK).filter { it % 2 == 0 }.toSet()
+                            else -> (1..MAX_WEEK).toSet()
+                        }
+                        val picked = weeks.count { it in target }
+                        val st = when {
+                            picked == 0 -> TriState.OFF
+                            picked == target.size -> TriState.ON
+                            else -> TriState.PARTIAL
+                        }
+                        Row(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(10.dp))
+                                .clickable(interactionSource = null, indication = null) {
+                                    if (weekMode == code) {
+                                        // 再点一次就取消。三档可以一个都不选（用户原话），
+                                        // 取消时把这一档带出来的周次也撤掉 —— 「都不选」就是全空，
+                                        // 之后由用户自己在网格里挑特殊周次。
+                                        weekMode = ""
+                                        weeks = emptySet()
+                                        oddEven = ""
+                                    } else {
+                                        weekMode = code
+                                        oddEven = if (code == "1" || code == "2") code else ""
+                                        weeks = target
                                     }
+                                    hint = null
                                 }
-                                hint = null
-                            },
-                            modifier = Modifier.padding(start = 10.dp),
-                        )
+                                .padding(horizontal = 6.dp, vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            TriBox(state = st)
+                            Spacer(Modifier.width(6.dp))
+                            Text(
+                                text = label,
+                                style = MiuixTheme.textStyles.body2.copy(fontSize = 14.sp),
+                                color = if (st == TriState.OFF) scheme.onSurfaceVariantSummary else scheme.onSurface,
+                            )
+                        }
                     }
                 }
                 Column(
@@ -607,7 +635,7 @@ private fun ManualCourseEditor(
                             (1..MAX_WEEK).chunked(6).forEach { row ->
                                 Row(
                                     modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp),
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
                                 ) {
                                     row.forEach { w ->
                                         Chip(
@@ -742,37 +770,51 @@ private fun Divider() {
     )
 }
 
-/** 「标签 + 右对齐输入」一行；空值时右侧显示灰色占位（必填/非必填），对齐参考图 */
+/**
+ * 「标签 + 右对齐输入」一行；空值时右侧显示灰色占位（必填/非必填）。
+ *
+ * 第七十轮按 NexioSchedule 的行规范重做：
+ *  · 左侧标签 17sp / Medium / onSurface，占满剩余宽度（不再钉死 88dp）；
+ *  · 右侧输入区固定占 65% 宽、右对齐，值字号同为 17sp；
+ *  · 行高靠上下内边距拉开，**不加分隔线** —— 分隔线会把一行行切成表格。
+ *    topPad / bottomPad 用来凑「首行 17、中间 14、末行 17」的等差。
+ */
 @Composable
 private fun FormRow(
     label: String,
     value: String,
     placeholder: String,
+    topPad: Dp = 14.dp,
+    bottomPad: Dp = 14.dp,
     onValueChange: (String) -> Unit,
 ) {
     val scheme = MiuixTheme.colorScheme
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 15.dp),
+            .padding(start = 16.dp, end = 16.dp, top = topPad, bottom = bottomPad),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
             text = label,
-            style = MiuixTheme.textStyles.body2,
+            style = MiuixTheme.textStyles.body2.copy(fontSize = 17.sp),
+            fontWeight = FontWeight.Medium,
             color = scheme.onSurface,
-            modifier = Modifier.width(88.dp),
+            modifier = Modifier.weight(1f),
         )
+        // weight 1 : 1.86 约等于 35% : 65% —— 与规范里的 fillMaxWidth(0.65f) 等价，
+        // 但不会和左侧 weight(1f) 争抢同一套测量规则。
         BasicTextField(
             value = value,
             onValueChange = onValueChange,
             singleLine = true,
             textStyle = MiuixTheme.textStyles.body2.copy(
+                fontSize = 17.sp,
                 color = scheme.onSurface,
                 textAlign = TextAlign.End,
             ),
             cursorBrush = SolidColor(scheme.primary),
-            modifier = Modifier.weight(1f),
+            modifier = Modifier.weight(1.86f),
             decorationBox = { inner ->
                 Box(
                     modifier = Modifier.fillMaxWidth(),
@@ -781,7 +823,7 @@ private fun FormRow(
                     if (value.isEmpty()) {
                         Text(
                             text = placeholder,
-                            style = MiuixTheme.textStyles.body2,
+                            style = MiuixTheme.textStyles.body2.copy(fontSize = 17.sp),
                             color = scheme.onSurfaceVariantSummary,
                         )
                     }
@@ -809,7 +851,7 @@ private fun PeriodGrid(selected: Int, onPick: (Int) -> Unit) {
         (1..PeriodClock.count).chunked(6).forEach { row ->
             Row(
                 modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
             ) {
                 row.forEach { p ->
                     Chip(
@@ -825,28 +867,84 @@ private fun PeriodGrid(selected: Int, onPick: (Int) -> Unit) {
     }
 }
 
+/**
+ * 网格选项格（上课星期、上课周次、节次共用）。
+ *
+ * 第七十轮按 NexioSchedule 的规范统一成：**32dp 高 + 10dp 圆角 + 13sp 字**，
+ * 并且 indication = null —— 只有底色变化，没有涟漪。
+ * 高度由组件自己钉住，调用侧只负责 weight(1f) 均分，不再一个个传 height。
+ */
 @Composable
 private fun Chip(
     text: String,
     selected: Boolean,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
+    enabled: Boolean = true,
 ) {
     val scheme = MiuixTheme.colorScheme
     Box(
         modifier = modifier
+            .height(32.dp)
             .clip(RoundedCornerShape(10.dp))
             .background(if (selected) scheme.primary else scheme.surfaceContainerHighest)
-            .clickable(onClick = onClick)
-            .padding(vertical = 9.dp),
+            .clickable(
+                interactionSource = null,
+                indication = null,
+                enabled = enabled,
+                onClick = onClick,
+            ),
         contentAlignment = Alignment.Center,
     ) {
         Text(
             text = text,
-            style = MiuixTheme.textStyles.body2,
+            style = MiuixTheme.textStyles.body2.copy(fontSize = 13.sp),
             fontWeight = if (selected) FontWeight.Medium else FontWeight.Normal,
-            color = if (selected) Color.White else scheme.onSurface,
+            color = if (selected) Color.White else scheme.onSurfaceVariantSummary,
         )
+    }
+}
+
+/** 三态方框的三种状态 */
+private enum class TriState { OFF, ON, PARTIAL }
+
+/**
+ * 三态方框（对应 Material 的 Checkbox + ToggleableState.Indeterminate）。
+ *
+ * 第七十轮按 NexioSchedule 把「全部 / 单周 / 双周」从圆形单选改成三态方框：
+ * 圆形只能表达「选了哪一档」，方框才能表达「这一档只选了一部分」——
+ * 而「部分」正是用户在网格里手动改过之后的状态。
+ *
+ * 不直接用 Miuix 的 Checkbox：它自带 48dp 行高与横向留白，塞进标题行会把卡片顶爆；
+ * 这里自绘 20dp 方框，视觉与 HyperOS 复选框一致。点击由外层可点行统一处理。
+ */
+@Composable
+private fun TriBox(state: TriState, modifier: Modifier = Modifier) {
+    val scheme = MiuixTheme.colorScheme
+    val on = state != TriState.OFF
+    Box(
+        modifier = modifier
+            .size(20.dp)
+            .clip(RoundedCornerShape(6.dp))
+            .background(if (on) scheme.primary else scheme.surfaceContainerHighest),
+        contentAlignment = Alignment.Center,
+    ) {
+        when (state) {
+            TriState.ON -> Text(
+                text = "\u2713",
+                style = MiuixTheme.textStyles.body2.copy(fontSize = 13.sp),
+                fontWeight = FontWeight.Bold,
+                color = Color.White,
+            )
+            TriState.PARTIAL -> Box(
+                modifier = Modifier
+                    .width(10.dp)
+                    .height(2.dp)
+                    .clip(RoundedCornerShape(1.dp))
+                    .background(Color.White),
+            )
+            TriState.OFF -> Unit
+        }
     }
 }
 

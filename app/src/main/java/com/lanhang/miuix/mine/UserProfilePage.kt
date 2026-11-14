@@ -15,6 +15,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.lanhang.miuix.ui.miuix.CardActionChip
 import com.lanhang.miuix.R
 import com.lanhang.miuix.moments.CommentEntry
 import com.lanhang.miuix.moments.MomentItem
@@ -170,10 +171,10 @@ fun ProfileHeader(
                 }
                 if (!isSelf && onMessage != null) {
                     Spacer(Modifier.padding(top = 6.dp))
-                    TextButton(
+                    CardActionChip(
                         text = stringResource(R.string.profile_message),
                         onClick = onMessage,
-                        modifier = Modifier.fillMaxWidth(),
+                        primary = true,
                     )
                 }
             }

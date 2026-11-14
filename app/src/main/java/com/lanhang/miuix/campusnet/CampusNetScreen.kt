@@ -31,6 +31,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import com.lanhang.miuix.ui.miuix.CardActionChip
 import com.lanhang.miuix.R
 import com.lanhang.miuix.core.userDetail
 import com.lanhang.miuix.session.Session
@@ -206,9 +207,10 @@ fun CampusNetScreen(modifier: Modifier = Modifier) {
                         else MiuixTheme.colorScheme.onSurface,
                     )
                     Spacer(Modifier.weight(1f))
-                    TextButton(
+                    CardActionChip(
                         text = stringResource(R.string.campus_net_refresh),
                         onClick = { if (!refreshing) scope.launch { refresh() } },
+                        primary = true,
                         enabled = !refreshing,
                     )
                 }
@@ -324,15 +326,16 @@ fun CampusNetScreen(modifier: Modifier = Modifier) {
                 }
                 Spacer(Modifier.weight(1f))
                 if (online) {
-                    TextButton(
+                    CardActionChip(
                         text = stringResource(R.string.campus_net_logout),
                         onClick = { logout() },
                         enabled = !busy,
                     )
                 } else {
-                    TextButton(
+                    CardActionChip(
                         text = stringResource(R.string.campus_net_login),
                         onClick = { login() },
+                        primary = true,
                         enabled = !busy,
                     )
                 }

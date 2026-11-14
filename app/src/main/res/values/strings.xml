@@ -587,7 +587,8 @@
     <string name="library_seat_book_confirm_title">确认预约</string>
     <string name="library_seat_book_failed">预约失败：%1$s</string>
     <string name="library_seat_book_ok">预约成功</string>
-    <string name="library_seat_bookings_empty">还没有座位预约</string>
+    <string name="seat_sync_auto">每 15 秒自动同步签到状态</string>
+    <string name="seat_sync_now">正在同步签到状态…</string>    <string name="library_seat_bookings_empty">还没有座位预约</string>
     <string name="library_seat_duration">时长</string>
     <string name="library_seat_duration_hours">%1$d 小时</string>
     <string name="library_seat_empty_slot">这个时段本层没有可约座位（可能已闭馆或约满），换个开始时间试试</string>
@@ -715,7 +716,9 @@
     <string name="class_reminder_no_permission">没有通知权限，提醒不会出现。请到系统设置里允许本应用发送通知。</string>
     <string name="class_reminder_no_exact">未授予「闹钟和提醒」权限，提醒可能晚几分钟。</string>
     <string name="class_reminder_open_settings">去系统设置</string>
-    <string name="class_reminder_test">发一条测试提醒</string>
+        <string name="class_reminder_test_action">立即发送</string>
+    <string name="class_reminder_dnd_perm">勿扰权限</string>
+    <string name="class_reminder_exact_perm">「闹钟和提醒」权限</string><string name="class_reminder_test">发一条测试提醒</string>
     <string name="class_reminder_test_hint">点一下立刻收到一条和真实提醒完全一样的通知（有超级岛时直接进岛）</string>
     <string name="class_reminder_test_done">已发出测试通知</string>
     <string name="class_reminder_test_title">上课提醒（测试）</string>

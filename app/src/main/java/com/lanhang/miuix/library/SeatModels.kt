@@ -163,8 +163,26 @@ data class SeatBooking(
      * 或者把 `comeBackTime` 送成一个错的时间。
      */
     val serverNow: Long,
+    /**
+     * 这条记录**被拉下来的时刻**（手机时钟，毫秒）。
+     *
+     * 第六十五轮新增：光有 [serverNow] 只是「拉取那一刻的服务端时间」，它不会自己往前走。
+     * 用户停在列表页等签到窗口打开时，判定一直冻在拉取时刻，按钮该出不出（用户反馈
+     * 「刷新状态不够灵敏，已经扫码签到却提示尚未签到」里的一半原因）。
+     * 记下抓取时刻后就能用 [serverNowSec] 把服务端时钟往前推。
+     */
+    val fetchedAtMs: Long = System.currentTimeMillis(),
 ) {
     val endAt: Long get() = beginAt + durationSec
+
+    /**
+     * 「现在」的服务端时间（epoch 秒）。
+     *
+     * 用它而不是直接用 [serverNow]：后者是拉取时刻的定值，页面停留越久偏差越大。
+     * 这里用「抓取时刻 → 现在」经过的时长去补，既不依赖手机时钟的绝对值（时区/误差无关），
+     * 又能在页面停留期间持续推进。
+     */
+    fun serverNowSec(): Long = serverNow + (System.currentTimeMillis() - fetchedAtMs) / 1000
 
     /** 订单状态机，见调研报告 §9（0 待签到 / 1 使用中 / 2 暂离 / ≥3 已结束，不再显示按钮） */
     val isPendingSign: Boolean get() = status == 0
@@ -172,8 +190,10 @@ data class SeatBooking(
     val isAway: Boolean get() = status == 2
 
     /** 现在能否签到：开始前 [limitSignAgo] 秒 ~ 开始后 [limitSignBack] 秒 */
-    fun canCheckIn(): Boolean =
-        isPendingSign && serverNow >= beginAt - limitSignAgo && serverNow <= beginAt + limitSignBack
+    fun canCheckIn(): Boolean {
+        val now = serverNowSec()
+        return isPendingSign && now >= beginAt - limitSignAgo && now <= beginAt + limitSignBack
+    }
 }
 
 /** 可对订单执行的操作，驱动「我的预约」列表里的按钮 */

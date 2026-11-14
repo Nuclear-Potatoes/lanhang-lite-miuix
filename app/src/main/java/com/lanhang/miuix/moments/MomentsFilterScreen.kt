@@ -25,6 +25,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.lanhang.miuix.ui.miuix.CardActionChip
 import com.lanhang.miuix.R
 import com.lanhang.miuix.ui.miuix.pressableRow
 import androidx.compose.ui.res.stringResource
@@ -195,7 +196,7 @@ fun MomentsFilterScreen(
                             color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                             modifier = Modifier.weight(1f),
                         )
-                        TextButton(text = stringResource(R.string.moments_filter_add), onClick = { addRule() })
+                        CardActionChip(text = stringResource(R.string.moments_filter_add), onClick = { addRule() }, primary = true)
                     }
                     // 添加失败的原因就地显示，比弹窗轻，也不打断连续添加
                     val tip = notice

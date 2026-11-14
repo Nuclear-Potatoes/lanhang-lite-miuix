@@ -31,6 +31,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.lanhang.miuix.ui.miuix.CardActionChip
 import com.lanhang.miuix.R
 import com.lanhang.miuix.net.FriendRequest
 import com.lanhang.miuix.net.RceApi
@@ -285,9 +286,10 @@ private fun RequestRow(
             }
             Spacer(Modifier.width(8.dp))
             if (request.pending) {
-                TextButton(
+                CardActionChip(
                     text = stringResource(R.string.friend_requests_accept),
                     onClick = { if (!busy) onAccept() },
+                    primary = true,
                     enabled = !busy,
                 )
             } else {

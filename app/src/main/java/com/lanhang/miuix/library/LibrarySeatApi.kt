@@ -310,7 +310,8 @@ object LibrarySeatApi {
         val body = when (action) {
             // 暂离的返回截止时间按服务端时间算，手机时钟偏了会把座位让出去
             SeatAction.STEP_OUT -> FormBody.Builder()
-                .add("comeBackTime", (booking.serverNow + booking.limitLeftBack).toString())
+                // 第六十五轮：用实时服务端时钟，别拿拉取时刻的定值 —— 用户可能已经在这页停了几分钟
+                .add("comeBackTime", (booking.serverNowSec() + booking.limitLeftBack).toString())
                 .build()
 
             else -> null
