@@ -1,3 +1,122 @@
+#### 77.14 「我的活动」白屏收官：祖先链高度塌陷（2026-11-15）
+
+**现象**：二课「我的」→「我的活动」→ 右侧「更多」进去，顶栏、四个 tab、刷新按钮都正常，**列表区一片空白**。
+
+**证据链（按顺序排除）**
+1. 四个接口全部 `200` 且有内容（`getInfo` / `dict/data/list` / `advertising/list` / `myActivitiyInfoByStudent`），响应体是 AES 密文，解密后明文完整 —— 数据层没问题。
+2. 请求头 `authorization`（258 字符）与 `encrypt-flag`（172 字符）都正常发出，AES key 生成/传递链路没问题。
+3. 解密后明文含 `{"total":8,"rows":[{"activityName":"11.14音乐跑",...}]}` —— 8 条记录确实拿到了。
+4. 读页面组件实例：`listData.length = 8`、`pageStatus = nomore`、`pageCount = 8` —— 数据确实进了组件。
+5. 数 DOM：`.list-bg` 有 **8 个**，每个高 159px，`.listItem` 高 1387px —— **内容全部渲染出来了**。
+
+**真正根因（第 6 步才看到）**：从 `.list-bg` 往上爬整条祖先链，**高度全是 0**：
+```
+.list-bg            t=112 h=159     ← 有内容
+.listItem           t=112 h=1387
+.list                t=112 h=1387
+.uni-scroll-view-content  t=112 h=0   ← 开始塌陷
+.uni-scroll-view    t=112 h=0  overflow:hidden  ← 把下面全裁掉
+.uni-scroll-view    t=112 h=0
+UNI-SCROLL-VIEW     t=112 h=0
+UNI-VIEW            t=112 h=0
+.content-list       t=112 h=0   ← 页面根容器就是 0
+```
+uni-app 的滚动容器靠 flex 从父层拿到高度；这条链在这个 WebView 里**一层都没撑起来**，加上 `overflow:hidden`，1487px 的内容被整块裁成不可见 —— 看上去就是白屏，但 DOM、数据、样式 `display/opacity/visibility` 全都正常（这就是为什么前面所有"查数据"的方向都扑空）。
+
+**修法（`GQHW_COMPAT_JS` 里的 `lhFixList()`）**
+```js
+var first = document.querySelector('.list-bg');
+if (!first) return;
+var el = first.parentElement, guard = 0;
+while (el && guard < 12) {
+    var cs = getComputedStyle(el);
+    if (String(cs.overflow).indexOf('hidden') >= 0) {
+        var box = el.getBoundingClientRect();
+        if (Math.round(box.height) <= 40) {
+            var want = Math.max(240, window.innerHeight - Math.round(box.top) - 6);
+            el.style.height = want + 'px';
+        }
+        break;
+    }
+    el = el.parentElement; guard++;
+}
+```
+- **从列表项往上找第一个带 `overflow:hidden` 的祖先**，只给它设确定高度 —— 不必逐层补，滚动容器一旦有高度，内部 `list`/`listItem` 本来就有内容高度。
+- 判据 `<= 40` 保护其它正常页面（不会误伤）。
+- 触发点：`Vue.mixin({ mounted })` 里识别出 `seachList`/`listData` 的页面组件后，在 **1.2s / 2.6s / 5s** 各跑一次（数据是异步来的，太早跑时 `.list-bg` 还不存在）。
+- **前提**：`onLoad` 里 `this.$refs.draftsItem.handleSearchData("")` 的 `TypeError` 必须先用打桩兜住，否则页面连挂载都到不了（见 77.11）。
+
+**验证**：截图从 64,759 字节（灰底空白）变成 **582,905 字节** —— 四条活动卡片全部显示：11.14音乐跑（1.0学时/等待完结）、钢琴二重奏音乐会（已完结）、材料学院26新生辩…（完结审核中）、材料学院第二课堂…（已完结）。产物 APK `8,808,308 字节 / SHA256 F5312B0D01D2F61240101EA778036DB3F141FD40B40CEBBCE47D97421C3A8F49`。
+
+**三条教训**
+1. **"DOM 里有、屏幕上没有"必须查几何，别猜数据** —— `getBoundingClientRect()` 一路往上打，塌陷在哪一层一目了然。前面查接口、查解密、查组件状态花了几个小时，而真正的答案在第 6 次测量里。
+2. **`overflow:hidden` 的容器高度为 0 = 静默吞掉全部内容**，且不报任何错、`body.innerText` 也不含它 —— 白屏检测脚本（`bits<=2`）会判成"空页"而看不出是裁切。
+3. **动态注入的探针要看时机**：`onPageFinished` 在 SPA 路由切换时不会重新触发，所有挂在它上面的 `setTimeout` 只能看到当前页。要看后续页面必须挂在 `Vue.mixin({ mounted })` 这类长期生效的钩子上。
+## 77.13 「我的活动 → 更多」白屏：已修（列表数据仍空，另因站点接口）
+
+**站点 bug 正文**（`static/js/pages-mine-activity-list.c06fc2da.js`，83,739 字节，已下载到 `scratch\gqhw\js\`）：
+```js
+onLoad:function(){ this.$refs.draftsItem.handleSearchData("") },
+methods:{ handleSearchData:function(t){ this.name=t, this.listData=[], this.handMyActivitiyInfoList(1) } }
+```
+`draftsItem` 是模板里「草稿箱」那个 tab 内的 `searchItem` 组件（`ref="draftsItem"`）。
+默认进入的是「全部」tab，草稿箱内容没渲染 → `$refs.draftsItem` 是 `undefined` →
+`onLoad` 抛 `TypeError: Cannot read properties of undefined (reading 'handleSearchData')` →
+uni-app 把整页标记为失败 → 白屏（`bits=3 bodyH=0`）。
+**这跟网络、登录态、加密响应全都没关系**，接口一直是 200。
+
+**WebView 侧兜底（`ui\OaWebViewActivity.kt` 新增 `GQHW_COMPAT_JS`，56,108 字节总长）**
+只在 `jxmediacenter.com` 的 `onPageFinished` 注入，三件事：
+1. 从 `getApp().['$vm'].constructor` 取 Vue 构造器（`window.Vue` 是 undefined，打包内联了），挂一层 `config.errorHandler`，先打日志再交给原处理器 —— 让 onLoad / onShow 里与渲染无关的异常不再把整页打死。
+2. 给 `Vue.mixin({ beforeCreate })` 里每个组件实例的 `$refs.draftsItem` 装访问器：读到时就返回打桩对象，真组件挂载后 `set` 覆盖回真实 ref，行为不变。
+3. **桩的 `handleSearchData` 必须转发而不是空实现** —— 它正是首屏数据加载的触发器。`beforeCreate` 时 `methods` 还没初始化，所以延后 300ms 调 `self.handleSearchData(v || '')`。
+
+**验证**：`adb logcat -s OaWebView` 可见 `[LOG] LhCompat ready`；点「我的活动 → 更多」后页面**框架正常渲染**（顶栏「我的活动」、四个 tab 全部/我创建的/待报名/报名中、右下刷新按钮），不再整片白。
+**仍未解决**：列表区仍空。日志链路是 `loadmore scrollViewY触发了111` → 一串 `SyntaxError: Unexpected end of JSON input @ index.d7829a92.js:1` → `nomore scrollViewY触发了111`。即该页首屏请求回来后被判定为「没有更多」。接口 `GET /prod-api/activity/activityInfo/myActivitiyInfoByStudent?params=<加密>` 本身 **200 / 27,136 字节**，说明数据拿到了、是解密或解析这一段落空。下一步要看 `index.d7829a92.js` 里响应解密函数的输入输出。
+
+**两条新踩坑**
+1. Kotlin 的 raw string（`"""..."""`）里连**注释文本**的 `$` 都会插值 —— 写 `this.$refs` 会报 `Unresolved reference 'refs'`，必须写成 `${'$'}refs`，注释里干脆别写 `$`。
+2. 加诊断常量时别拿 `private val X = """` 当锚点，会把新常量塞进上一个 raw string 内部；应取上一个常量的 `""".trimIndent()` 之后、且把它的 KDoc 一起替换。
+### 77.10 扫码真正打通（2026-11-14 续做）
+
+上一版把扫码白屏定位到「`window.CP2.showScanQr` 返回的 Promise 永不 resolve」这一步之后，做了下面这套：
+
+1. 新建 `ui/ScanQrActivity.kt`（10,287 字节）：`android.hardware.Camera`（Camera1）+ `SurfaceView` 预览，`onPreviewFrame` 拿到的 Y 平面直接喂给 zxing 的 `PlanarYUVLuminanceSource`，解码用项目已有的 `com.google.zxing:core:3.5.3`，不引第三方 UI 库。
+2. 新建 `ui/ScanBridge.kt`：`@JavascriptInterface fun scan()` → 宿主 `startScanForWeb()`；结果码 `REQUEST_SCAN_FOR_WEB = 4003`。
+3. `ui/OaWebViewActivity.kt`（54,543 字节）五处：
+   - `scanHostWebView` 字段；
+   - `SCAN_BRIDGE_JS`：只在 `!window.__lhScanPatched && window.CP2` 时把 `CP2.showScanQr` 换成 `new Promise(resolve => { window.__lhScanResolve = resolve; LhScan.scan(); })`；
+   - `createWebView` 里 `if (host.endsWith("jxmediacenter.com")) { scanHostWebView = view; view.addJavascriptInterface(ScanBridge(this), "LhScan") }` —— **只对二课站点暴露 JS 接口**，校内 OA、邮箱一律不给；
+   - `startScanForWeb()` / `deliverScanResult()`：扫到回 `{code:1,data:{qrCode:...}}`，取消回 `{code:0}`，严格对上站点约定的结构；
+   - `onActivityResult` 开头拦 `REQUEST_SCAN_FOR_WEB`。
+4. `AndroidManifest.xml`（9,616 字节）注册 `.ui.ScanQrActivity`（`exported="false"`、竖屏、全屏黑主题）。
+
+**Camera1 在模拟器上「初始化失败」的坑**：第一版把 `setPreviewSize` / `previewFormat = NV21` / `focusMode = CONTINUOUS_PICTURE` / `setDisplayOrientation` / `startPreview` 全塞进一个 `runCatching`，任何一项抛异常就整体失败，页面只剩「摄像头初始化失败」。模拟器虚拟摄像头**不支持连续对焦**，`setParameters` 直接抛。改成：
+- 参数设置与开流分成两段 `runCatching`，参数段失败只记 `Log.w` 继续；
+- `focusMode` 先查 `params.supportedFocusModes` 再设；
+- `previewFormat` 不强求 NV21（默认 YV12 的 Y 平面与 NV21 完全相同，zxing 只读 Y 平面，设不上也不影响解码）；
+- `onPreviewFrame` 用开预览时缓存的 `previewW/previewH`，不再每帧 `cam.parameters`（每秒十几次，模拟器掉帧明显）。
+
+**验证**：点二课首页右上角扫码 → logcat `[LOG] LhScan: intercept showScanQr`、`mCurrentFocus=...ScanQrActivity`、截图从 34,964 字节（纯黑 + 失败提示）变成 2,003,057 字节（书架/猫/电视的虚拟场景 + 底部「把二维码放进框内」）。
+
+### 77.11 「我的活动 → 更多」白屏：已定位但未修
+
+`#/pages/mine/activity/list` 的日志：
+```
+finished url=...#/pages/mine/activity/list bits=3 bodyH=0 title=我的活动
+Uncaught TypeError: Cannot read properties of undefined (reading 'handleSearchData') @ chunk-vendors:18
+res====> [object Object]
+SyntaxError: Unexpected end of JSON input @ index.js
+nomore scrollViewY触发了111
+```
+两条线索：① `handleSearchData` 是页面 chunk 里搜索组件 `$emit` 的事件名，报错说明某个 `this.$parent`（或等价的组件引用）是 `undefined`；② `Unexpected end of JSON input` 说明有接口返回**空 body**，列表因此为空，分页组件立刻跳到 `nomore`。
+下一步计划：给 WebView 注入 XHR 探针记录「状态码 + 响应长度 + URL」，确认是哪个接口空、以及是不是 UA 触发的服务端分流。（探针第一次插错了位置——把常量插进了 `SCAN_BRIDGE_JS` 的 raw string 里，编译报 407 行一片 `Expecting member declaration`；回滚到 `bak77f` 后正常。）
+
+### 77.12 本轮三条教训
+
+1. **`private val X = """` 这样的锚点，替换后插的内容会落进 raw string 内部。** 要插入新常量，锚点必须取整段的结尾 `""".trimIndent()`，或者插到下一个 `private val` 之前。
+2. **模拟器的虚拟摄像头没有对焦能力**，凡是要 `setParameters` 的地方都得先问 `supportedXxx` 再设，且**每项单独兜**，不能一个 `runCatching` 包住整段初始化——否则失败信息全被吞成一句笼统提示。
+3. **JS 桥只对目标站点暴露。** `addJavascriptInterface` 是把整个对象交给页面脚本，任何能在那页面执行脚本的人都能调；这里必须用 host 精确判断，不能图省事全局加。
 ## 77. 第七十七轮（2026-11-14）：赣青二课的扫码按钮与「我的活动」
 
 ### 77.1 用户原话

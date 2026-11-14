@@ -85,6 +85,9 @@ class OaWebViewActivity : AppCompatActivity() {
      */
     private var fileCallback: ValueCallback<Array<Uri>>? = null
 
+    /** 第七十七轮：留给扫码回调用的 WebView 引用。 */
+    private var scanHostWebView: WebView? = null
+
     /**
      * 网页请求摄像头 / 麦克风、但系统权限还没授给本应用时，先把这次请求挂在这里。
      *
@@ -392,6 +395,139 @@ IconButton(onClick = { finishNow() }) {
           return bits+'|'+h;
         }catch(e){return '1|1';}})()
     """.trimIndent()
+    /**
+     * 第七十七轮：接管二课网页的扫码入口。
+     * 站点自己的 window.CP2.showScanQr 是个空壳（Promise 永不 resolve），
+     * 这里换成「调 LhScan.scan() 起原生相机，扫到后 resolve 出 code=1 与 data.qrCode」。
+     * 只在页面里跑一次（__lhScanPatched 守卫），失败也不影响其它功能。
+     */
+    private val SCAN_BRIDGE_JS = """
+        (function () {
+            if (window.__lhScanPatched) return;
+            if (!window.CP2) { console.log('LhScan: CP2 not ready'); return; }
+            window.__lhScanPatched = true;
+            window.CP2.showScanQr = function () {
+                console.log('LhScan: intercept showScanQr');
+                return new Promise(function (resolve) {
+                    window.__lhScanResolve = resolve;
+                    try { LhScan.scan(); } catch (e) { console.log('LhScan: call failed ' + e); }
+                });
+            };
+            console.log('LhScan: bridge ready');
+        })()
+    """.trimIndent()
+    /**
+     * 第七十七轮：赣青二课网页的兼容补丁（站点自身有两个 bug，都在 H5 侧兜住）。
+     *
+     * 一、「我的活动 → 更多」整页白屏。
+     *    该页 onLoad 第一句就写 this 上的 draftsItem.handleSearchData("")，
+     *    而 draftsItem 是「草稿箱」这个 tab 里的 searchItem 组件，默认 tab 下根本没渲染，
+     *    于是抛 TypeError、页面挂载中断、整页空白。这里给每个组件实例的 refs 装一个访问器：
+     *    访问 draftsItem 时先返回打桩对象，真组件挂载后会 set 覆盖，行为回到正常。
+     *    桩里的 handleSearchData 不能是空实现 —— 它正是首屏加载的触发器，
+     *    所以延后 300ms 转发给页面实例自己的同名方法（beforeCreate 时 methods 还没初始化）。
+     *
+     * 二、onLoad / onShow 抛异常时 uni-app 会把整页标记为失败。
+     *    给 Vue 的 errorHandler 挂一层「先记日志再交给原处理器」，避免一条与渲染无关的
+     *    异常把页面直接打死。Vue 构造器不从 window 暴露（打包内联），只能从
+     *    getApp() 拿到的根实例往上取 constructor。
+     */
+    private val GQHW_COMPAT_JS = """
+        (function () {
+            if (window.__lhCompatDone) return;
+            window.__lhCompatDone = true;
+            function getVue() {
+                if (window.Vue && window.Vue.config) return window.Vue;
+                try {
+                    var app = window.getApp && window.getApp();
+                    var vm = app && app['${'$'}vm'];
+                    var C = vm && vm.constructor;
+                    if (C && C.config) return C;
+                } catch (e) { }
+                return null;
+            }
+            var tries = 0;
+            function patch() {
+                var V = getVue();
+                if (!V || !V.config) { if (tries++ < 40) setTimeout(patch, 200); return; }
+                var prev = V.config.errorHandler;
+                V.config.errorHandler = function (err, vm, info) {
+                    try { console.log('LhCompat swallow: ' + err + ' | ' + info); } catch (e) { }
+                    if (prev) { try { prev(err, vm, info); } catch (e) { } }
+                };
+                if (!V.__lhDraftsMixin) {
+                    V.__lhDraftsMixin = true;
+                    V.mixin({
+                        beforeCreate: function () {
+                            var self = this;
+                            try {
+                                if (!self['${'$'}refs']) return;
+                                var stub = {
+                                    handleSearchData: function (v) {
+                                        setTimeout(function () {
+                                            try {
+                                                if (typeof self.handleSearchData === 'function') self.handleSearchData(v || '');
+                                            } catch (e) { console.log('LhCompat load failed ' + e); }
+                                        }, 300);
+                                    },
+                                    handleSearchClearData: function () { },
+                                    handleInputData: function () { }
+                                };
+                                Object.defineProperty(self['${'$'}refs'], 'draftsItem', {
+                                    configurable: true,
+                                    get: function () { return self.__lhDrafts || stub; },
+                                    set: function (v) { self.__lhDrafts = v; }
+                                });
+                            } catch (e) { }
+                        }
+                    });
+                }
+                console.log('LhCompat ready');
+            }
+            patch();
+
+            // 「我的活动」列表不可见的修复。
+            // 实测 DOM：8 条记录都在（.list-bg = 8，每条 159px，列表总高 1387px），
+            // 但从 .content-list 往下整条祖先链高度全是 0，
+            // 而 .uni-scroll-view 带 overflow:hidden，于是内容被整块裁掉，看上去就是白屏。
+            // 这条链本来靠 flex 撑开，页面在这个 WebView 里没撑起来，
+            // 所以这里在高度塌陷时按视口高度补一个确定高度，让子层重新有尺寸。
+            function lhFixList() {
+                try {
+                    var first = document.querySelector('.list-bg');
+                    if (!first) return;
+                    // 从列表项往上爬，找到第一个自带 overflow:hidden 的滚动容器，
+                    // 这条链在这个 WebView 里整排高度都是 0，必须给它一个确定高度才行。
+                    var el = first.parentElement;
+                    var guard = 0;
+                    while (el && guard < 12) {
+                        var cs = getComputedStyle(el);
+                        if (String(cs.overflow).indexOf('hidden') >= 0) {
+                            var box = el.getBoundingClientRect();
+                            if (Math.round(box.height) <= 40) {
+                                var want = Math.max(240, window.innerHeight - Math.round(box.top) - 6);
+                                el.style.height = want + 'px';
+                            }
+                            break;
+                        }
+                        el = el.parentElement;
+                        guard++;
+                    }
+                } catch (e) { }
+            }            var lhApp = getApp();
+            var lhVue = lhApp && lhApp["${'$'}vm"] && lhApp["${'$'}vm"].constructor;
+            if (lhVue) {
+                lhVue.mixin({
+                    mounted: function () {
+                        if (!this.seachList && !this.listData) return;
+                        setTimeout(lhFixList, 1200);
+                        setTimeout(lhFixList, 2600);
+                        setTimeout(lhFixList, 5000);
+                    }
+                });
+            }
+        })()
+    """.trimIndent()
 
     private fun goBackOrFinish() {
         val view = webView
@@ -512,12 +648,48 @@ IconButton(onClick = { finishNow() }) {
     }
 
     /**
+     * 第七十七轮：网页里的 LhScan.scan 落到这里，起原生扫码页。
+     * 必须在主线程开 Activity，JavascriptInterface 的回调线程不是主线程。
+     */
+    fun startScanForWeb() {
+        runOnUiThread {
+            runCatching { startActivityForResult(ScanQrActivity.intent(this), REQUEST_SCAN_FOR_WEB) }
+                .onFailure { android.util.Log.w("OaWebView", "scan activity failed", it) }
+        }
+    }
+
+    /**
+     * 第七十七轮：把扫码结果按站点约定的结构回调给网页。
+     * 站点判定是 code 等于 1 且 data.qrCode 有值，结构必须严格对上；
+     * 取消时回 code=0，让网页自己决定提示什么，不会一直挂着。
+     */
+    private fun deliverScanResult(resultCode: Int, data: Intent?) {
+        val web = scanHostWebView ?: return
+        val text = if (resultCode == ScanQrActivity.RESULT_SCANNED) {
+            data?.getStringExtra(ScanQrActivity.EXTRA_RESULT).orEmpty()
+        } else {
+            ""
+        }
+        val js = if (text.isEmpty()) {
+            "window.__lhScanResolve && window.__lhScanResolve({code:0});"
+        } else {
+            val esc = text.replace("\\", "\\\\").replace("'", "\\'")
+            "window.__lhScanResolve && window.__lhScanResolve({code:1,data:{qrCode:'" + esc + "'}});"
+        }
+        runOnUiThread { runCatching { web.evaluateJavascript(js, null) } }
+    }
+    /**
      * 把系统文件选择器的结果回填给网页。
      *
      * 多选（`<input multiple>`）要从 [Intent.getClipData] 里逐个取，单选取 [Intent.getData]；
      * 用户按返回取消时必须回 `null`，否则那个 `<input>` 会永远卡在「等待选择」。
      */
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        // 第七十七轮：二课扫码页回来，把结果交还给网页那个挂起的 Promise。
+        if (requestCode == REQUEST_SCAN_FOR_WEB) {
+            deliverScanResult(resultCode, data)
+            return
+        }
         if (requestCode != REQUEST_FILE_CHOOSER) {
             super.onActivityResult(requestCode, resultCode, data)
             return
@@ -621,6 +793,14 @@ IconButton(onClick = { finishNow() }) {
 
         val host = android.net.Uri.parse(url).host.orEmpty()
 
+        // 第七十七轮：把扫码能力接到网页上。
+        // 只对赣青二课注入，其它站点（校内 OA、邮箱）一律不暴露这个 JS 接口。
+        // 网页侧用 window.CP2.showScanQr 调我们的 LhScan.scan，见 SCAN_BRIDGE_JS。
+        if (host.endsWith("jxmediacenter.com")) {
+            scanHostWebView = view
+            view.addJavascriptInterface(ScanBridge(this), "LhScan")
+        }
+
         // 照抄原版指纹：去掉 "; wv"，追加 NchuApp UA
         val baseUa = settings.userAgentString.replace("; wv", "")
         val netType = "WIFI"
@@ -636,18 +816,14 @@ IconButton(onClick = { finishNow() }) {
         settings.useWideViewPort = oaHost
         settings.userAgentString = "$baseUa NchuApp/${Session.appVersion} NetType/$netType" +
             if (oaHost) " MicroMessenger/8.0.47.2560" else ""
-        // 2026-11-14 第七十七轮（用户：「点击赣青二课的按钮依旧无法扫码」）：
-        // 二课首页右上角的扫码按钮 handleSenCode() 只有两条分支 ——
-        //   ① isWeiXin() 为真 → navigateTo('/pages/scan/scan')，用站点自带的 html5-qrcode 扫码；
-        //   ② 否则 → window.CP2.showScanQr({needResult:1})，CP2 是青新闻 App 注入的原生桥。
-        // 我们的 WebView 里既不是微信环境、也没有 CP2，点下去必然 TypeError，界面毫无反应。
-        // CP2 那条要自建原生扫码页（相机 + 解码 + 回调），成本高；而站点自己的 H5 扫码页
-        // 现成可用（CAMERA 权限与 onPermissionRequest 在第七十五轮已放行），
-        // 所以这里只对二课站点伪装微信 UA，把分支掰到 ①。
-        // 影响面已核对：全站 isWeiXin() 仅 2 处调用（首页扫码、另一处未启用），不吃亏。
-        if (host == "gqhw.jxmediacenter.com") {
-            settings.userAgentString = settings.userAgentString + " MicroMessenger/8.0.50.2700"
-        }
+        // 2026-11-14 第七十七轮补正（用户：「点击赣青二课的按钮依旧无法扫码」）：
+        // 一度试过对二课站点伪装微信 UA，把扫码按钮掰到站点自带的 /pages/scan/scan（html5-qrcode）。
+        // 实测打脸 —— 伪装后整页重载、Vue 根本没挂载（body 里只剩 <noscript> 与 script，
+        // #app 消失、videos=0 canvas=0），比原来更糟。
+        // 而灌进页面的诊断脚本读出来：`window.CP2` 是存在的一整套桥对象，
+        // showScanQr / selectMedia / getLocation / wxSign / upload … 都在，
+        // 所以按钮本来就不会抛 TypeError —— 真相是它返回的 Promise 永远不 resolve
+        //（真正的扫码动作要青新闻 App 那边配合）。修法见 ScanBridge：由我们接管 showScanQr。
 
         // 同步 RCE 会话 Cookie 进 WebView（原版 syncCookie 行为）
         // 2026-10-27 第十八轮：原来把整串 "a=1; b=2" 直接丢给 setCookie，CookieManager
@@ -880,6 +1056,14 @@ IconButton(onClick = { finishNow() }) {
                         "finished url=" + hideQuery(url) + " bits=" + bits + " bodyH=" + height +
                             " title=" + v.title,
                     )
+                    // 第七十七轮：二课站点装扫码桥。
+                    // 站点自己的 CP2.showScanQr 只返回一个永不 resolve 的 Promise，
+                    // 换掉它，用户点右上角扫码才会有反应（细节见 SCAN_BRIDGE_JS）。
+                    if (url.contains("jxmediacenter.com")) {
+                        v.evaluateJavascript(SCAN_BRIDGE_JS) { }
+                        // 临时诊断（「我的活动」白屏定位用，验完删）
+                        v.evaluateJavascript(GQHW_COMPAT_JS) { }
+                    }
                 }
             }
 

@@ -97,6 +97,13 @@
             android:launchMode="singleTask"
             android:windowSoftInputMode="adjustResize" />
 
+        <!-- 第七十七轮：赣青二课的扫码页（原生相机 + zxing 解码），只由 OaWebViewActivity 内部拉起 -->
+        <activity
+            android:name=".ui.ScanQrActivity"
+            android:configChanges="orientation|screenSize|keyboardHidden"
+            android:exported="false"
+            android:screenOrientation="portrait"
+            android:theme="@android:style/Theme.Black.NoTitleBar.Fullscreen" />
         <activity
             android:name=".ui.OaWebViewActivity"
             android:exported="false" />
