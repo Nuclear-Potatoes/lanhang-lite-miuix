@@ -333,5 +333,14 @@ object WorkCatalog {
                 homePageUrl = "http://go.nchu.edu.cn/?id=98",
             ),
         ),
+        // 2026-11-14 第七十一轮：用户要求接入「赣青二课」。校外独立站点，只登记入口地址。
+        "团学活动" to listOf(
+            WorkApp(
+                id = GQHW_APP_ID,
+                name = "赣青二课",
+                description = "第二课堂成绩单",
+                homePageUrl = "https://gqhw.jxmediacenter.com/#/",
+            ),
+        ),
     )
 }

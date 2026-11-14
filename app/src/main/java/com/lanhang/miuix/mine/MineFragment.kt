@@ -195,6 +195,8 @@ class MineFragment : Fragment() {
             onOpenMomentsFilter = { open(MinePage.MOMENTS_FILTER) },
             onOpenClassReminder = { open(MinePage.CLASS_REMINDER) },
             onOpenNotifySettings = { open(MinePage.NOTIFY_SETTINGS) },
+            onOpenAccountSecurity = { open(MinePage.ACCOUNT_SECURITY) },
+            onOpenPrivacyControl = { open(MinePage.PRIVACY_CONTROL) },
                     onOpenTools = { open(MinePage.TOOLS) },
                     onOpenAbout = { open(MinePage.ABOUT) },
             onOpenContacts = { open(MinePage.CONTACTS) },

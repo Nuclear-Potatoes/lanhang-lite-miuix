@@ -35,8 +35,12 @@ object ImMedia {
 
     /** 把 content:// 复制成缓存文件（Photo Picker / SAF 给的临时授权进程一被杀就失效） */
     fun copyToCache(context: Context, uri: Uri, fileName: String? = null): File? = runCatching {
-        val name = fileName ?: queryName(context, uri) ?: ("im_" + System.currentTimeMillis())
-        val out = File(cacheDir(context), name.replace('/', '_'))
+        val raw = fileName ?: queryName(context, uri) ?: "im_"
+        // 2026-11-14 第七十三轮：一律加时间戳前缀。原来直接沿用原文件名，同一个文件
+        // 发第二次会覆盖上一次的缓存文件，而融云 SDK 可能仍持有旧句柄，表现为
+        // 「同名文件再发就失败」。加前缀后每次都是新路径，不再互相踩。
+        val name = System.currentTimeMillis().toString() + "_" + raw.replace('/', '_')
+        val out = File(cacheDir(context), name)
         context.contentResolver.openInputStream(uri)?.use { input ->
             out.outputStream().use { output -> input.copyTo(output) }
         } ?: return null
@@ -77,7 +81,19 @@ object ImMedia {
             }
             cover to ((ms / 1000).toInt().coerceAtLeast(1))
         } catch (e: Exception) {
-            null to 0
+            // 2026-11-14 第七十三轮：抽不到时长/首帧时不放弃整条视频。
+            // 原来这里返回 null to 0，调用处就直接提示失败并 return，
+            // 用户看到的是「点了视频没反应」。给一张占位封面 + 1 秒时长，
+            // 宁可时长显示不准，也让视频能发出去。
+            val placeholder = runCatching {
+                val f = File(cacheDir(context), "thumb_ph_" + System.currentTimeMillis() + ".jpg")
+                val bmp = android.graphics.Bitmap.createBitmap(320, 320, android.graphics.Bitmap.Config.ARGB_8888)
+                bmp.eraseColor(android.graphics.Color.rgb(60, 60, 60))
+                f.outputStream().use { bmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, 80, it) }
+                bmp.recycle()
+                f
+            }.getOrNull()
+            placeholder to 1
         } finally {
             runCatching { retriever.release() }
         }

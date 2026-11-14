@@ -2,7 +2,12 @@ package com.lanhang.miuix.ui
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.app.Activity
+import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
+import android.webkit.ValueCallback
+import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
@@ -65,6 +70,16 @@ import top.yukonga.miuix.kmp.theme.MiuixTheme
  * 加载中在顶栏下面压一条主色细线，不再用 Material 的圆形 ProgressBar。
  */
 class OaWebViewActivity : AppCompatActivity() {
+
+    /**
+     * 网页 `<input type="file">` 等着的回调。
+     *
+     * WebView 自己不会弹系统文件选择器（默认实现直接返回 false），必须由宿主 Activity 代劳。
+     * 2026-11-14 第七十一轮：接入「赣青二课」后才需要它 —— 那套系统要上传头像和实践证明材料，
+     * 没有这一层的话用户点「上传」毫无反应，看起来就像功能坏了。
+     */
+    private var fileCallback: ValueCallback<Array<Uri>>? = null
+
     override fun attachBaseContext(newBase: Context) {
         // 语言切换见 LocaleHelper：用 createConfigurationContext 包 base context，
         // 切语言时由设置页显式 recreate()，不走系统的 per-app locale（会黑屏）
@@ -78,6 +93,9 @@ class OaWebViewActivity : AppCompatActivity() {
         private const val EXTRA_COOKIE = "cookie"
         private const val EXTRA_PREFLIGHT_URL = "preflightUrl"
         private const val EXTRA_APP_ID = "appId"
+
+        /** 网页 <input type="file"> 触发的系统文件选择器请求码 */
+        private const val REQUEST_FILE_CHOOSER = 4001
 
         /**
          * 打开一个 OA 应用页。
@@ -420,6 +438,41 @@ class OaWebViewActivity : AppCompatActivity() {
         if (!isFinishing && !isDestroyed) finish()
     }
 
+    /**
+     * 把系统文件选择器的结果回填给网页。
+     *
+     * 多选（`<input multiple>`）要从 [Intent.getClipData] 里逐个取，单选取 [Intent.getData]；
+     * 用户按返回取消时必须回 `null`，否则那个 `<input>` 会永远卡在「等待选择」。
+     */
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        if (requestCode != REQUEST_FILE_CHOOSER) {
+            super.onActivityResult(requestCode, resultCode, data)
+            return
+        }
+        val cb = fileCallback ?: return
+        fileCallback = null
+        val uris: Array<Uri>? = if (resultCode != Activity.RESULT_OK || data == null) {
+            null
+        } else {
+            val clip = data.clipData
+            if (clip != null && clip.itemCount > 0) {
+                Array(clip.itemCount) { clip.getItemAt(it).uri }
+            } else {
+                data.data?.let { arrayOf(it) }
+            }
+        }
+        cb.onReceiveValue(uris)
+    }
+
+    /** 第七十二轮：离开本页前再存一次登录态（有些站点是登录成功后才写 Cookie，页面没重载） */
+    override fun onPause() {
+        super.onPause()
+        val h = webView?.url?.let { android.net.Uri.parse(it).host.orEmpty() }.orEmpty()
+        if (h.isNotEmpty() && !h.endsWith("nchu.edu.cn")) {
+            WebLoginStore.save(this, h)
+        }
+    }
+
     override fun onDestroy() {
         cancelBackFallback()
         uiScope.cancel()
@@ -496,6 +549,14 @@ class OaWebViewActivity : AppCompatActivity() {
         }
         cm.flush()
 
+        // 2026-11-14 第七十二轮：校外站点的登录票据常常是会话 Cookie，只活在内存里，
+        // 本页一关就没了。这里先把上次存下的写回去，加载完再存一次（见 WebLoginStore）。
+        // 学校域名的 Cookie 由 ApiClient 统一同步，不能被旧快照覆盖，所以只处理校外站。
+        if (!campusHost) {
+            WebLoginStore.restore(this, host)
+            runCatching { cm.flush() }
+        }
+
         // 伪装头只发给校内站点：带一整套 RCE 头（Token / DeviceID / Cookie）去敲学生邮箱、
         // 图书馆这类外部站点，会被当成非法客户端（空白的另一半原因）。
         headers = HashMap<String, String>().apply {
@@ -511,6 +572,32 @@ class OaWebViewActivity : AppCompatActivity() {
                 // 的 `roundcube_sessid` 每次都因此丢掉，静态资源拿不到同一个会话，
                 // 页面渲成纯白（用户：「打开后一片白」）。会话 Cookie 已经在上面的
                 // CookieManager 里逐条同步过，这里不需要再手工拼一遍。
+            }
+        }
+
+        // 2026-11-14 第七十一轮：网页里的 <input type="file"> 需要 App 代弹系统选择器。
+        // 「赣青二课」要上传头像与证明材料，缺了这一层点「上传」会毫无反应。
+        view.webChromeClient = object : WebChromeClient() {
+            override fun onShowFileChooser(
+                webView: WebView?,
+                filePathCallback: ValueCallback<Array<Uri>>?,
+                fileChooserParams: FileChooserParams?,
+            ): Boolean {
+                fileCallback?.onReceiveValue(null)
+                fileCallback = filePathCallback
+                val intent = fileChooserParams?.createIntent()
+                    ?: Intent(Intent.ACTION_GET_CONTENT).apply {
+                        type = "*/*"
+                        addCategory(Intent.CATEGORY_OPENABLE)
+                    }
+                return try {
+                    @Suppress("DEPRECATION")
+                    startActivityForResult(intent, REQUEST_FILE_CHOOSER)
+                    true
+                } catch (_: Throwable) {
+                    fileCallback = null
+                    false
+                }
             }
         }
 
@@ -574,8 +661,17 @@ class OaWebViewActivity : AppCompatActivity() {
                     val bits = text.substringBefore('|').toIntOrNull() ?: 1
                     val height = text.substringAfter('|', "1").toIntOrNull() ?: 1
                     bodyBits = bits
-                    pageTrouble = height <= 2
+                    // 2026-11-14 第七十二轮：原来只看 body 高度，于是 uni-app / Vue 那类把内容
+                    // 放进 fixed / absolute 容器的页面（例如赣青二课的「我的」）body 高恒为 0，
+                    // 一进这个页面就弹「页面可能是空白的」—— 正文其实好好画着。
+                    // 现在必须「既没有正文、也没有高度」才算白板。
+                    pageTrouble = bits <= 2 && height <= 2
                     firstPaintDone = true
+                    // 第七十二轮：校外站点留一份 Cookie（含会话 Cookie），下次进来直接接上
+                    val loginHost = android.net.Uri.parse(url).host.orEmpty()
+                    if (loginHost.isNotEmpty() && !loginHost.endsWith("nchu.edu.cn")) {
+                        WebLoginStore.save(this@OaWebViewActivity, loginHost)
+                    }
                     android.util.Log.i(
                         "OaWebView",
                         "finished url=" + hideQuery(url) + " bits=" + bits + " bodyH=" + height +
@@ -612,6 +708,20 @@ class OaWebViewActivity : AppCompatActivity() {
                     return
                 }
                 if (pageStack.last() == landed) return
+                // 2026-11-14 第七十二轮：单页应用（uni-app / Vue 的 hash 路由）内部换页只改 # 后面
+                // 那一段，主框架并没有重新导航。原来这里一律「替换栈顶」，于是栈里永远只有一条，
+                // 「点进二级页再按返回」直接退出整个网页（用户：「系统中的返回手势触发时则直接
+                // 退出所有页面」）。同主机同路径、只有 # 片段不同 = SPA 前进，入栈而不是替换。
+                val prevUrl = pageStack.last()
+                val prevUri = android.net.Uri.parse(prevUrl)
+                val nowUri = android.net.Uri.parse(landed)
+                val spaForward = prevUri.host == nowUri.host &&
+                    prevUri.path == nowUri.path &&
+                    prevUri.fragment != nowUri.fragment
+                if (spaForward) {
+                    pageStack.add(landed)
+                    return
+                }
                 // 落地地址就是上一条（A → B 又重定向回 A）：把看不见的 B 删掉，别留中间页
                 if (pageStack.size >= 2 && pageStack[pageStack.size - 2] == landed) {
                     pageStack.removeAt(pageStack.size - 1)

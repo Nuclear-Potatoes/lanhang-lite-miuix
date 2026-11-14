@@ -1,4 +1,196 @@
-### 69.11 发版 1.1.22（用户 2026-11-14 指定版本号）
+## 73. 第七十三轮（2026-11-14）：私信图标、媒体发送修复、账号与安全 + 权限控制
+
+### 73.1 用户原话
+「第一，私信无法发送语音、文件、视频，另外，私信+号拓展页面图片、视频、文件、位置与私信主页的语音按钮缺少图标，可以试着链接网络矢量图标库获取图标。获取图标素材后换掉应用内全部能替换的图标，让图标更美观。第二，在设置-账号功能下加入修改密码、修改手机号、权限控制的功能，具体细节可以参考原蓝航app，权限控制比如谁能看到手机号，谁能看到邮箱等等功能，将原蓝航的功能搬过来。做完后push发版」
+
+### 73.2 图标（`im/ImScreens.kt` 63612 → 66094 字节）
+`AttachPanel` 原来把「图 / 视 / 文 / 位」四个汉字用 `Text(label.take(1))` 当图标。改为 `top.yukonga.miuix.kmp.icon.extended` 的真图标：`Image` / `Play` / `File` / `Location`，46dp 圆角底框内 `Icon(24dp, tint = primary)`。
+输入条右侧三个纯文字 `TextButton` 换成新增的 `IconPill(text, icon, primary, onClick)`（38dp 高、19dp 圆角）：语音 `Mic`、发送 `Send`（实心主色）、键盘 `LanhangIcons.Backspace`。
+
+**坑 1（务必记住）**：`top.yukonga.miuix.kmp.icon.extended.Xxx` 是**扩展属性** `val MiuixIcons.Xxx: ImageVector`，不能 `import ... as 别名` 当顶层值用，否则报 `receiver type mismatch`。正确写法是 `import top.yukonga.miuix.kmp.icon.MiuixIcons` + `import top.yukonga.miuix.kmp.icon.extended.Mic`，使用处写 `MiuixIcons.Mic`。现成样板见 `work/WorkPage.kt`（已 import 100 余个）。
+
+**坑 2**：`@Composable` 的 `stringResource(...)` 不能出现在普通 lambda（如 `onClick`）里，必须在 composable 作用域先取成局部 `val`。
+**坑 3**：批量 `Replace` 时如果替换目标包含定义行本身（`val tHead = stringResource(...)` → `val tHead`），会把自己改成自引用 `val tHead = tHead`，编译报 `Unresolved reference`。替换要挑唯一的调用形态。
+
+### 73.3 媒体消息「发不出去」的真实原因（重要）
+用户反馈语音 / 文件 / 视频发不出去。加了临时 `Log.e` 诊断后拿到的链路是**通的**：
+`filePicker picked` → `copyToCache 成功 len=N` → `filePicker prepared` → `sendRich status=CONNECTED content=FileMessage` → `onProgress 0..100` → `onSuccess`。
+真正的问题是**偶发失败**：同一个文件**发第二次必定失败**。因为 `ImMedia.copyToCache` 直接沿用原文件名写入 `cache/im/<原文件名>`，第二次把第一次的缓存文件覆盖掉，而融云 SDK 可能仍持有旧句柄。
+
+修法：`copyToCache` 一律加时间戳前缀 —— `val raw = fileName ?: queryName(...) ?: "im_"; val name = System.currentTimeMillis().toString() + "_" + raw.replace('/', '_')`。改完实测「同一个 150KB 文件连发两次」两条都成功。
+
+视频另有一处会「点了没反应」：`videoInfo()` 的 `catch` 直接 `return null to 0`，调用处看到 `durationSec <= 0` 就提示失败并 `return`。SightMessage 必须要封面，所以有些视频永远发不出去。修法：抽帧失败时生成一张 320×320 深灰占位 jpg 当封面，时长兜底为 1 秒 —— 宁可时长显示不准，也让视频能发出去。
+
+**教训**：用户说「发不出去」不等于代码没走到。先打点确认走到哪一步，再谈修 —— 这次打点之后才发现代码是通的、失败是「同名缓存覆盖」这种数据层面的偶发问题，光读代码看不出来。
+
+### 73.4 账号与安全 / 权限控制（对照原版蓝航）
+原版三个入口（`SettingActivity.java`）：
+- `liv_setting_password` → `RceWebViewActivity` + `https://go.nchu.edu.cn/?id=79`
+- `liv_setting_mobile` → `https://go.nchu.edu.cn/?id=83`
+- `rce_permission_control` → `PermissionControlActivity`（原生页）
+
+原版权限接口（`PermissionControlActivity.java`）：`GET /api/user/getUserStatus` 读、`POST /api/user/setUserStatus` 写，body 九个值**全是字符串数字**：`telFlag` / `mailFlag` / `messageFlag` / `groupFlag` / `pinFlag` / `friendFlag` / `headFlag` / `hideTelFlag` / `hideOfficeFlag`。语义：头像 / 加好友 / 群 / 置顶 / 语音视频是**三态**（0 全部可见、1 仅老师、2 都不可见），手机号 / 邮箱是**两态**（0 全部、1 仅老师）。
+
+新增：
+- `engine/net/UserPrivacyModels.kt`：`UserPrivacy` 数据类 + `toJsonBody()` + 三个 `VISIBLE_*` 常量。
+- `engine/net/RceApi.kt` 加 `getUserPrivacy()` / `setUserPrivacy()`。**该文件是 CRLF 换行**，锚点不要归一化成 LF。
+- `mine/AccountSecurityScreen.kt`：账号（修改密码、修改手机号走 `OaWebViewActivity.open`）+ 隐私（权限控制）。
+- `mine/PrivacyControlScreen.kt`：三组卡片 + `showMiuixPicker` 单选 + 底部保存。
+- `MineScreen` / `MineFragment` 加 `ACCOUNT_SECURITY = 18` / `PRIVACY_CONTROL = 19` 接线；`strings.xml` 加 33 个 `account_*` / `privacy_*` 键。
+
+改 engine 后必须 `:engine:assembleRelease` 再把 `engine-release.aar` 复制成 `app/libs/engine.aar`，否则 app 用的还是旧 aar。
+
+### 73.5 产物与验证
+版本 `versionCode 75` / `versionName "1.1.23"`。
+装机实测（模拟器 1220×2656）：工作 tab → 赣青二课正常；我的 → 设置 → 账号与安全三行齐全；权限控制页拉到了真实数据（头像=仅老师可见、加我为好友=所有人可见、我的群/置顶会话/语音和视频=仅老师可见、手机号/邮箱=仅老师可见），点「头像」弹出三选一且当前值正确打勾；私信附件面板四个矢量图标与输入条麦克风胶囊正常；同一个 150KB 文件连发两次均成功。
+
+### 73.6 教训
+1. 用户报「功能坏了」先打点定位，别先读代码猜 —— 这次代码是通的，坏的是数据（同名缓存）。
+2. 凡是用原文件名落盘的地方都要问一句「同一个文件再来一次会怎样」，共享目录 + 原文件名 = 覆盖 = 偶发失败。
+3. 组件图标的 `extended` 包全是扩展属性，只能 `MiuixIcons.Xxx` 访问；批量替换字符串时注意别把定义行本身替换成自引用。
+## 72. 第七十二轮（2026-11-14）：二课网页的空白提示、登录态与返回逻辑
+
+### 72.1 用户原话
+
+> 在页面中点击"我的"时，屏幕上方出现"页面可能是空白的"的提示，修复这个问题，另外，需要让内部网页记住赣青二课的登录态，省去反复登录的过程。第三，页面左上角的返回按钮是"返回上一级页面"，如在网页中点击了一个二级页面，点击返回按钮后可以回到上一个界面。而系统中的返回手势触发时则直接退出所有页面。修改一下交互逻辑
+
+### 72.2 三条问题的根因与修法
+
+**① 「页面可能是空白的」误报。** `ui/OaWebViewActivity.kt` 的 `onPageFinished` 里判定白板写的是
+`pageTrouble = height <= 2` —— 只看 `document.body.getBoundingClientRect().height`。
+uni-app / Vue 那类把内容放进 `fixed` / `absolute` 容器的页面（赣青二课的「我的」正是），
+`body` 自身高度恒为 0，于是正文好好画着也被判成白板，顶上就压出一条
+「页面可能是空白的 / 重试 / 用浏览器打开」。
+修法：改成 `pageTrouble = bits <= 2 && height <= 2` —— **既没有正文、也没有高度**才算白板。
+`bits` 本来就是脚本一起量回来的（正文长度 + 图片数 + canvas 数），只是以前没用上。
+
+**② 登录态记不住。** Android 的 `CookieManager` 只把**带 Expires 的持久 Cookie** 写进磁盘，
+会话 Cookie 只活在内存里，本页一 `finish()` 或进程被回收一次就没了。赣青二课这类若依 + uni-app
+的站点，登录票据恰恰常常是会话 Cookie，表现出来就是「每次进去都要重新登录」。
+修法：新增 `ui/WebLoginStore.kt`（2,956 字节，`internal object`）——
+`save(context, host)` 把该域名此刻的 `CookieManager.getCookie("https://host")` 整串抄进
+SharedPreferences（键 = 域名，附时间戳）；`restore(context, host)` 在下次建 WebView 时逐条
+`setCookie` 写回并 `flush()`，超过 30 天的旧快照直接丢弃。
+`OaWebViewActivity` 里三处接线：`createWebView` 的 `cm.flush()` 之后对**非校内域名**调 `restore`；
+`onPageFinished` 里量完正文后调 `save`；新增 `onPause` 再存一次（有些站点是登录成功后才写 Cookie，
+页面并不重载）。**只处理校外域名**：学校域名的 Cookie 由 `ApiClient` 统一同步，不能被旧快照覆盖回去。
+
+**③ 系统返回直接退出整个网页。** 两个原因叠在一起：
+- `AndroidManifest.xml` 里没有 `android:enableOnBackInvokedCallback`，targetSdk 35（Android 15）
+  默认启用预测性返回，系统手势走的是 `OnBackInvokedDispatcher` 而不是
+  `OnBackPressedDispatcher` —— 我们注册的 `OnBackPressedCallback` 收不到，Activity 直接被 finish。
+  顶栏返回按钮是显式 `onBackPressedDispatcher.onBackPressed()`，所以它能用。这就是「按钮好使、
+  手势直接退光」的由来。修法：`<application>` 上显式写
+  `android:enableOnBackInvokedCallback="false"`，回到旧路径，两者统一走 `goBackOrFinish()`。
+- 单页应用的二级页根本没进栈。`doUpdateVisitedHistory` 原来对任何新地址都「替换栈顶」
+  （那是为了处理 302 重定向回原页的中间页），而 uni-app 的 hash 路由只改 `#` 后面那段，
+  于是 `pageStack` 永远只有一条，栈底判定立刻成立 → 直接退出。
+  修法：加一段「同主机、同路径、**只有 `#` 片段不同** = SPA 前进」的判断，命中就 `pageStack.add`
+  而不是替换；其余情况照旧替换。
+
+### 72.3 验证（模拟器 1220×2656，density 2.925）
+
+- 工作 tab →「赣青二课」→ 首页正常渲染（学生数 1538642 / 活动数 233711）。
+- 点底部「我的」→ 进入登录页（HELLO，欢迎登录 / 选择学校 / 账号 / 密码 / 验证码 / 记住密码 / 登录），
+  **没有出现「页面可能是空白的」**。截图 `scratch/s72_1.png`、`s72_2.png`、`s72_2.png`。
+- 按系统返回（`input keyevent KEYCODE_BACK`）→ **退回二课首页**，不退出网页。截图 `s72_3.png`。
+- 再按一次返回 → 退出网页回到工作页（`mCurrentFocus=com.lanhang.miuix/.ui.MainActivity`）。截图 `s72_4.png`。
+- 登录态：机制已接通（会话 Cookie 持久化 + 建 WebView 回填），真实「登录一次之后不再要求登录」
+  需要用户用自己的学号在真机走一遍——模拟器上没有可用的二课账号。
+
+### 72.4 产物
+
+- APK **8,676,480 字节**，SHA256 `6CE267669CE8A519F6EFD1436F13E63FBF84A801B11B31293EF849E7F28AD2E1`
+  （已复制为项目根 `lanhang-miuix-release.apk` 并 `adb install -r` 成功）。
+- 改动文件：`ui/OaWebViewActivity.kt` 34,096 → 36,784 字节；新增 `ui/WebLoginStore.kt` 2,956 字节；
+  `AndroidManifest.xml` 5,712 → 5,763 字节。
+- 版本仍 `versionCode 74` / `versionName "1.1.22"`，用户本轮未要求 push。
+
+### 72.5 三条教训
+
+1. **「页面是不是白的」不能只看高度。** 现代前端框架把内容装进 `fixed/absolute` 容器后，
+   `body` 高度可以是 0 而页面上满满都是字。判定白板要同时看**正文内容量**。
+2. **同一个「返回」，系统手势与顶栏按钮可能根本不是同一条通路。** targetSdk ≥ 33 之后，
+   `enableOnBackInvokedCallback` 决定系统走 `OnBackInvokedDispatcher` 还是 `OnBackPressedDispatcher`。
+   只要「按钮好使、手势不行」，先查清单里这个开关，别急着改业务逻辑。
+3. **`CookieManager` 不等于「记住登录」。** 它只持久化带 Expires 的 Cookie；会话 Cookie 必须自己
+   抄进 SharedPreferences 再写回，否则「关掉再进就要重新登录」会被误判成服务端问题。
+### 71. 第七十一轮（2026-11-14）：接入「赣青二课」
+
+### 71.1 用户原话
+
+> 「@lanhang-miuix\青新闻_3.3.3.apk 逆向一下这个软件，分析它的"赣青二课"接口，将"赣青二课"功能接入工作功能中」
+
+追问入口位置时用户答「我把网址发给你」，随后给出：
+
+> 「链接在这里 https://gqhw.jxmediacenter.com/#/ 」
+
+### 71.2 逆向结论：青新闻客户端里根本没有「赣青二课」
+
+APK 116,421,298 字节、7625 条目、**19 个 dex 合 82MB**、包名 `com.jxnews.jxttn`（江西新闻 · 江西团团）、uni-app 打包、assets 339 条目。逐项排查：
+
+| 找法 | 结果 |
+|---|---|
+| 4419 个文本条目搜「赣青二课 / 赣青 / 二课 / 第二课堂 / 素质拓展 / 第二课堂成绩单」（UTF-8 与 UTF-16LE 双编码） | **全部 0 命中**；对照组「新闻」命中 100+ 处，证明扫描本身没问题 |
+| `com/jxnews` 下 3030 个业务类按模块统计 | `djh` 1722、`newsdetail` 725、`attendance` 327（媒体内部考勤打卡）、`view` 225、`chat` 29 —— **没有任何学分/二课模块** |
+| 186 个域名 / 461 条 URL | 无二课站点；唯一沾边是 `ad.jxzyz.cn/volunteer/...`（江西志愿服务网） |
+| `dekt` / `erke` 关键词 | 全是误报：`CrossfadeKt`、`TrieNodeKt`、`NumberKeyListener`、`PointerKeyboardModifiers` |
+| 18 个猜出来的候选域名（`dekt.jxzyz.cn`、`dekt.jxgqt.org.cn`、`erke.jxcn.cn`…） | 全部 NXDOMAIN |
+
+**结论**：「赣青二课」是服务端菜单下发的外部 H5 外链，客户端只负责给个入口，静态分析永远拿不到它的接口 —— 所以「分析它的接口」这条路本身走不通，正确做法是拿到真实地址后作为网页接入。
+
+### 71.3 真实站点（用户提供）
+
+`https://gqhw.jxmediacenter.com/#/` → DNS `36.133.146.115`，`<title>第二课堂</title>`，Vue + uni-app 单页应用，静态资源挂在 `pic.tt.jxnews.com.cn`（与青新闻同源，确认是同一体系的二课系统）。
+
+前端 118 条路由：活动、实践、志愿、成绩单、申报、答题、竞赛、校园组织、校友圈、积分、诚信值、团队、项目孵化、奖项…… 接口是若依（RuoYi）标准那套（`/app/login`、`/getInfo`、`/system/oss/upload`），且真实 API 有独立前缀、不在站点根路径。
+
+**所以不做原生页**：几十个页面 + 全程登录态，重写既不可能也没必要。工作页只给入口，WebView 承载就是完整接入。
+
+### 71.4 代码改动（三处 + 一处上传支持）
+
+1. `work\WorkRoute.kt`（1765 → 3015 字节）：末尾新增
+   ```kotlin
+   const val GQHW_APP_ID = "native:gqhw"
+   ```
+2. `work\WorkCatalog.kt`（15046 → 15447 字节 / 346 行）：在「图书馆」分组后新增
+   ```kotlin
+   "团学活动" to listOf(
+       WorkApp(id = GQHW_APP_ID, name = "赣青二课", description = "第二课堂成绩单",
+               homePageUrl = "https://gqhw.jxmediacenter.com/#/"),
+   )
+   ```
+3. `work\WorkPage.kt`（52055 → 52367 字节 / 1128 行）：
+   - `COMMON_SLOTS` 增加 `CommonSlot.Server(listOf("赣青二课"))` → 进顶部「常用功能」；
+   - `openApp` 里 `preflightUrl = if (app.id == GQHW_APP_ID) null else openUrl`。
+     **这一行是关键**：`OaWebViewActivity` 只要拿到 `preflightUrl` 就会先跑一遍学校 OA 网关预检（20~30s），还会把 12s「白板看门狗」误触发成「页面打不开」。二课是校外站，必须传 `null` 走「直接加载」分支。
+4. `ui\OaWebViewActivity.kt`（25831 → 34096 字节 / 699 行）：补文件上传链路 ——
+   `private var fileCallback: ValueCallback<Array<Uri>>?`、`view.webChromeClient = object : WebChromeClient() { override fun onShowFileChooser(...) }`、`override fun onActivityResult(...)` 回填（多选取 `clipData`、单选取 `data`、取消回 `null`）、`REQUEST_FILE_CHOOSER = 4001`。
+   原因：WebView 默认不弹系统文件选择器（`onShowFileChooser` 默认返回 false），二课要传头像和实践证明材料，没有这一层用户点「上传」毫无反应。
+
+### 71.5 验证（模拟器 1220×2656）
+
+工作 tab → 「赣青二课」（`[222,1323][1122,1389]`）→ 点击 → 顶栏「← 赣青二课」，约 8 秒后页面完整渲染：
+
+- Banner + 首页数据：学生数 **1538642**、活动数 **233711**、活动人次 **17718748**
+- 九宫格：活动 / 奖励申报 / 校园组织 / 问卷调查 / 诚信值 / 二课成绩 / 思政教育 / 创新创业 / 志愿公益 / 更多
+- 最新活动列表（真实数据：25农产品一班11月消防演习 2.0 学时、童眼看警院 3.0 学时、演讲与口才协会「即兴推销挑战赛」0.03 学时…）
+- 底部「首页 / 我的」
+
+游客态即可浏览，无需登录。截图 `scratch\s71_1.png`（工作页入口）、`s71_3.png`（二课首页）。
+
+### 71.6 产物
+
+APK **8,676,448 字节 / SHA256 `3DD145212FFA561CC84BC1540E4B9B66B07A2CEA16A7135114B4304832A49F05`**，已复制为项目根 `lanhang-miuix-release.apk` 并装机。版本仍 `versionCode 74` / `versionName "1.1.22"`（用户未要求发版）。
+
+### 71.7 三条教训
+
+**① 又一次被 `[IO.File]::WriteAllText` 吃掉了源文件。** 本轮打补丁时 `WorkCatalog.kt`（15046 字节）与 `WorkRoute.kt`（1765 字节）从源码目录**消失**，靠 `push\repo` 的副本才恢复（幸好第七十轮刚 robocopy 同步过）。症状是执行补丁脚本时报「不能对 Null 值表达式调用方法」且**没有任何输出**。已确立新规矩：**任何写盘脚本第一步必须 `Copy-Item` 备份到 `scratch\`**，写盘前校验新内容长度 ≥ 原长度（字符级）、写盘后立刻回读校验锚点与花括号净深度；函数内部一律不用 `Write-Output` 做诊断（会被调用处赋值捕获），诊断只用 `Write-Host`。
+
+**② 「找不到符号」时要先怀疑源码不完整，再去猜架构。** 本轮花了很久在找 `WorkRoute` / `WorkCatalog` 的定义，把 `object WorkRoute` 当唯一形态去搜，实际它是 `enum class WorkRoute(val depth: Int)`；更要紧的是这两个文件当时已经丢了。查证手段：`cmd /c dir /s /b *WorkCatalog*` 一招确认「只在 `build\tmp\kotlin-classes` 里有 .class、源码里没有」。
+
+**③ 校外站点不能走学校 OA 网关的预检链路。** `OaWebViewActivity.open()` 的 `preflightUrl` 不是可选装饰：传了就要先过 `WorkRepository.prepareFor`（网关鉴权 + 换落地地址），校外站过不去，还会触发 12 秒白板看门狗。接任何非 `nchu.edu.cn` 的功能，`preflightUrl` 一律传 `null`。
+## 69.11 发版 1.1.22（用户 2026-11-14 指定版本号）
 
 用户原话：「push发版，版本号应为1.1.22」。
 

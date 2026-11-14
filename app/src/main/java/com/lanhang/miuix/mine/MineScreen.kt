@@ -113,6 +113,12 @@ object MinePage {
     /** 第六十三轮第 4 条：设置 → 通知（总开关 / 显示详情 / 免打扰时段） */
     const val NOTIFY_SETTINGS = 17
 
+    /** 第七十三轮第 2 条：设置 → 账号 → 账号与安全（改密码 / 改手机号 / 权限控制入口） */
+    const val ACCOUNT_SECURITY = 18
+
+    /** 第七十三轮第 2 条：账号与安全 → 权限控制（谁能看到手机号、邮箱…） */
+    const val PRIVACY_CONTROL = 19
+
     /**
      * 通讯录里点「查看个人主页」（2026-10-26 新增）。
      *
@@ -131,7 +137,7 @@ object MinePage {
     fun depth(page: Int): Int = when (page) {
         ROOT -> 0
         APPEARANCE, TOOLS, ABOUT, IM_CHAT, PROFILE_OTHER, MOMENTS_FILTER, CLASS_REMINDER,
-        FRIEND_REQUESTS, NOTIFY_SETTINGS -> 2
+        FRIEND_REQUESTS, NOTIFY_SETTINGS, ACCOUNT_SECURITY, PRIVACY_CONTROL -> 2
         else -> 1
     }
 
@@ -153,6 +159,8 @@ object MinePage {
         IM, IM_CHAT -> R.string.mine_im
         FRIEND_REQUESTS -> R.string.friend_requests_title
         NOTIFY_SETTINGS -> R.string.notify_settings_title
+        ACCOUNT_SECURITY -> R.string.account_security_title
+        PRIVACY_CONTROL -> R.string.privacy_control_title
         else -> R.string.tab_mine
     }
 }
@@ -229,6 +237,10 @@ fun MineScreen(
     onOpenClassReminder: () -> Unit,
     /** 设置 → 通用 → 通知（第六十三轮第 4 条） */
     onOpenNotifySettings: () -> Unit,
+    /** 设置 → 账号 → 账号与安全（第七十三轮第 2 条） */
+    onOpenAccountSecurity: () -> Unit,
+    /** 账号与安全 → 权限控制（第七十三轮第 2 条） */
+    onOpenPrivacyControl: () -> Unit,
     onOpenContacts: () -> Unit,
     onOpenMessages: () -> Unit,
     /** 「私信」入口 → 会话列表 */
@@ -351,6 +363,23 @@ fun MineScreen(
                     listState = pageLists.of(MinePage.NOTIFY_SETTINGS),
                 )
             }
+            // 设置 → 账号 → 账号与安全（第七十三轮第 2 条）
+            MinePage.ACCOUNT_SECURITY -> Box(pageModifier) {
+                AccountSecurityScreen(
+                    modifier = Modifier.fillMaxSize(),
+                    listState = pageLists.of(MinePage.ACCOUNT_SECURITY),
+                    onOpenPrivacy = onOpenPrivacyControl,
+                )
+            }
+
+            // 账号与安全 → 权限控制（第七十三轮第 2 条）
+            MinePage.PRIVACY_CONTROL -> Box(pageModifier) {
+                PrivacyControlScreen(
+                    modifier = Modifier.fillMaxSize(),
+                    listState = pageLists.of(MinePage.PRIVACY_CONTROL),
+                )
+            }
+
             MinePage.PROFILE -> Box(pageModifier) {
                 // 自己主页里点别人头像 → 他人主页 → 返回：同样要留住滚动位置（同相册）。
                 val profileListState = pageLists.of(MinePage.PROFILE)
@@ -500,6 +529,8 @@ fun MineScreen(
                             onOpenMomentsFilter = onOpenMomentsFilter,
                             onOpenClassReminder = onOpenClassReminder,
                             onOpenNotifySettings = onOpenNotifySettings,
+                            onOpenAccountSecurity = onOpenAccountSecurity,
+                            onOpenPrivacyControl = onOpenPrivacyControl,
                             onLogout = onLogout,
                         )
 
@@ -870,6 +901,8 @@ private fun androidx.compose.foundation.lazy.LazyListScope.settingsDirectoryItem
     onOpenMomentsFilter: () -> Unit,
     onOpenClassReminder: () -> Unit,
     onOpenNotifySettings: () -> Unit,
+    onOpenAccountSecurity: () -> Unit,
+    onOpenPrivacyControl: () -> Unit,
     onLogout: () -> Unit,
 ) {
     // 第二十四轮：**设置里不再放「关于」入口**（用户要求），关于只在「我的」首页有入口；
@@ -925,6 +958,13 @@ private fun androidx.compose.foundation.lazy.LazyListScope.settingsDirectoryItem
         SmallTitle(stringResource(R.string.settings_account_section))
         Card(modifier = Modifier.padding(horizontal = 12.dp)) {
             SettingRow(title = stringResource(R.string.settings_account), value = state.account)
+            HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
+            // 账号与安全（第七十三轮第 2 条）：改密码 / 改手机号 / 权限控制都在这里
+            SettingRow(
+                title = stringResource(R.string.account_security_title),
+                summary = stringResource(R.string.privacy_control_summary),
+                onClick = onOpenAccountSecurity,
+            )
             HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
             SettingRow(
                 title = stringResource(R.string.action_logout),

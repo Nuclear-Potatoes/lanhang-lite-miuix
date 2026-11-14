@@ -82,6 +82,14 @@ import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
 import java.util.Locale
+import androidx.compose.ui.graphics.vector.ImageVector
+import top.yukonga.miuix.kmp.icon.MiuixIcons
+import top.yukonga.miuix.kmp.icon.extended.File
+import top.yukonga.miuix.kmp.icon.extended.Image
+import top.yukonga.miuix.kmp.icon.extended.Location
+import top.yukonga.miuix.kmp.icon.extended.Mic
+import top.yukonga.miuix.kmp.icon.extended.Play
+import top.yukonga.miuix.kmp.icon.extended.Send
 
 /**
  * 私信（融云 IM：单聊 + 群聊）。
@@ -856,16 +864,20 @@ fun ImChatScreen(
                 Spacer(Modifier.width(8.dp))
                 if (voiceMode && draft.isBlank()) {
                     // 语音模式下的右侧按钮 = 切回键盘
-                    TextButton(
+                    IconPill(
                         text = stringResource(R.string.im_keyboard),
+                        icon = LanhangIcons.Backspace,
+                        primary = false,
                         onClick = {
                             voiceMode = false
                             keyboard?.show()
                         },
                     )
                 } else if (draft.isBlank()) {
-                    TextButton(
+                    IconPill(
                         text = stringResource(R.string.im_voice),
+                        icon = MiuixIcons.Mic,
+                        primary = false,
                         onClick = {
                             keyboard?.hide()
                             emojiOpen = false
@@ -876,8 +888,10 @@ fun ImChatScreen(
                         },
                     )
                 } else {
-                    TextButton(
+                    IconPill(
                         text = stringResource(R.string.im_send),
+                        icon = MiuixIcons.Send,
+                        primary = true,
                         onClick = {
                             val body = draft.trim()
                             if (body.isNotEmpty()) {
@@ -1270,7 +1284,50 @@ private fun BubbleBody(message: ImMessage, mine: Boolean, onHint: (String) -> Un
     }
 }
 
-/** 「+」附件面板：图片 / 视频 / 文件 / 位置四项（语音走输入条右侧的麦克风） */
+/**
+ * 输入条右侧的胶囊按钮：图标 + 文字。
+ *
+ * 2026-11-14 第七十三轮：用户反馈「私信主页的语音按钮缺少图标」。原来三个按钮都是
+ * 纯文字 `TextButton`，而 Miuix 的 `TextButton` 不支持图文混排，这里自绘一个 38dp 高的
+ * 胶囊：`primary` 为真时用主色实心（发送），否则用容器底色（语音 / 键盘）。
+ */
+@Composable
+private fun IconPill(
+    text: String,
+    icon: ImageVector,
+    primary: Boolean,
+    onClick: () -> Unit,
+) {
+    val bg = if (primary) MiuixTheme.colorScheme.primary else MiuixTheme.colorScheme.surfaceContainerHigh
+    val fg = if (primary) Color.White else MiuixTheme.colorScheme.onSurface
+    Row(
+        modifier = Modifier
+            .height(38.dp)
+            .clip(RoundedCornerShape(19.dp))
+            .background(bg)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = text,
+            tint = fg,
+            modifier = Modifier.size(18.dp),
+        )
+        if (text.isNotBlank()) {
+            Spacer(Modifier.width(5.dp))
+            Text(text = text, style = MiuixTheme.textStyles.body2, color = fg)
+        }
+    }
+}
+/**
+ * 「+」附件面板：图片 / 视频 / 文件 / 位置四项（语音走输入条右侧的麦克风）。
+ *
+ * 2026-11-14 第七十三轮：用户反馈「+ 号拓展页面图片、视频、文件、位置缺少图标」。
+ * 原来这里用 `label.take(1)` 把中文首字（图/视/文/位）当图标，看着像文字不像按钮，
+ * 现在换成 Miuix extended 图标库里的标准图形。
+ */
 @Composable
 private fun AttachPanel(
     onImage: () -> Unit,
@@ -1278,11 +1335,11 @@ private fun AttachPanel(
     onFile: () -> Unit,
     onLocation: () -> Unit,
 ) {
-    val entries = listOf(
-        stringResource(R.string.im_attach_image) to onImage,
-        stringResource(R.string.im_attach_video) to onVideo,
-        stringResource(R.string.im_attach_file) to onFile,
-        stringResource(R.string.im_attach_location) to onLocation,
+    val entries: List<Triple<ImageVector, String, () -> Unit>> = listOf(
+        Triple(MiuixIcons.Image, stringResource(R.string.im_attach_image), onImage),
+        Triple(MiuixIcons.Play, stringResource(R.string.im_attach_video), onVideo),
+        Triple(MiuixIcons.File, stringResource(R.string.im_attach_file), onFile),
+        Triple(MiuixIcons.Location, stringResource(R.string.im_attach_location), onLocation),
     )
     Card(
         modifier = Modifier
@@ -1295,7 +1352,7 @@ private fun AttachPanel(
                 .padding(horizontal = 8.dp, vertical = 14.dp),
             horizontalArrangement = Arrangement.SpaceEvenly,
         ) {
-            entries.forEach { (label, action) ->
+            for ((icon, label, action) in entries) {
                 Column(
                     horizontalAlignment = Alignment.CenterHorizontally,
                     modifier = Modifier
@@ -1310,10 +1367,11 @@ private fun AttachPanel(
                             .background(MiuixTheme.colorScheme.surfaceContainerHigh),
                         contentAlignment = Alignment.Center,
                     ) {
-                        Text(
-                            text = label.take(1),
-                            style = MiuixTheme.textStyles.title3,
-                            color = MiuixTheme.colorScheme.primary,
+                        Icon(
+                            imageVector = icon,
+                            contentDescription = label,
+                            tint = MiuixTheme.colorScheme.primary,
+                            modifier = Modifier.size(24.dp),
                         )
                     }
                     Spacer(Modifier.height(6.dp))
@@ -1327,7 +1385,6 @@ private fun AttachPanel(
         }
     }
 }
-
 /** 顶部一行状态：连接中 / 失败重试 / 加入群聊 / 刷新 */
 @Composable
 private fun ImStatusBar(

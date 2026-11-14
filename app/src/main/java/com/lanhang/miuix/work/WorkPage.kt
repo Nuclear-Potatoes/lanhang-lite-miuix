@@ -211,6 +211,7 @@ private val COMMON_SLOTS = listOf(
     // 座位预约：服务端那个应用只用来占位（名字、图标照旧），点开走原生页
     CommonSlot.Server(listOf(SEAT_APP_MARK, "图书馆")),
     CommonSlot.Server(listOf("智慧教务")),
+    CommonSlot.Server(listOf("赣青二课")),
 )
 
 /**
@@ -343,7 +344,9 @@ fun WorkPage(
                 appToken = null,
                 title = app.displayName,
                 cookie = null,
-                preflightUrl = openUrl,
+                // 赣青二课是校外独立站点，不走学校 OA 网关：给了 preflightUrl 会先跑一遍
+                // 20~30s 的网关预检，还会把 12s「白板看门狗」误触发成「页面打不开」
+                preflightUrl = if (app.id == GQHW_APP_ID) null else openUrl,
                 appId = app.id,
             )
         }
