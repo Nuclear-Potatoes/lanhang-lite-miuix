@@ -3,9 +3,14 @@ package com.lanhang.miuix.ui
 import android.annotation.SuppressLint
 import android.content.Context
 import android.app.Activity
+import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Bundle
+import android.webkit.ConsoleMessage
+import android.webkit.GeolocationPermissions
+import android.webkit.PermissionRequest
 import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
@@ -80,6 +85,18 @@ class OaWebViewActivity : AppCompatActivity() {
      */
     private var fileCallback: ValueCallback<Array<Uri>>? = null
 
+    /**
+     * 网页请求摄像头 / 麦克风、但系统权限还没授给本应用时，先把这次请求挂在这里。
+     *
+     * 2026-11-14 第七十五轮（用户：「这个网页要求扫码能力，点击主页右上角的按钮需要进入
+     * 扫码界面」）。赣青二课的扫码页（`pages/scan/scan`）是用 html5-qrcode 那套
+     * `getUserMedia` 自己开摄像头的，不依赖 App 给原生扫码界面。WebView 里要让它跑起来，
+     * 必须同时满足两件事：清单里声明 CAMERA、并在 [WebChromeClient.onPermissionRequest]
+     * 里显式 grant。少任何一件，网页那边拿到的都是 NotAllowedError，表现就是「进了扫码页
+     * 但画面全黑」。
+     */
+    private var pendingMediaRequest: PermissionRequest? = null
+
     override fun attachBaseContext(newBase: Context) {
         // 语言切换见 LocaleHelper：用 createConfigurationContext 包 base context，
         // 切语言时由设置页显式 recreate()，不走系统的 per-app locale（会黑屏）
@@ -96,6 +113,9 @@ class OaWebViewActivity : AppCompatActivity() {
 
         /** 网页 <input type="file"> 触发的系统文件选择器请求码 */
         private const val REQUEST_FILE_CHOOSER = 4001
+
+        /** 网页请求摄像头/麦克风时，本应用向系统申请运行时权限的请求码 */
+        private const val REQUEST_MEDIA_PERMISSION = 4002
 
         /**
          * 打开一个 OA 应用页。
@@ -517,6 +537,35 @@ IconButton(onClick = { finishNow() }) {
         cb.onReceiveValue(uris)
     }
 
+    /**
+     * 网页请求摄像头/麦克风时，系统权限弹窗的结果回到这里。
+     *
+     * 授权成功就把挂住的那次 [PermissionRequest] 补 grant；失败或用户拒绝时 deny，
+     * 让网页那边拿到明确的 NotAllowedError，而不是一直转圈。
+     */
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray,
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode != REQUEST_MEDIA_PERMISSION) return
+        val request = pendingMediaRequest ?: return
+        pendingMediaRequest = null
+        val ok = grantResults.isNotEmpty() &&
+            grantResults.all { it == PackageManager.PERMISSION_GRANTED }
+        if (!ok) {
+            runCatching { request.deny() }
+            return
+        }
+        val wanted = request.resources.orEmpty().filter {
+            it == PermissionRequest.RESOURCE_VIDEO_CAPTURE ||
+                it == PermissionRequest.RESOURCE_AUDIO_CAPTURE
+        }
+        runCatching { request.grant(wanted.toTypedArray()) }
+            .onFailure { runCatching { request.deny() } }
+    }
+
     /** 第七十二轮：离开本页前再存一次登录态（有些站点是登录成功后才写 Cookie，页面没重载） */
     override fun onPause() {
         super.onPause()
@@ -564,6 +613,11 @@ IconButton(onClick = { finishNow() }) {
         settings.domStorageEnabled = true
         settings.databaseEnabled = true
         settings.mixedContentMode = android.webkit.WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
+        // 2026-11-14 第七十五轮：赣青二课的「地图打卡 / 定位签到」走 H5 的 getCurrentPosition，
+        // WebView 默认把地理定位关着，网页拿到的永远是 PositionUnavailable；
+        // 扫码页与活动视频还需要媒体自动播放能力，否则 getUserMedia / play() 会被用户手势策略挡住。
+        settings.setGeolocationEnabled(true)
+        settings.mediaPlaybackRequiresUserGesture = false
 
         val host = android.net.Uri.parse(url).host.orEmpty()
 
@@ -582,6 +636,18 @@ IconButton(onClick = { finishNow() }) {
         settings.useWideViewPort = oaHost
         settings.userAgentString = "$baseUa NchuApp/${Session.appVersion} NetType/$netType" +
             if (oaHost) " MicroMessenger/8.0.47.2560" else ""
+        // 2026-11-14 第七十七轮（用户：「点击赣青二课的按钮依旧无法扫码」）：
+        // 二课首页右上角的扫码按钮 handleSenCode() 只有两条分支 ——
+        //   ① isWeiXin() 为真 → navigateTo('/pages/scan/scan')，用站点自带的 html5-qrcode 扫码；
+        //   ② 否则 → window.CP2.showScanQr({needResult:1})，CP2 是青新闻 App 注入的原生桥。
+        // 我们的 WebView 里既不是微信环境、也没有 CP2，点下去必然 TypeError，界面毫无反应。
+        // CP2 那条要自建原生扫码页（相机 + 解码 + 回调），成本高；而站点自己的 H5 扫码页
+        // 现成可用（CAMERA 权限与 onPermissionRequest 在第七十五轮已放行），
+        // 所以这里只对二课站点伪装微信 UA，把分支掰到 ①。
+        // 影响面已核对：全站 isWeiXin() 仅 2 处调用（首页扫码、另一处未启用），不吃亏。
+        if (host == "gqhw.jxmediacenter.com") {
+            settings.userAgentString = settings.userAgentString + " MicroMessenger/8.0.50.2700"
+        }
 
         // 同步 RCE 会话 Cookie 进 WebView（原版 syncCookie 行为）
         // 2026-10-27 第十八轮：原来把整串 "a=1; b=2" 直接丢给 setCookie，CookieManager
@@ -668,6 +734,73 @@ IconButton(onClick = { finishNow() }) {
                     fileCallback = null
                     false
                 }
+            }
+
+            /**
+             * 网页要摄像头 / 麦克风时的授权回调。
+             *
+             * WebView 的默认实现是**一律拒绝**，所以不解这里的话，任何走 `getUserMedia`
+             * 的页面（赣青二课的扫码签到、H5 录音）在 WebView 里都是「点了没反应 / 全黑」。
+             * 只放行摄像头与麦克风这两类，其余（受保护媒体、持久化存储）一律拒。
+             */
+            // 2026-11-14 第七十七轮：把网页的 console 转发进 logcat。
+            // 赣青二课这类 uni-app H5 出错时页面只是白屏/静默失效，从界面完全看不出原因，
+            // 有这一行才能在 logcat 里直接读到 JS 异常与接口报错（过滤 tag = OaWebView）。
+            override fun onConsoleMessage(msg: ConsoleMessage): Boolean {
+                android.util.Log.i(
+                    "OaWebView",
+                    "[" + msg.messageLevel() + "] " + msg.message() + " @ " + msg.sourceId() + ":" + msg.lineNumber()
+                )
+                return true
+            }
+
+            override fun onPermissionRequest(request: PermissionRequest?) {
+                if (request == null) return
+                val wanted = request.resources.orEmpty().filter {
+                    it == PermissionRequest.RESOURCE_VIDEO_CAPTURE ||
+                        it == PermissionRequest.RESOURCE_AUDIO_CAPTURE
+                }
+                if (wanted.isEmpty()) {
+                    runCatching { request.deny() }
+                    return
+                }
+                val need = wanted.mapNotNull {
+                    if (it == PermissionRequest.RESOURCE_VIDEO_CAPTURE) Manifest.permission.CAMERA
+                    else Manifest.permission.RECORD_AUDIO
+                }.filter {
+                    checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED
+                }
+                if (need.isEmpty()) {
+                    runCatching { request.grant(wanted.toTypedArray()) }
+                        .onFailure { runCatching { request.deny() } }
+                    return
+                }
+                // 系统权限还没给：先把这次请求挂住，拿到权限后在 onRequestPermissionsResult 里补 grant
+                pendingMediaRequest?.let { runCatching { it.deny() } }
+                pendingMediaRequest = request
+                runCatching { requestPermissions(need.toTypedArray(), REQUEST_MEDIA_PERMISSION) }
+                    .onFailure {
+                        pendingMediaRequest = null
+                        runCatching { request.deny() }
+                    }
+            }
+
+            /**
+             * 网页要定位权限时的回调。默认实现同样是「不回调 = 一直等待」，
+             * 赣青二课的地图打卡与定位签到会卡在「正在获取位置」。
+             * 本应用已经持有精确/粗略定位权限（私信发位置用到），所以直接放行，
+             * 是否真正出位置由网页自身的定位精度决定。
+             */
+            override fun onGeolocationPermissionsShowPrompt(
+                origin: String?,
+                callback: GeolocationPermissions.Callback?,
+            ) {
+                if (callback == null) return
+                val granted = checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) ==
+                    PackageManager.PERMISSION_GRANTED ||
+                    checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) ==
+                    PackageManager.PERMISSION_GRANTED
+                callback.invoke(origin, granted, false)
             }
         }
 

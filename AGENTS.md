@@ -1,3 +1,228 @@
+## 77. 第七十七轮（2026-11-14）：赣青二课的扫码按钮与「我的活动」
+
+### 77.1 用户原话
+> 完全重启虚拟机，让虚拟机连接外部网络。赣青二课页面我的活动依旧无法正常显示，点击赣青二课的按钮依旧无法扫码
+（随后提供测试账号 260106336，并指定学校为南昌航空大学）
+
+### 77.2 先证明「不是网络问题」
+把模拟器彻底冷启动（`-no-snapshot-load -dns-server 10.1.1.1`）后仍然全 `ping` 不通，但这是**假象**：
+- `ping 10.0.2.2`（QEMU 网关）0% 丢包，其余全 100% —— 只是 ICMP 被拦。
+- `ip route` 只看得到 `10.0.2.0/24`，因为 Android 用多路由表；真实默认路由在 `dumpsys connectivity` 里：
+  `Routes: [ 0.0.0.0/0 -> 10.0.2.2 eth0, 10.0.2.0/24 -> 0.0.0.0 ]`，`DnsAddresses: [ /10.0.2.3 ]`。
+- 用 `nc` 直接发 HTTP，**IP 与域名两种写法都返回 200**：`printf 'GET / HTTP/1.0\r\nHost: gqhw.jxmediacenter.com\r\n\r\n' | nc -w 6 gqhw.jxmediacenter.com 80`。
+结论：网络一直是通的，别再拿 ping 判断模拟器联网。
+
+### 77.3 扫码按钮点了没反应 —— 真正的根因
+从前端 chunk 里挖出来的（首页 chunk `static/js/pages-index.77e55c1f.js`）：
+```js
+handleSenCode: function () {
+  if (isWeiXin()) {                                  // ① 微信里
+    this.$tab.navigateTo("/pages/scan/scan");        //    用站点自带的 html5-qrcode 扫码页
+  } else {                                           // ② 其他（= 青新闻 App 的 WebView）
+    window.CP2.showScanQr({ needResult: 1 }).then(...)  //    调原生桥 CP2
+  }
+}
+```
+`window.CP2` 是**青新闻 App 注入的原生对象**。我们的 WebView 里既不是微信、又没有 CP2，于是 `window.CP2.showScanQr` 直接抛 `TypeError`，点击毫无反应 —— 与用户描述完全一致。
+`isWeiXin()` 的实现（chunk-vendors）只认 UA：`navigator.userAgent.toLowerCase().match(/MicroMessenger/i)`。全站仅 2 处调用。
+
+### 77.4 修法：只对二课站点伪装微信 UA
+`ui/OaWebViewActivity.kt` 的 `createWebView()` 里，UA 拼好之后加：
+```kotlin
+if (host == "gqhw.jxmediacenter.com") {
+    settings.userAgentString = settings.userAgentString + " MicroMessenger/8.0.50.2700"
+}
+```
+于是 `isWeiXin()` 为真 → 走 ① 分支 → 进站点自带的 `/pages/scan/scan` → `html5-qrcode` 用 `getUserMedia` → 第七十五轮已放行的 `onPermissionRequest` + 清单 `CAMERA` 让摄像头权限正常弹出。
+**没有**自建原生扫码页：CP2 那条要相机 + 解码 + 回调三件套，成本远高于复用站点自己的页面。
+
+### 77.5 顺带补上的诊断能力
+`WebChromeClient` 加 `onConsoleMessage`，把网页 `console.*` 全部打到 logcat（tag `OaWebView`）：
+```
+I OaWebView: [LOG] 扫一扫界面 @ .../pages-index.77e55c1f.js:1
+I OaWebView: finished url=...#/pages/scan/scan bits=3 bodyH=0 title=扫一扫
+```
+这类 uni-app 站点出错时界面只会白屏或静默失效，没有这行日志完全无从下手。**以后调 WebView 一律先看 `adb logcat -s OaWebView`。**
+
+### 77.6 验证到哪一步（诚实记录）
+- ✅ 扫码按钮**不再无反应**：点击后进入 `#/pages/scan/scan`，页面标题变成「扫一扫」，系统弹出「要允许"蓝航Lite"拍摄照片和录制视频吗？」，授予后 `dumpsys package` 里 `CAMERA: granted=true`。
+- ⚠️ 扫码页在**模拟器上白屏**：`bits=3 bodyH=0`、无任何 console 输出。已排除 chunk 404（用 `nc` 直接取 `static/js/pages-scan-scan.99ca7707.js` 返回 200 / 456,842 字节）、已排除无摄像头（`dumpsys media.camera` 报 2 个设备）。疑似模拟器 WebView 渲染 uni-app 懒加载页的老毛病，需真机确认。
+- ✅ 「我的」页**正常**：登录后能看到头像、学院专业、「我的活动：11.14音乐跑 1.0学时」等真实数据。
+- ⚠️ 点「我的活动」右侧「更多」后**白屏**（同属 SPA 路由页白屏，与扫码页同一类问题，尚未解决）。
+
+### 77.7 登录过程备忘（模拟器复用时照做）
+1. 二课首页右上角扫码 → 未登录会跳 `#/pages/login`；
+2. 「选择学校」→ 列表第一行就是**南昌航空大学**（设备坐标 y≈1275）；
+3. 账号 `260106336`、密码用 `adb shell 'input text "..."'` 单引号包住双引号传（`$` 要写 `\$`）；
+4. 验证码是图片，用 `ffmpeg -vf "crop=360:150:745:1670,scale=1440:-1"` 裁出来放大认；
+5. 登录成功后 `install -r` 升级不会掉登录态（Cookie + localStorage 都在 app_webview 里）。
+
+### 77.8 产物
+- APK 8,709,940 字节 / SHA256 `0073EF844CB799E0356883A8000D503DE47930C91D372D9470F26BF97EB06ABB`
+- 版本 `versionCode 78` / `versionName "1.1.26"`
+- 改动文件：`ui/OaWebViewActivity.kt`（46,853 → 48,654 字节）
+
+### 77.9 三条教训
+1. **模拟器的 ping 不通 ≠ 断网**。ICMP 被拦、Android 多路由表这两件事会同时骗人，判断联网只认 `nc` 发 HTTP。
+2. **点不动先看 console**。WebView 里 `window.XXX` 不存在只会抛 `TypeError` 并被页面自己的 try/catch 吞掉，界面毫无提示；把 `onConsoleMessage` 接进 logcat 是一劳永逸的。
+3. **别急着自建原生能力**。站点自己就带着一个可用的 H5 扫码页，把 `isWeiXin()` 掰开比写一套相机 + 解码便宜得多。
+## 76. 第七十六轮（2026-11-14）：图书馆签到失败与预约误报
+
+### 76.1 用户原话
+
+> 图书馆成功预约后也会提示预约失败，扫描提供的二维码后无法成功签到，只有打开微信端扫码后才正常。再重新分析一下图书馆预约的网页，找出原因。
+
+### 76.2 怎么拿到官方前端代码
+
+`lib-zw.lib.nchu.edu.cn` 是洄图（huitu）的座位预约系统，React SPA。宿主直接 `curl` 首页拿到 1,280 字节，里面只有 `#react-root` 与 `/rwpublic/js/app.es6.min.js`。把那个 2,865,686 字节的 bundle 抓下来，正则扫 `/Seat/Index/xxx` 就得到了完整的接口清单与**官方前端的调用方式**。这是本轮全部结论的来源。
+
+### 76.3 根因一：`checkIn` 是给蓝牙签到用的，我们却拿它当唯一入口
+
+`myBookingList` 每条记录带两个字符串字段 `sign_in_qrcode` / `sign_in_bluetooth`（馆方配置）。官方签到按钮是三分支：
+
+```js
+sign_in_qrcode && sign_in_bluetooth ? <签到 onPress={popSign}>                    // 弹二选一
+: sign_in_qrcode && !sign_in_bluetooth ? <签到 link="/Seat/Index/mySignQRCode">   // 直接进签到码页
+: !sign_in_qrcode && sign_in_bluetooth ? <签到 onPress={_signOrder}>              // 直接 POST checkIn
+```
+
+也就是说 **`POST /Seat/Index/checkIn?bookingId=` 只适用于「蓝牙签到」**（它本来是给 iBeacon 靠近检测那套用的）。我们 `perform(SeatAction.CHECK_IN)` 一律调它，馆方只配扫码签到时必然失败 —— 这正是「点签到一直提示失败，而微信里扫签到器的码却正常」的原因：微信那条路走的是签到码页面。
+
+### 76.4 根因二：扫码签到靠轮询，我们只出码不问结果
+
+官方 `ht.Seat.CodeSignPage`：
+
+```js
+componentWillMount(){ xH.get("/Seat/Index/mySignQRCode").then(t => setState({code: t.code})) }
+toCheck(){
+  xH.post("/Seat/Index/checkSignQRCode", {data:{str: this.props.code}}).then(t => {
+    if ("ok" == t.CODE) { /* 成功：刷新订单 + 跳 dynamicQRCodeUrl */ }
+    else setTimeout(() => this.toCheck(), 2000)   // ← 「还没被扫」是正常中间态，2 秒后重试
+  })
+}
+```
+
+我们原来只 `signCode()` + `signCodeImage()` 把码画出来，**完全不轮询**。签到器吃掉码之后本机毫无感知，用户自然以为没签上，列表也不会自己变。
+
+### 76.5 根因三：请求编码
+
+`xH = NV = axios`，axios 的 `transformRequest` 对对象走 `application/json;charset=utf-8` + `JSON.stringify`，所以官方 body 是 `{"data":{"str":"..."}}`。而 `LibrarySeatApi.kt` 文件头第 3 条早就记着「POST 体必须是扁平表单，别改回 JSON」（`bookSeats` 那条实测结论）。两个都对，只是**不同接口**：签到轮询按官方形态发 JSON，被拒再回落扁平表单。
+
+### 76.6 根因四：预约误报
+
+`bookSeats` 官方判定是 `"ok" == t.CODE && "success" == t.DATA.result`。我们的 `call()` 把 `CODE != "ok"` 抛异常、`book()` 又把 `result != "success"` 抛异常。服务端**其实已经建单**却回了非 success（重复预约之类）时，用户看到「预约失败」，回头去「我的预约」里却实实在在有一条 —— 这就是用户说的「成功预约后也会提示预约失败」。
+
+### 76.7 改动
+
+| 文件 | 字节 | 内容 |
+|---|---|---|
+| `library/SeatModels.kt` | 5,897 → 9,948 | `SeatBooking` 加 `signInQrcode` / `signInBluetooth`；新增 `val signByQrCode get() = signInQrcode && !signInBluetooth` |
+| `library/LibrarySeatApi.kt` | 17,890 → 24,260 | 解析两个配置字段；`book()` 两条失败路径回查 `confirmedBookingId()`；新增 `pollCheckSign()` + `execCheckSign()`（JSON 优先、表单回落） |
+| `library/SeatBookingsScreen.kt` | 17,936 → 22,320 | 「签到」按钮只在非扫码签到场景出现；签到码页每 2 秒轮询，成功显示「已签到成功」 |
+| `res/values/strings.xml` | 56,788 → 57,020 | 三条新文案 `seat_sign_code_polling` / `_ok` / `_retrying` |
+
+`pollCheckSign` 有一个容易写错的地方：**不能复用 `call()`**。`call()` 把 `CODE != "ok"` 当错误抛异常，而在这个接口上「还没被扫」本来就是 `CODE != ok` 的正常中间态，抛异常等于把正常等待判成失败。
+
+### 76.8 验证与限制
+
+- 编译 `BUILD SUCCESSFUL in 1m 53s`，退出码 0，只有 5 条既有警告。
+- 装机后工作页 →「图书馆座位预约」→「我的预约」页面正常渲染、无崩溃。
+- **模拟器验证不了真实签到链路**：`lib-zw.lib.nchu.edu.cn` 只在校园网内可达，模拟器 `ping` 100% 丢包、DNS 也解析不了。所以「签到器扫完能不能签上」必须真机确认。
+- 宿主侧 `curl` 打三个接口都返回 200 的登录页 HTML（未带登录态），只能证明路径存在，证明不了语义。
+
+### 76.9 产物
+
+APK 8,709,940 字节 / SHA256 `3DE765B65D3DD018031FBBD33C9DD69AE67D226119C7D2A2A7668AC296BB5147`，已装到项目根 `lanhang-miuix-release.apk`。版本仍 `versionCode 77` / `1.1.25`（用户本轮未要求 push）。
+
+### 76.10 三条教训
+
+1. **「同一个动作在官方前端有几个入口」这件事必须先查清再调接口。** `签到` 看着只有一个词，官方内部却有 `mySignQRCode`（扫码）和 `checkIn`（蓝牙）两条完全不同的路，选错那条不报编译错、只报业务失败，光读我们自己的代码永远发现不了。
+2. **厂商前端的 min.js 是最好的接口文档。** 字段名、请求编码、轮询节奏、成功判定全在里面，2.8MB 的最小化代码正则扫一遍比猜一百次都快。
+3. **「看起来成功/失败」和「实际成功/失败」要分开处理。** 服务端回非 success 不代表没建单，关键写操作失败后回查一次状态，比相信那个响应体准确。
+## 75. 第七十五轮（2026-11-14）：赣青二课网页的扫码 / 定位 / 媒体能力
+
+### 75.1 用户原话
+
+> 分析一下赣青二课网页的结构，这个网页要求扫码能力，点击主页右上角的按钮需要进入扫码界面，继续做这一项
+
+追问后明确：
+
+> 主页右上角的按钮指的是赣青二课页面右上角的扫码按钮
+
+### 75.2 网页侧取证：它自己扫码，不用原生桥
+
+把二课站点抓下来逐个文件读（`scratch/gqhw/`）：
+
+**`index.html` 只定义了两个「给 App 调用的回调」**，注意方向 —— 是原生调网页，不是网页调原生：
+
+```js
+function callOpenScan (res) {
+    console.log(window,'callOpenScan++++++++++')
+    window.handleSignAdd(res.data)
+}
+function callOpenLocation (res) {
+    sessionStorage.location = res.data
+}
+```
+
+也就是说 `callOpenScan` 是「App 扫完码，把结果塞进网页」的入口，参数形如 `{ data: '二维码内容' }`。
+
+**`static/js/pages-scan-scan.99ca7707.js`（456,842 B）才是扫码页本体**，里面赫然是整个 `html5-qrcode` 库：
+`Html5QrcodeShim`、`ZXingHtml5QrcodeDecoder`、`BarcodeDetectorDelegate`。路由表里也写得很清楚：
+
+```json
+{ "path": "/pages/scan/scan", "meta": { "name": "pages-scan-scan", "pagePath": "pages/scan/scan" } }
+```
+
+**结论：网页用的是 H5 自己的扫码（`getUserMedia` + html5-qrcode），不依赖 App 提供原生扫码界面。** 青新闻 App 里之所以能扫，是因为它的 WebView 授了摄像头权限 —— 我们这边没授，所以进了扫码页就是黑屏 / 一直转圈。
+
+### 75.3 根因：WebView 两条默认拒绝
+
+1. **`WebChromeClient.onPermissionRequest` 默认实现是一律拒绝。** 不解它，任何 `getUserMedia` 调用都会拿到 `NotAllowedError`。
+2. **`AndroidManifest.xml` 里根本没有 `CAMERA` 权限。** WebView 的 `grant()` 只在应用自身持有该权限时才生效；没有声明，授权也只是空转。
+
+另外两个同类缺口一并补上（二课的地图打卡 / 定位签到 / 活动视频都吃这些能力）：
+
+3. `WebSettings.setGeolocationEnabled` 默认关，且 `onGeolocationPermissionsShowPrompt` 默认不回调 → 网页的 `getCurrentPosition` 永远 `PositionUnavailable`。
+4. `mediaPlaybackRequiresUserGesture` 默认 `true` → 扫码页开流、活动视频 `play()` 可能被用户手势策略挡掉。
+
+### 75.4 改动（`ui/OaWebViewActivity.kt` 41,053 → 46,853 字节；`AndroidManifest.xml` 8,889 → 9,179 字节）
+
+**清单**：加 `android.permission.CAMERA`（在 `ACCESS_FINE_LOCATION` 之后，带注释说明为什么必须声明）。
+
+**settings**：
+
+```kotlin
+settings.setGeolocationEnabled(true)
+settings.mediaPlaybackRequiresUserGesture = false
+```
+
+**webChromeClient 新增 `onPermissionRequest`**：只放行 `RESOURCE_VIDEO_CAPTURE` / `RESOURCE_AUDIO_CAPTURE`（受保护媒体、持久化存储一律拒）。系统权限齐了就 `grant`；缺权限就先把这次 `PermissionRequest` 挂到 `pendingMediaRequest`，走 `requestPermissions(CAMERA / RECORD_AUDIO, REQUEST_MEDIA_PERMISSION=4002)`，拿到结果再补 `grant`。
+
+**新增 `onRequestPermissionsResult`**：只处理 `4002`；全部 `GRANTED` 才 `grant(wanted)`，否则 `deny()` —— 让网页拿到明确的 `NotAllowedError`，而不是永远转圈。
+
+**webChromeClient 新增 `onGeolocationPermissionsShowPrompt`**：本应用已持定位权限，直接 `callback.invoke(origin, granted, false)`。
+
+### 75.5 验证限制：模拟器出不了网
+
+装包成功（`Success`），但二课页面在模拟器里**打不开**：
+
+- `adb shell ping gqhw.jxmediacenter.com` → `unknown host`（QEMU NAT 没继承宿主 DNS）
+- `adb shell ping 36.133.146.115`（绕过 DNS 直连）→ **100% packet loss**
+
+即模拟器网络完全出不了公网，替换 DNS 也没用（`adbd cannot run as root`，改不了）。宿主侧是通的（校园网 `WLAN` DNS `10.1.1.1`）。因此本轮改动**只能在真机验证**：进「工作 → 赣青二课 → 右上角扫码」，应弹出摄像头授权、允许后出现取景画面；扫到活动签到码后网页自己处理。
+
+### 75.6 产物
+
+- APK **8,708,640 字节 / SHA256 `1C80C13A4C3AE8A11F2BBE037A01857E68366A8A6B6ED1389DD3325696704F0A`**
+- 已复制为项目根 `lanhang-miuix-release.apk` 并 `adb install -r`（`Success`）
+- 版本未升（用户本轮未要求 push）
+
+### 75.7 三条教训
+
+1. **先看网页自己怎么实现，再决定要不要写原生。** 一开始想当然以为「网页要原生扫码桥」，读了 chunk 才发现整个 html5-qrcode 都在网页里 —— 网页要的不是「App 给个扫码界面」，而是「App 别挡着摄像头」。判断反了就会白写一个扫码 Activity，还得跟网页抢路由。
+2. **`onPermissionRequest` 不写等于替用户拒绝所有硬件能力。** WebView 默认一律 deny，而且不报错、不弹窗，页面只能拿到一个笼统的 `NotAllowedError`。凡是 WebView 里要摄像头 / 麦克风 / 定位，先查这三个回调（`onPermissionRequest`、`onGeolocationPermissionsShowPrompt`、`onRequestPermissionsResult`）和清单声明。
+3. **应用没声明 CAMERA 时，`PermissionRequest.grant()` 是空转。** 它不会抛异常，也不会真的把权限给到网页 —— 必须先让应用本身持有该运行时权限。两层权限（系统 → 应用 → 网页）缺一层，表现都一样：黑屏。
 ## 74. 第七十四轮（2026-11-14）：私信时间/视频预览/语音/返回键/支付拉起
 
 ### 74.1 用户原话（八条）

@@ -20,6 +20,9 @@
     <!-- 私信发位置（只取一次上次已知点，不做后台定位） -->
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <!-- 2026-11-14 第七十五轮：赣青二课的扫码页（pages/scan/scan）用 html5-qrcode 自己开摄像头，
+         WebView 的 onPermissionRequest 只有在应用本身持有 CAMERA 时才能 grant 成功 -->
+    <uses-permission android:name="android.permission.CAMERA" />
 
     <application
         android:name=".App"

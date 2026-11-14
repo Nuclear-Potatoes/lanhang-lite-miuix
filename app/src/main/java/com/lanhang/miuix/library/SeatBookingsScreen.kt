@@ -295,7 +295,12 @@ private fun BookingCard(
                 if (busy) {
                     InfiniteProgressIndicator(modifier = Modifier.size(18.dp))
                 }
-                if (booking.canCheckIn()) {
+                // 第七十六轮：`POST /Seat/Index/checkIn` 是给「蓝牙签到」场景用的
+                // （原设计是 iBeacon 靠近检测）。馆方只配扫码签到时它必然失败，
+                // 用户点了只会看到「签到失败」，而旁边「签到码」那条路才是对的。
+                // 所以这里只在「不是扫码签到」的情况下才给「签到」按钮，
+                // 扫码签到的入口统一由下方待签到分支的「签到码」提供。
+                if (booking.canCheckIn() && !booking.signByQrCode) {
                     CardActionChip(
                         text = stringResource(R.string.seat_action_check_in),
                         onClick = { onAction(SeatAction.CHECK_IN) },
@@ -348,9 +353,16 @@ private fun BookingCard(
 }
 
 /**
- * 座位签到码（二维码由服务端画好，这里只负责显示与刷新）。
+ * 座位签到码（二维码由服务端画好，这里负责显示、刷新，以及**轮询签到结果**）。
  *
  * 签到窗口：开始前 30 分钟 ~ 开始后 30 分钟（服务端下发，见 [SeatBooking.canCheckIn]）。
+ *
+ * 第七十六轮补上轮询。用户报「扫描二维码后无法成功签到，只有微信端扫才正常」，
+ * 查官方前端 `ht.Seat.CodeSignPage` 才发现关键一步被我们漏了：
+ * 出码之后它每隔 2 秒 `POST /Seat/Index/checkSignQRCode`（body `{"data":{"str":"<码>"}}`），
+ * 直到返回 `CODE == "ok"` 才算签到完成；而「还没被扫」时服务端回的正是 `CODE != ok`，
+ * 官方把这个当正常中间态继续重试。我们原来只出码、不轮询，
+ * 于是签到器吃完码之后本机毫无感知，用户自然以为没签上。
  */
 @Composable
 fun SeatSignCodeScreen(modifier: Modifier = Modifier) {
@@ -359,17 +371,30 @@ fun SeatSignCodeScreen(modifier: Modifier = Modifier) {
     var loading by remember { mutableStateOf(true) }
     var failed by remember { mutableStateOf(false) }
     var reload by remember { mutableIntStateOf(0) }
+    // 当前这张码。轮询必须拿它去问服务端，换码（reload）时要跟着换。
+    var code by remember { mutableStateOf("") }
+    var signed by remember { mutableStateOf(false) }
+    // 轮询过程中偶尔断一下网不该吓用户，只在连续失败时给一句「仍在重试」。
+    var retrying by remember { mutableStateOf(false) }
 
     LaunchedEffect(reload) {
         loading = true
         failed = false
+        signed = false
+        retrying = false
+        code = ""
         try {
-            val bytes = withContext(Dispatchers.IO) {
-                val code = LibrarySeatApi.signCode()
-                LibrarySeatApi.signCodeImage(code)
+            val pair = withContext(Dispatchers.IO) {
+                val c = LibrarySeatApi.signCode()
+                c to LibrarySeatApi.signCodeImage(c)
             }
-            bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
-            if (bitmap == null) failed = true
+            bitmap = BitmapFactory.decodeByteArray(pair.second, 0, pair.second.size)
+            if (bitmap == null) {
+                failed = true
+            } else {
+                // 码拿到之后再交给下面的轮询；顺序反了会拿着空码去问。
+                code = pair.first
+            }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Throwable) {
@@ -377,6 +402,29 @@ fun SeatSignCodeScreen(modifier: Modifier = Modifier) {
             bitmap = null
         } finally {
             loading = false
+        }
+    }
+
+    // 每 2 秒问一次「签到器有没有把我的码吃掉」。官方前端就是这个节奏。
+    LaunchedEffect(code) {
+        if (code.isBlank()) return@LaunchedEffect
+        var misses = 0
+        while (true) {
+            delay(2_000)
+            val ok = try {
+                withContext(Dispatchers.IO) { LibrarySeatApi.pollCheckSign(code) }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                misses++
+                retrying = misses >= 3
+                false
+            }
+            if (ok) {
+                signed = true
+                retrying = false
+                return@LaunchedEffect
+            }
         }
     }
 
@@ -425,6 +473,23 @@ fun SeatSignCodeScreen(modifier: Modifier = Modifier) {
                     )
                 }
                 Spacer(Modifier.height(12.dp))
+                if (signed) {
+                    Text(
+                        text = stringResource(R.string.seat_sign_code_ok),
+                        style = MiuixTheme.textStyles.footnote1,
+                        color = MiuixTheme.colorScheme.primary,
+                        textAlign = TextAlign.Center,
+                    )
+                    Spacer(Modifier.height(10.dp))
+                } else if (!loading && image != null) {
+                    Text(
+                        text = stringResource(R.string.seat_sign_code_polling),
+                        style = MiuixTheme.textStyles.footnote2,
+                        color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                        textAlign = TextAlign.Center,
+                    )
+                    Spacer(Modifier.height(10.dp))
+                }
                 CardActionChip(
                     text = stringResource(R.string.seat_sign_code_refresh),
                     onClick = { if (!loading) reload++ },
@@ -439,7 +504,15 @@ fun SeatSignCodeScreen(modifier: Modifier = Modifier) {
             style = MiuixTheme.textStyles.footnote2,
             color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
         )
-        if (failed && !loading) Spacer(Modifier.height(0.dp))
+        if (retrying) {
+            Spacer(Modifier.height(8.dp))
+            Text(
+                text = stringResource(R.string.seat_sign_code_retrying),
+                style = MiuixTheme.textStyles.footnote2,
+                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                textAlign = TextAlign.Center,
+            )
+        }
     }
 }
 

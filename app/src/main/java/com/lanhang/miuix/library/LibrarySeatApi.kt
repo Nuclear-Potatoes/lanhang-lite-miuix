@@ -14,7 +14,9 @@ import com.lanhang.miuix.net.RceApi
 import com.lanhang.miuix.session.Session
 import okhttp3.FormBody
 import okhttp3.Request
+import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody
+import okhttp3.RequestBody.Companion.toRequestBody
 
 /**
  * 图书馆座位预约（厂商「洄图」`lib-zw.lib.nchu.edu.cn`）。
@@ -45,6 +47,9 @@ object LibrarySeatApi {
 
     private val SEAT_LIST_TYPE = "ht.space.SpaceReservationListItem"
     private val BOOKING_TYPE = "ht.Seat.OrderListItem"
+
+    /** 岗位前端是 axios，`isObject` 分支发 `application/json`；签到轮询接口按官方形态发 JSON */
+    private val JSON_MEDIA = "application/json;charset=utf-8".toMediaType()
 
     /**
      * 空间列表接口失败时的兜底（2026-10-25 实测顺序与 content_id）。
@@ -236,8 +241,19 @@ object LibrarySeatApi {
             .add("seats[0]", seatId)
             .add("seatBookers[0]", uid)
             .build()
-        val data = call("/Seat/Index/bookSeats", body).obj("data")
-        if (data?.str("result") != "success") {
+        // 第七十六轮：服务端有时**其实已经建单**，却回一个 CODE != ok 或者
+        // `result != "success"` 的响应。用户看到「预约失败」，回头去「我的预约」里
+        // 却实实在在有一条记录 —— 用户报的「成功预约后也会提示预约失败」就是这个。
+        // 两条失败路径上都补一次回查：只要这段时段已经有一条待签到的订单，就按成功算。
+        val root = try {
+            call("/Seat/Index/bookSeats", body)
+        } catch (e: ApiException) {
+            confirmedBookingId(beginEpoch)?.let { return SeatBookResult(it, null) }
+            throw e
+        }
+        val data = root.obj("data")
+        if (data == null || data.str("result") != "success") {
+            confirmedBookingId(beginEpoch)?.let { return SeatBookResult(it, data?.str("msg")) }
             throw ApiException(-1, TextRef.Raw(data?.str("msg").orEmpty().ifBlank {
                 // 服务端没给原因时给个可读兜底
                 "预约未成功"
@@ -245,6 +261,16 @@ object LibrarySeatApi {
         }
         return SeatBookResult(data.str("bookingId").orEmpty(), data.str("msg"))
     }
+
+    /**
+     * 回查：这个开始时间是不是已经有一条「待签到」的订单了。
+     *
+     * 只用来把「服务端其实成功了、但响应看着像失败」判成成功，
+     * 不参与任何业务决策 —— 查不到就返回 null，让原来的错误照常抛出去。
+     */
+    private fun confirmedBookingId(beginEpoch: Long): String? = runCatching {
+        myBookings().firstOrNull { it.isPendingSign && it.beginAt == beginEpoch }?.id
+    }.getOrNull()
 
     fun myBookings(): List<SeatBooking> {
         val root = call("/Seat/Index/myBookingList")
@@ -263,6 +289,9 @@ object LibrarySeatApi {
                 limitLeftBack = item.int("limitLeftBack", 3600),
                 serverNow = item.str("nowTime")?.toLongOrNull()
                     ?: System.currentTimeMillis() / 1000,
+                // 第七十六轮：馆方的签到方式配置，决定「签到」按钮该走哪条路
+                signInQrcode = item.str("sign_in_qrcode").isFlagOn(),
+                signInBluetooth = item.str("sign_in_bluetooth").isFlagOn(),
             )
         }.sortedByDescending { it.beginAt }
     }
@@ -277,6 +306,48 @@ object LibrarySeatApi {
         val root = call("/Seat/Index/mySignQRCode")
         return root.str("code")?.takeIf { it.isNotBlank() }
             ?: throw ApiException(-1, TextRef.Res(R.string.error_library_payload))
+    }
+
+    /**
+     * 轮询「签到器有没有把我的码吃掉」。
+     *
+     * 官方 `ht.Seat.CodeSignPage` 的做法是每 2 秒 `POST /Seat/Index/checkSignQRCode`
+     * （body `{"data":{"str":"<我的签到码>"}}`），直到返回 `CODE=="ok"` 才认为签到完成，
+     * 并且要求 `DATA.dynamicQRCodeUrl` 非空 —— 为空官方会弹「系统错误 未返回签到成功处理」。
+     *
+     * **这里不能用 [call]**：它把 `CODE != "ok"` 当错误抛异常，而在这个接口上
+     * 「还没被扫」本来就是 `CODE != ok` 的正常中间态，抛异常等于把正常等待当成失败。
+     *
+     * @return true = 签到器已扫码、服务端已把订单置为已签到
+     */
+    fun pollCheckSign(str: String): Boolean {
+        val deviceId = Session.deviceId(com.lanhang.miuix.schedule.AppContext.instance)
+        if (!ensureLogin(deviceId)) {
+            throw ApiException(-1, TextRef.Res(R.string.error_library_login))
+        }
+        var root = execCheckSign(str)
+        if (isLoginLost(root)) {
+            if (!ensureLogin(deviceId, force = true)) {
+                throw ApiException(-1, TextRef.Res(R.string.error_library_login))
+            }
+            root = execCheckSign(str)
+        }
+        if (root.str("CODE") != "ok") return false
+        val data = root.obj("data") ?: root.obj("DATA")
+        return !data?.str("dynamicQRCodeUrl").isNullOrBlank()
+    }
+
+    /** 官方前端发 JSON（axios 的 `isObject` 分支）；这套系统更认扁平表单，两种都试 */
+    private fun execCheckSign(str: String): JsonObject {
+        val json = JsonObject().apply {
+            add("data", JsonObject().apply { addProperty("str", str) })
+        }.toString().toRequestBody(JSON_MEDIA)
+        return try {
+            exec("/Seat/Index/checkSignQRCode", json)
+        } catch (e: ApiException) {
+            Log.w(TAG, "checkSignQRCode 用 JSON 发被拒，回落表单: ${e.message}")
+            exec("/Seat/Index/checkSignQRCode", FormBody.Builder().add("str", str).build())
+        }
     }
 
     /**
@@ -435,4 +506,8 @@ object LibrarySeatApi {
 
     private fun JsonObject.int(name: String, def: Int): Int =
         str(name)?.trim()?.toIntOrNull() ?: def
+
+    /** 馆方配置字段常常是字符串 `"1"`/`"0"`，也见过 `"true"`/`"false"` */
+    private fun String?.isFlagOn(): Boolean =
+        this == "1" || this.equals("true", ignoreCase = true)
 }

@@ -662,7 +662,9 @@
     <string name="seat_check_out_confirm">签退后本次使用结束、座位释放。确定签退？</string>
     <string name="seat_check_out_confirm_title">签退</string>
     <string name="seat_sign_code_action">签到码</string>
-    <string name="seat_sign_code_failed">签到码加载失败，点「刷新二维码」重试</string>
+    <string name="seat_sign_code_polling">正在等待签到器扫描…</string>
+    <string name="seat_sign_code_ok">已签到成功</string>
+    <string name="seat_sign_code_retrying">网络不太稳定，仍在重试…</string>    <string name="seat_sign_code_failed">签到码加载失败，点「刷新二维码」重试</string>
     <string name="seat_sign_code_hint">在图书馆签到器上扫描此二维码完成签到。签到时段为开始前 30 分钟至开始后 30 分钟；扫码失败或提示过期时，点「刷新二维码」换一张。</string>
     <string name="seat_sign_code_refresh">刷新二维码</string>
     <string name="seat_sign_code_title">签到码</string>

@@ -172,6 +172,14 @@ data class SeatBooking(
      * 记下抓取时刻后就能用 [serverNowSec] 把服务端时钟往前推。
      */
     val fetchedAtMs: Long = System.currentTimeMillis(),
+    /**
+     * 馆方是否支持「扫码签到」。SDUI 字段 `sign_in_qrcode`，值是字符串 "1"/"0"。
+     *
+     * 第七十六轮新增。官方前端拿它决定签到按钮走向，见 [signByQrCode]。
+     */
+    val signInQrcode: Boolean = false,
+    /** 馆方是否支持「蓝牙签到」。`sign_in_bluetooth`，同样 "1"/"0" */
+    val signInBluetooth: Boolean = false,
 ) {
     val endAt: Long get() = beginAt + durationSec
 
@@ -194,6 +202,21 @@ data class SeatBooking(
         val now = serverNowSec()
         return isPendingSign && now >= beginAt - limitSignAgo && now <= beginAt + limitSignBack
     }
+
+    /**
+     * 这次签到必须走「出示二维码给签到器扫」那条路。
+     *
+     * 第七十六轮：官方前端 `case 0`（待签到且在签到窗口内）有三个分支 ——
+     * `sign_in_qrcode && sign_in_bluetooth` → 弹「扫码签到 / 蓝牙签到」二选一；
+     * `sign_in_qrcode && !sign_in_bluetooth` → 直接打开 `/Seat/Index/mySignQRCode`；
+     * `!sign_in_qrcode && sign_in_bluetooth` → 直接 `POST /Seat/Index/checkIn`。
+     *
+     * 换句话说 **`checkIn` 只在「蓝牙签到」场景才是正确入口**（它原本是给 iBeacon
+     * 靠近检测那套用的）。馆方只配了扫码签到时直接调 `checkIn` 必然失败 ——
+     * 这就是「点签到一直提示失败、而微信里扫签到器的码却正常」的根因：
+     * 微信那条路走的是签到码页面，签到器吃掉二维码后服务端把订单置成已签到。
+     */
+    val signByQrCode: Boolean get() = signInQrcode && !signInBluetooth
 }
 
 /** 可对订单执行的操作，驱动「我的预约」列表里的按钮 */
