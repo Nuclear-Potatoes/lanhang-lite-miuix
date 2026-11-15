@@ -514,17 +514,47 @@ IconButton(onClick = { finishNow() }) {
                         guard++;
                     }
                 } catch (e) { }
-            }            var lhApp = getApp();
+            }
+
+            var lhApp = getApp();
             var lhVue = lhApp && lhApp["${'$'}vm"] && lhApp["${'$'}vm"].constructor;
             if (lhVue) {
                 lhVue.mixin({
                     mounted: function () {
                         if (!this.seachList && !this.listData) return;
+                        setTimeout(lhFixList, 400);
                         setTimeout(lhFixList, 1200);
                         setTimeout(lhFixList, 2600);
-                        setTimeout(lhFixList, 5000);
+                    },
+                    // 第七十八轮：从活动详情返回列表页时这个组件是复用的，
+                    // mounted 不会再跑一次，而 uni-app 把缓存页面重新摆上来时高度又塌回 0，
+                    // 于是又变成白屏（用户必须点右下角刷新才恢复）。所以挂在 onShow 上补修。
+                    created: function () {
+                        try {
+                            var opts = this['${'$'}options'] || {};
+                            if (opts.__lhShowWrapped) return;
+                            if (typeof opts.onShow !== 'function') return;
+                            opts.__lhShowWrapped = true;
+                            var orig = opts.onShow;
+                            opts.onShow = function () {
+                                var r = orig.apply(this, arguments);
+                                setTimeout(lhFixList, 120);
+                                setTimeout(lhFixList, 500);
+                                setTimeout(lhFixList, 1500);
+                                return r;
+                            };
+                        } catch (e) { }
                     }
                 });
+            }
+
+            // 兜底轮询：有些折返路径不会触发 onShow（例如从别的 tab 切回来），
+            // 低频补一刀。lhFixList 第一句就是找 .list-bg，找不到立即返回，开销可以忽略。
+            if (!window.__lhFixTimer) {
+                window.__lhFixTimer = setInterval(function () {
+                    if (document.hidden) return;
+                    lhFixList();
+                }, 700);
             }
         })()
     """.trimIndent()

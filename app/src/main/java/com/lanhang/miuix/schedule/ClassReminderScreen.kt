@@ -34,6 +34,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.lanhang.miuix.ui.miuix.ActionRow
+import com.lanhang.miuix.ui.miuix.SettingRow
+import com.lanhang.miuix.ui.miuix.SettingSwitchRow
 import com.lanhang.miuix.R
 import com.lanhang.miuix.moments.FilterDivider
 import com.lanhang.miuix.moments.FilterSectionLabel
@@ -530,38 +532,12 @@ fun ClassReminderScreen(
 
 /** 值行：左边名字，右边当前值 + 箭头，点开是单选对话框 */
 @Composable
-/** 值行：左边名字，右边当前值 + 箭头，点开是单选对话框 */
 private fun ValueRow(title: String, value: String, onClick: () -> Unit) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .pressableRow(onClick = onClick, corner = 16.dp)
-            .padding(horizontal = 16.dp, vertical = 14.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(
-            text = title,
-            style = MiuixTheme.textStyles.body2.copy(fontSize = 17.sp, fontWeight = FontWeight.Medium),
-            color = MiuixTheme.colorScheme.onSurface,
-            modifier = Modifier.weight(1f),
-        )
-        Spacer(Modifier.width(12.dp))
-        Text(
-            text = value,
-            style = MiuixTheme.textStyles.body2.copy(fontSize = 14.5.sp),
-            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-        )
-        Text(
-            text = "  \u203A",
-            style = MiuixTheme.textStyles.body2.copy(fontSize = 14.5.sp),
-            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-        )
-    }
+    SettingRow(title = title, value = value, onClick = onClick)
 }
 
 /** 一行「标题 + 说明 + 开关」（Card 内部用，自己不带卡片背景） */
 @Composable
-/** 一行「标题 + 说明 + 开关」（Card 内部用，自己不带卡片背景） */
 private fun SwitchLine(
     title: String,
     summary: String?,
@@ -569,30 +545,13 @@ private fun SwitchLine(
     enabled: Boolean = true,
     onChange: (Boolean) -> Unit,
 ) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 14.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Column(Modifier.weight(1f)) {
-            Text(
-                text = title,
-                style = MiuixTheme.textStyles.body2.copy(fontSize = 17.sp, fontWeight = FontWeight.Medium),
-                color = MiuixTheme.colorScheme.onSurface,
-            )
-            if (summary != null && summary.isNotBlank()) {
-                Text(
-                    text = summary,
-                    style = MiuixTheme.textStyles.body2.copy(fontSize = 14.sp),
-                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                    modifier = Modifier.padding(top = 3.dp),
-                )
-            }
-        }
-        Spacer(Modifier.width(12.dp))
-        Switch(checked = checked, enabled = enabled, onCheckedChange = onChange)
-    }
+    SettingSwitchRow(
+        title = title,
+        summary = summary,
+        checked = checked,
+        enabled = enabled,
+        onCheckedChange = onChange,
+    )
 }
 
 /** 单选项一行（选中用主题色标出） */
@@ -602,7 +561,7 @@ private fun OptionRow(label: String, selected: Boolean, onClick: () -> Unit) {
         modifier = Modifier
             .fillMaxWidth()
             .pressableRow(onClick = onClick, corner = 16.dp)
-            .padding(horizontal = 16.dp, vertical = 13.dp),
+            .padding(horizontal = 16.dp, vertical = 15.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
@@ -618,31 +577,18 @@ private fun OptionRow(label: String, selected: Boolean, onClick: () -> Unit) {
 @Composable
 /** 权限一行：左边名字，右边「已授权 / 未授权」，点一下去对应系统页 */
 private fun PermRow(title: String, granted: Boolean, onClick: () -> Unit) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .pressableRow(onClick = onClick, corner = 16.dp)
-            .padding(horizontal = 16.dp, vertical = 14.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(
-            text = title,
-            style = MiuixTheme.textStyles.body2.copy(fontSize = 17.sp, fontWeight = FontWeight.Medium),
-            color = MiuixTheme.colorScheme.onSurface,
-            modifier = Modifier.weight(1f),
-        )
-        Text(
-            text = stringResource(
-                if (granted) R.string.class_reminder_perm_granted else R.string.class_reminder_perm_missing
-            ),
-            style = MiuixTheme.textStyles.body2.copy(fontSize = 14.5.sp),
-            color = if (granted) {
-                MiuixTheme.colorScheme.onSurfaceVariantSummary
-            } else {
-                MiuixTheme.colorScheme.primary
-            },
-        )
-    }
+    SettingRow(
+        title = title,
+        value = stringResource(
+            if (granted) R.string.class_reminder_perm_granted else R.string.class_reminder_perm_missing
+        ),
+        valueColor = if (granted) {
+            MiuixTheme.colorScheme.onSurfaceVariantSummary
+        } else {
+            MiuixTheme.colorScheme.primary
+        },
+        onClick = onClick,
+    )
 }
 
 

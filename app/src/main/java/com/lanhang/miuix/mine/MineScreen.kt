@@ -834,7 +834,7 @@ private fun MineRow(
         modifier = Modifier
             .fillMaxWidth()
             .pressableRow(onClick = onClick, corner = 16.dp)
-            .padding(horizontal = 16.dp, vertical = 13.dp),
+            .padding(horizontal = 16.dp, vertical = 15.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Box(

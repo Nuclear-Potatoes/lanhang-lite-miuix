@@ -102,29 +102,12 @@ internal fun ActionRow(
     action: String,
     onClick: () -> Unit,
 ) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .pressableRow(onClick = onClick, corner = 16.dp)
-            .padding(horizontal = 16.dp, vertical = 14.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(
-            text = title,
-            style = MiuixTheme.textStyles.body2.copy(fontSize = 17.sp, fontWeight = FontWeight.Medium),
-            color = MiuixTheme.colorScheme.onSurface,
-            modifier = Modifier.weight(1f),
-        )
-        Spacer(Modifier.width(12.dp))
-        Text(
-            text = action,
-            style = MiuixTheme.textStyles.body2.copy(fontSize = 14.5.sp, fontWeight = FontWeight.Medium),
-            color = MiuixTheme.colorScheme.primary,
-        )
-        Text(
-            text = "  \u203A",
-            style = MiuixTheme.textStyles.body2.copy(fontSize = 14.5.sp),
-            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-        )
-    }
+    // 第八十一轮：动作行也归到设置行的同一套视觉（body1 / 15dp / 20dp 矢量箭头），
+    // 右侧动词用主题色，与「值行」的区别只在语义。
+    SettingRow(
+        title = title,
+        value = action,
+        valueColor = MiuixTheme.colorScheme.primary,
+        onClick = onClick,
+    )
 }

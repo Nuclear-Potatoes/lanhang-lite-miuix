@@ -21,12 +21,19 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.lanhang.miuix.R
 import com.lanhang.miuix.ui.OaWebViewActivity
+import com.lanhang.miuix.ui.miuix.SettingRow
 import com.lanhang.miuix.ui.miuix.pressableRow
 import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.HorizontalDivider
 import top.yukonga.miuix.kmp.basic.SmallTitle
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.theme.MiuixTheme
+import androidx.compose.runtime.rememberCoroutineScope
+import com.lanhang.miuix.net.RceApi
+import com.lanhang.miuix.session.Session
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * 学校统一身份认证里的「修改密码」页。
@@ -54,6 +61,7 @@ fun AccountSecurityScreen(
     onOpenPrivacy: () -> Unit,
 ) {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     LazyColumn(
         modifier = modifier.fillMaxSize(),
         state = listState,
@@ -66,12 +74,19 @@ fun AccountSecurityScreen(
                     title = stringResource(R.string.account_change_password),
                     summary = stringResource(R.string.account_change_password_summary),
                     onClick = {
-                        OaWebViewActivity.open(
-                            context = context,
-                            url = URL_CHANGE_PASSWORD,
-                            appToken = null,
-                            title = context.getString(R.string.account_change_password),
-                        )
+                        scope.launch {
+                            val fresh = withContext(Dispatchers.IO) {
+                                runCatching { RceApi.getLdapToken() }.getOrNull()
+                                    ?.takeIf { it.isNotBlank() }
+                            }
+                            fresh?.let { Session.ldapToken = it }
+                            OaWebViewActivity.open(
+                                context = context,
+                                url = URL_CHANGE_PASSWORD,
+                                appToken = fresh,
+                                title = context.getString(R.string.account_change_password),
+                            )
+                        }
                     },
                 )
                 HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
@@ -79,12 +94,19 @@ fun AccountSecurityScreen(
                     title = stringResource(R.string.account_change_mobile),
                     summary = stringResource(R.string.account_change_mobile_summary),
                     onClick = {
-                        OaWebViewActivity.open(
-                            context = context,
-                            url = URL_CHANGE_MOBILE,
-                            appToken = null,
-                            title = context.getString(R.string.account_change_mobile),
-                        )
+                        scope.launch {
+                            val fresh = withContext(Dispatchers.IO) {
+                                runCatching { RceApi.getLdapToken() }.getOrNull()
+                                    ?.takeIf { it.isNotBlank() }
+                            }
+                            fresh?.let { Session.ldapToken = it }
+                            OaWebViewActivity.open(
+                                context = context,
+                                url = URL_CHANGE_MOBILE,
+                                appToken = fresh,
+                                title = context.getString(R.string.account_change_mobile),
+                            )
+                        }
                     },
                 )
             }
@@ -102,34 +124,13 @@ fun AccountSecurityScreen(
     }
 }
 
-/** 一行「标题 + 说明 + ›」，与设置页其它行同一套尺寸 */
+/**
+ * 一行「标题 + 说明 + 箭头」。
+ *
+ * 第八十一轮：不再自己排版，直接走 [SettingRow]——和「设置」页同一套字号 / 行高 / 箭头，
+ * 原来这里的 17sp Medium + 文本「›」比设置页更粗更矮，两页放在一起风格明显不一致。
+ */
 @Composable
 private fun AccountRow(title: String, summary: String, onClick: () -> Unit) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .pressableRow(onClick = onClick, corner = 16.dp)
-            .padding(horizontal = 16.dp, vertical = 14.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = title,
-                style = MiuixTheme.textStyles.body2.copy(fontSize = 17.sp, fontWeight = FontWeight.Medium),
-                color = MiuixTheme.colorScheme.onSurface,
-            )
-            Spacer(Modifier.width(2.dp))
-            Text(
-                text = summary,
-                style = MiuixTheme.textStyles.body2.copy(fontSize = 14.sp),
-                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                modifier = Modifier.padding(top = 3.dp),
-            )
-        }
-        Text(
-            text = "  \u203A",
-            style = MiuixTheme.textStyles.body2.copy(fontSize = 14.5.sp),
-            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-        )
-    }
+    SettingRow(title = title, summary = summary, onClick = onClick)
 }

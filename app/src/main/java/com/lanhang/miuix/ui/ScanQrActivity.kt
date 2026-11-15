@@ -4,22 +4,30 @@ import android.app.Activity
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.RectF
+import android.graphics.drawable.GradientDrawable
 import android.hardware.Camera
 import android.os.Bundle
 import android.view.Gravity
-import android.view.Surface
 import android.view.SurfaceHolder
 import android.view.SurfaceView
+import android.view.View
 import android.view.ViewGroup
 import android.widget.FrameLayout
+import android.widget.ImageView
 import android.widget.TextView
+import com.lanhang.miuix.R
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.BinaryBitmap
 import com.google.zxing.DecodeHintType
 import com.google.zxing.MultiFormatReader
 import com.google.zxing.PlanarYUVLuminanceSource
 import com.google.zxing.common.HybridBinarizer
+import kotlin.math.max
+import kotlin.math.min
 
 /**
  * 2026-11-14 第七十七轮：给「赣青二课」补一个真正能用的扫码页。
@@ -35,6 +43,14 @@ import com.google.zxing.common.HybridBinarizer
  * 解码用项目里已有的 `com.google.zxing:core`，不额外引三方 UI 库；
  * 预览用最朴素的 `android.hardware.Camera`（API 1 那套，虽然被标记废弃，
  * 但只有它的 `setPreviewCallback` 能拿到 NV21 原始帧，改动面最小）。
+ *
+ * 第七十八轮（2026-11-15）按用户反馈补三件事：
+ * 1. 预览不再拉伸 —— 原来 SurfaceView 是 `MATCH_PARENT`，摄像头给的是 640×480，
+ *    被硬拉成整屏 1220×2656，画面完全变形。改成按预览比例「居中裁剪铺满」
+ *    （等价于 ImageView 的 centerCrop），多出来的部分裁掉，比例始终正确。
+ * 2. 补取景框 —— 原来只有底部一行文字，用户不知道该把二维码对准哪里。
+ *    现在四角亮框 + 四周压暗，中间是可直接扫描的方形区域。
+ * 3. 补手电筒开关 —— 光线不足时用 `FLASH_MODE_TORCH` 常亮补光，再次点击熄灭。
  */
 class ScanQrActivity : Activity(), SurfaceHolder.Callback, Camera.PreviewCallback {
 
@@ -53,13 +69,22 @@ class ScanQrActivity : Activity(), SurfaceHolder.Callback, Camera.PreviewCallbac
     private var camera: Camera? = null
     private var previewing = false
     private val reader = MultiFormatReader()
-    private var surfaceView: SurfaceView? = null
+    private var surfaceView: CoverSurfaceView? = null
 
     // 预览帧的宽高。Camera1 的 onPreviewFrame 每秒来十几帧，
     // 每帧都去 cam.parameters 取一次会明显掉帧，这里在开预览时缓存下来。
     private var previewW = 0
     private var previewH = 0
     private var hint: TextView? = null
+    private var torchButton: ImageView? = null
+
+    /** 手电筒当前是否点亮。 */
+    private var torchOn = false
+
+    /** 设备是否支持常亮补光；null 表示还没问过摄像头。 */
+    private var torchSupported: Boolean? = null
+
+    private fun dp(value: Float): Int = max(1, (value * resources.displayMetrics.density).toInt())
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -82,13 +107,28 @@ class ScanQrActivity : Activity(), SurfaceHolder.Callback, Camera.PreviewCallbac
             ),
         )
 
-        val root = FrameLayout(this).apply { setBackgroundColor(Color.BLACK) }
-        val surface = SurfaceView(this).apply {
+        val root = FrameLayout(this).apply {
+            setBackgroundColor(Color.BLACK)
+            clipChildren = true
+        }
+
+        // 预览层：自己按比例量尺寸，父容器居中，超出的部分被 root 裁掉。
+        val surface = CoverSurfaceView(this).apply {
             holder.addCallback(this@ScanQrActivity)
         }
         surfaceView = surface
         root.addView(
             surface,
+            FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                Gravity.CENTER,
+            ),
+        )
+
+        // 取景蒙层：四周压暗、中间透出取景方框、四角亮线。
+        root.addView(
+            ScanOverlayView(this),
             FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT,
@@ -100,6 +140,7 @@ class ScanQrActivity : Activity(), SurfaceHolder.Callback, Camera.PreviewCallbac
             setTextColor(Color.WHITE)
             textSize = 15f
             gravity = Gravity.CENTER
+            setShadowLayer(6f, 0f, 1f, 0x99000000.toInt())
         }
         hint = tip
         root.addView(
@@ -107,7 +148,28 @@ class ScanQrActivity : Activity(), SurfaceHolder.Callback, Camera.PreviewCallbac
             FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT,
-            ).apply { gravity = Gravity.BOTTOM; bottomMargin = 160 },
+            ).apply { gravity = Gravity.BOTTOM; bottomMargin = dp(88f) },
+        )
+
+        // 手电筒：圆形按钮放矢量图标，点亮时变成浅色实心，一眼能看出状态。
+        val torch = ImageView(this).apply {
+            setImageResource(R.drawable.ic_torch)
+            scaleType = ImageView.ScaleType.CENTER_INSIDE
+            setPadding(dp(17f), dp(17f), dp(17f), dp(17f))
+            isClickable = true
+            isFocusable = true
+            setOnClickListener { toggleTorch() }
+            applyTorchLook(false)
+        }
+        torchButton = torch
+        val torchSize = dp(64f)
+        root.addView(
+            torch,
+            FrameLayout.LayoutParams(torchSize, torchSize).apply {
+                gravity = Gravity.BOTTOM or Gravity.END
+                rightMargin = dp(28f)
+                bottomMargin = dp(20f)
+            },
         )
 
         val close = TextView(this).apply {
@@ -115,7 +177,8 @@ class ScanQrActivity : Activity(), SurfaceHolder.Callback, Camera.PreviewCallbac
             setTextColor(Color.WHITE)
             textSize = 16f
             gravity = Gravity.CENTER
-            setPadding(48, 32, 48, 32)
+            setPadding(dp(16f), dp(10f), dp(16f), dp(10f))
+            setShadowLayer(6f, 0f, 1f, 0x99000000.toInt())
             setOnClickListener {
                 setResult(RESULT_CANCELLED)
                 finish()
@@ -126,10 +189,59 @@ class ScanQrActivity : Activity(), SurfaceHolder.Callback, Camera.PreviewCallbac
             FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT,
-            ).apply { gravity = Gravity.TOP or Gravity.END },
+            ).apply { gravity = Gravity.TOP or Gravity.END; topMargin = dp(8f); rightMargin = dp(8f) },
         )
 
         setContentView(root)
+    }
+
+    /** 按钮外观：开启时白底深色图标（表示「正在补光」），关闭时半透明黑底白色图标。 */
+    private fun ImageView.applyTorchLook(on: Boolean) {
+        val bg = GradientDrawable().apply {
+            shape = GradientDrawable.OVAL
+            setColor(if (on) 0xF2FFFFFF.toInt() else 0x66000000)
+            setStroke(dp(1f), if (on) 0x00000000 else 0x40FFFFFF)
+        }
+        background = bg
+        setColorFilter(if (on) 0xFF1A1A1A.toInt() else Color.WHITE)
+    }
+
+    /**
+     * 切换常亮补光。
+     *
+     * 先问一遍设备支持哪些闪光模式：模拟器和不带补光灯的前摄都会返回空列表，
+     * 这时直接给用户一句提示，不要静默失败。设置失败（比如被别的应用占用）
+     * 会把状态回滚，保证按钮显示和实际硬件状态一致。
+     */
+    private fun toggleTorch() {
+        val cam = camera
+        if (cam == null) {
+            hint?.text = "摄像头还没准备好"
+            return
+        }
+        val supported = torchSupported ?: runCatching {
+            cam.parameters.supportedFlashModes.orEmpty()
+                .contains(Camera.Parameters.FLASH_MODE_TORCH)
+        }.getOrDefault(false).also { torchSupported = it }
+        if (!supported) {
+            hint?.text = "这个摄像头不支持手电筒"
+            return
+        }
+        val want = !torchOn
+        val ok = runCatching {
+            val params = cam.parameters
+            params.focusMode = params.focusMode
+            params.flashMode = if (want) {
+                Camera.Parameters.FLASH_MODE_TORCH
+            } else {
+                Camera.Parameters.FLASH_MODE_OFF
+            }
+            cam.parameters = params
+            true
+        }.getOrDefault(false)
+        torchOn = ok && want
+        torchButton?.applyTorchLook(torchOn)
+        hint?.text = if (torchOn) "手电筒已打开" else "把二维码放进框内"
     }
 
     override fun surfaceCreated(holder: SurfaceHolder) {
@@ -138,7 +250,7 @@ class ScanQrActivity : Activity(), SurfaceHolder.Callback, Camera.PreviewCallbac
 
     override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
         if (previewing) {
-            camera?.stopPreview()
+            runCatching { camera?.stopPreview() }
             previewing = false
         }
         startPreview(holder)
@@ -160,6 +272,9 @@ class ScanQrActivity : Activity(), SurfaceHolder.Callback, Camera.PreviewCallbac
             return
         }
         camera = cam
+        torchSupported = null
+        torchOn = false
+        torchButton?.applyTorchLook(false)
 
         // 每一项设置单独兜住：模拟器的虚拟摄像头不支持连续对焦、也未必接受指定预览格式，
         // 任何一项抛异常都不该把整个预览拖垮（之前就是一锅端，全部失败只看得到「初始化失败」）。
@@ -199,6 +314,16 @@ class ScanQrActivity : Activity(), SurfaceHolder.Callback, Camera.PreviewCallbac
             cam.startPreview()
             previewing = true
             hint?.text = "把二维码放进框内"
+            // 预览跑起来之后才知道真实分辨率，这里把比例交给 SurfaceView 重新量一次，
+            // 它按「居中裁剪铺满」算出正确尺寸，画面才不会像之前那样被拉扁。
+            if (previewW > 0 && previewH > 0) {
+                surfaceView?.let {
+                    it.ratio = previewH.toFloat() / previewW.toFloat()
+                    it.requestLayout()
+                }
+            } else {
+                android.util.Log.w("ScanQr", "拿不到预览尺寸，按整屏铺开，画面可能变形")
+            }
         }.onFailure {
             android.util.Log.e("ScanQr", "启动预览失败", it)
             hint?.text = "摄像头初始化失败"
@@ -215,6 +340,9 @@ class ScanQrActivity : Activity(), SurfaceHolder.Callback, Camera.PreviewCallbac
         runCatching { cam.release() }
         camera = null
         previewing = false
+        torchOn = false
+        torchSupported = null
+        torchButton?.applyTorchLook(false)
     }
 
     override fun onPreviewFrame(data: ByteArray?, cam: Camera?) {
@@ -251,5 +379,96 @@ class ScanQrActivity : Activity(), SurfaceHolder.Callback, Camera.PreviewCallbac
     override fun onPause() {
         stopPreview()
         super.onPause()
+    }
+
+    /**
+     * 按摄像头真实比例铺满屏幕的预览层。
+     *
+     * 摄像头给的是 4:3（如 640×480），屏幕是 1220×2656。直接把 SurfaceView 设成
+     * MATCH_PARENT 会让画面横向被拉伸一半以上，人眼立刻能看出「变形」。
+     * 这里按 [ratio]（显示后的 宽/高）放大到刚好盖住父容器，溢出部分由父容器裁剪，
+     * 效果与 ImageView 的 centerCrop 一致。
+     */
+    private class CoverSurfaceView(context: Context) : SurfaceView(context) {
+
+        /** 显示内容的 宽/高 比；0 表示还没拿到摄像头参数。 */
+        var ratio = 0f
+
+        override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+            val w = MeasureSpec.getSize(widthMeasureSpec)
+            val h = MeasureSpec.getSize(heightMeasureSpec)
+            if (ratio <= 0f || w <= 0 || h <= 0) {
+                setMeasuredDimension(w, h)
+                return
+            }
+            val widthByHeight = (h * ratio).toInt()
+            if (widthByHeight >= w) {
+                setMeasuredDimension(widthByHeight, h)
+            } else {
+                setMeasuredDimension(w, (w / ratio).toInt())
+            }
+        }
+    }
+
+    /**
+     * 取景蒙层：四周压暗、中间挖一个方形扫描区、四角画亮线，并在中间画一条扫描线。
+     * 纯 Canvas 绘制，不引任何图片资源。
+     */
+    private class ScanOverlayView(context: Context) : View(context) {
+
+        private val hole = RectF()
+        private val maskPaint = Paint().apply { color = 0xA6000000.toInt() }
+        private val framePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.WHITE
+            style = Paint.Style.STROKE
+            strokeWidth = context.resources.displayMetrics.density * 3.5f
+            strokeCap = Paint.Cap.ROUND
+        }
+        private val linePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = 0x66FFFFFF
+            style = Paint.Style.STROKE
+            strokeWidth = context.resources.displayMetrics.density * 2f
+        }
+
+        override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
+            super.onSizeChanged(w, h, oldw, oldh)
+            val side = min(w, h) * 0.66f
+            val cx = w / 2f
+            // 稍微上移，给底部提示与手电筒让出空间，视觉重心更稳。
+            val cy = h / 2f - h * 0.06f
+            hole.set(cx - side / 2f, cy - side / 2f, cx + side / 2f, cy + side / 2f)
+        }
+
+        override fun onDraw(canvas: Canvas) {
+            super.onDraw(canvas)
+            if (hole.isEmpty) return
+            val w = width.toFloat()
+            val h = height.toFloat()
+
+            // 四周压暗：分四块画，避免用 CLEAR 图层带来的合成开销。
+            canvas.drawRect(0f, 0f, w, hole.top, maskPaint)
+            canvas.drawRect(0f, hole.bottom, w, h, maskPaint)
+            canvas.drawRect(0f, hole.top, hole.left, hole.bottom, maskPaint)
+            canvas.drawRect(hole.right, hole.top, w, hole.bottom, maskPaint)
+
+            // 四角亮线：每角两条，长度取边长的 17%。
+            val len = hole.width() * 0.17f
+            // 左上
+            canvas.drawLine(hole.left, hole.top, hole.left + len, hole.top, framePaint)
+            canvas.drawLine(hole.left, hole.top, hole.left, hole.top + len, framePaint)
+            // 右上
+            canvas.drawLine(hole.right - len, hole.top, hole.right, hole.top, framePaint)
+            canvas.drawLine(hole.right, hole.top, hole.right, hole.top + len, framePaint)
+            // 左下
+            canvas.drawLine(hole.left, hole.bottom - len, hole.left, hole.bottom, framePaint)
+            canvas.drawLine(hole.left, hole.bottom, hole.left + len, hole.bottom, framePaint)
+            // 右下
+            canvas.drawLine(hole.right, hole.bottom - len, hole.right, hole.bottom, framePaint)
+            canvas.drawLine(hole.right - len, hole.bottom, hole.right, hole.bottom, framePaint)
+
+            // 中间横向扫描线，帮助用户判断「对准这里」。
+            val midY = hole.centerY()
+            canvas.drawLine(hole.left + len * 0.5f, midY, hole.right - len * 0.5f, midY, linePaint)
+        }
     }
 }

@@ -1,3 +1,212 @@
+## 79. 第七十九轮（2026-11-15）：账号鉴权修复 + 手电筒图标化
+
+### 79.1 用户原话
+
+> 账号与安全中修改密码，修改手机号都会提示鉴权失败，修复这个问题
+>
+> 将手电筒的标识换为图标，可以参考矢量图标库里的内容，不要只是手电筒三个字
+
+### 79.2 修改密码 / 修改手机号「鉴权失败」
+
+**根因**：`mine/AccountSecurityScreen.kt` 打开学校统一身份认证页时 `appToken = null`，
+于是 `OaWebViewActivity` 只能回退到 `Session.ldapToken`。而这个字段是**登录那一刻**写入的
+（`LoginActivity` 登录成功后调一次 `RceApi.getLdapToken()`），之后再不刷新。
+ldapToken 约 2 小时过期（`MiniappApi` 里早有这个注释：`Error code=4000`），
+所以只要不是刚登录，进修改密码页必然带着一个过期 Token → 服务端判「鉴权失败」。
+
+原版蓝航没有这个问题，因为它每次进 OA 前都重新取：
+`OAFragment.getToken()` → `GET /api/apps/getLdapToken` → 成功才 `handleRedirect`；
+`MyService` 里还挂了 `code == 10108 → AuthTask.refreshToken()` 的兜底。
+
+**修法**（`mine/AccountSecurityScreen.kt` 5,741 → 6,829 字节）：
+两处 `onClick` 都改成先异步取新 token 再打开：
+
+```kotlin
+onClick = {
+    scope.launch {
+        val fresh = withContext(Dispatchers.IO) {
+            runCatching { RceApi.getLdapToken() }.getOrNull()
+                ?.takeIf { it.isNotBlank() }
+        }
+        fresh?.let { Session.ldapToken = it }
+        OaWebViewActivity.open(
+            context = context,
+            url = URL_CHANGE_PASSWORD,   // 或 URL_CHANGE_MOBILE
+            appToken = fresh,            // 原来是 null
+            title = context.getString(...),
+        )
+    }
+},
+```
+
+配套：`val scope = rememberCoroutineScope()` 与六个 import（`rememberCoroutineScope`、
+`RceApi`、`Session`、`Dispatchers`、`launch`、`withContext`）。
+取失败时 `fresh` 为 null，自动回退到旧 Token（不阻塞用户，只是可能仍失败）。
+
+**验证**（模拟器 1220×2656）：
+- 修改密码页 100,282 字节正常渲染，还显示「您上次修改密码时间：2026/8/31 13:02:07」—— 鉴权通过；
+- 修改手机号页 77,028 字节正常渲染（「请输入新手机号」+「申请验证码」）—— 鉴权通过。
+
+### 79.3 手电筒文字改图标
+
+原来 `ScanQrActivity` 的手电筒是 `TextView`，写着「手电筒」三个字（64dp 圆形）。
+改成 `ImageView` + 矢量图 `res/drawable/ic_torch.xml`：
+
+- 字段类型 `TextView?` → `ImageView?`；
+- 创建处 `setImageResource(R.drawable.ic_torch)` + `ScaleType.CENTER_INSIDE` + `setPadding(17dp)`；
+- `applyTorchLook` 由 `TextView` 扩展改成 `ImageView` 扩展，`setTextColor` → `setColorFilter`
+  （亮起时白底深色图标、熄灭时黑色半透明底白色图标）。
+
+**图标本身试了四版**（前三版都不像，记下来别再走）：
+1. 「灯头 + 筒身 + 底部两条竖线」→ 渲染出来像插头；
+2. 「宽灯头 + 收窄筒身 + 两侧短横线」→ 像 T 字；
+3. 「横向手电筒 + 两道斜光束」→ 光束太粗像叉子；
+4. **最终采用 Google Material Icons 官方 `flashlight_on` 的 pathData**（441 字节）：
+
+```xml
+<path
+    android:fillColor="#FFFFFFFF"
+    android:fillType="evenOdd"
+    android:pathData="M18,2 H6 v6 l2,3 v11 h8 V11 l2,-3 V2 z M16,4 v1 H8 V4 h8 z M15,11.4 V20 h-4 v-8.6 l-2,-3 V6 h8 v2.4 l-2,3 z" />
+```
+
+`fillType="evenOdd"` 让后两段子路径挖空，最终是「宽灯头 + 细筒身 + 灯头横向纹理」的标准手电筒造型。
+
+**顺带查证**：Miuix 图标库（`miuix-icons` 0.9.1）一共只有 163 个图标，
+里面**没有** Flashlight / Torch / Flash，所以这个按钮只能用 Material 图标或自绘。
+
+### 79.4 产物
+
+- `res/drawable/ic_torch.xml`（新建，441 字节）
+- `ui/ScanQrActivity.kt` 19,866 → 20,029 字节
+- `mine/AccountSecurityScreen.kt` 5,741 → 6,829 字节
+- APK **8,808,900 字节 / SHA256 `1C657AA6A754E4D45F13136E3F538BF625DA178553042E7FDFA1C180E9835004`**
+- 版本仍 `versionCode 80` / `versionName "1.1.28"`（用户本轮未要求 push）
+- 备份 `scratch/bak79/`：`AccountSecurityScreen.kt.bak79`、`ScanQrActivity.kt.bak79`、`AGENTS.md.bak79`
+
+### 79.5 三条教训
+
+1. **「上次能用、现在不能用」先查时效**：ldapToken 只活 2 小时，登录时取一次存起来、之后永不刷新，
+   这种代码在「刚登录完就点」的测试里 100% 通过，真实用户隔天再点必然失败。
+   `MiniappApi.kt` 里其实早就写了「约 2 小时过期」的注释，答案一直在库里。
+2. **每个需要 tokens 的入口都要自己保证新鲜**，不能指望「Session 里有一个能用的」。
+   正确姿势是原版那样：进站前现取，取失败才用旧的。
+3. **图标不要手绘**：自绘的三版全部失败（像插头 / 像 T / 像叉子），
+   直接抄 Material Icons 的 pathData 一次就对。图标库没有的才自己画，而且要先确认库有多大
+   （Miuix 只有 163 个图标，覆盖面远小于 Material）。
+## 78. 第七十八轮（2026-11-15）：扫码页比例/取景框/手电筒 + 活动页返回白屏
+
+### 78.1 用户原话
+> 第一，扫码页异常拉伸变形，也没有二维码扫描提示框。第二，在扫码页加一个手电筒按钮，点击后手电筒亮起用于补光，再次点击关闭手电筒。第三，在活动页随意点进去一个活动后再返回，活动页依旧为白屏状态，只有点击右下角的刷新按钮才显示活动列表，修复这些问题
+
+### 78.2 预览变形与取景框（`ui/ScanQrActivity.kt` 10,287 → 19,866 字节）
+
+**变形根因**：`SurfaceView` 用的是 `FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT)`，而摄像头给的是 640×480。屏幕 1220×2656 直接把它拉成整屏，横向被拉伸一倍多，人眼立刻能看出「画面被压扁又拉长」。Camera1 没有 `SCALE_TYPE_CENTER_CROP` 这种现成开关，必须自己算。
+
+**修法**：新增 `CoverSurfaceView`（`SurfaceView` 子类），重写 `onMeasure`：
+
+```kotlin
+var ratio = 0f          // 显示内容的 宽/高 比；0 = 还没拿到摄像头参数
+override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+    val w = MeasureSpec.getSize(widthMeasureSpec)
+    val h = MeasureSpec.getSize(heightMeasureSpec)
+    if (ratio <= 0f || w <= 0 || h <= 0) { setMeasuredDimension(w, h); return }
+    val widthByHeight = (h * ratio).toInt()
+    if (widthByHeight >= w) setMeasuredDimension(widthByHeight, h)
+    else setMeasuredDimension(w, (w / ratio).toInt())
+}
+```
+
+- `ratio` 由 `startPreview()` 在 `startPreview()` 成功后填写：`ratio = previewH / previewW`。**注意是反的** —— 摄像头给横版 640×480，`setDisplayOrientation(90)` 之后画面转成竖版，所以显示宽/高 = 原高/原宽。
+- 父容器 `FrameLayout` 用 `gravity = CENTER` + `clipChildren = true`，溢出部分被裁掉，等价于 `ImageView` 的 centerCrop。
+- 首帧拿不到尺寸时给 `MATCH_PARENT` 兜底，`ratio` 一填上就 `requestLayout()` 重算。
+
+**取景框**：原来只有底部一行文字，用户不知道把二维码对准哪里。新增 `ScanOverlayView`（纯 `Canvas` 绘制，不引任何图片资源）：
+- 四周遮罩 `0xA6000000`，分四块 `drawRect` 画（避开花 `CLEAR` 图层的合成开销）；
+- 中间方形取景区：边长 `min(w, h) * 0.66`，中心比屏幕中心**上移 6%**（给底部提示和手电筒让位）；
+- 四角亮线：每角两条 `strokeCap = ROUND`、`strokeWidth = 3.5dp`、长度取边长 17%；
+- 中间一条 50% 白横向扫描线，帮助判断「对准这里」。
+
+### 78.3 手电筒开关
+
+右下角 64dp 圆形按钮（`TextView` + `GradientDrawable.OVAL`），点亮时白底深字，熄灭时半透明黑底白字 —— 状态一眼可见。核心逻辑：
+
+```kotlin
+val supported = cam.parameters.supportedFlashModes.orEmpty()
+    .contains(Camera.Parameters.FLASH_MODE_TORCH)
+if (!supported) { hint?.text = "这个摄像头不支持手电筒"; return }
+val params = cam.parameters
+params.flashMode = if (want) FLASH_MODE_TORCH else FLASH_MODE_OFF
+cam.parameters = params        // 设置失败会把 torchOn 回滚，保证按钮显示与硬件一致
+```
+
+三个细节：
+1. **先问 `supportedFlashModes`**再设 —— 模拟器虚拟摄像头与不带补光灯的前摄返回空列表，直接设置会抛 `IllegalArgumentException`。
+2. 设置失败（被别的应用占用）时 `torchOn = ok && want` 自动回滚，按钮不会显示「已开」而实际没亮。
+3. `stopPreview()` 里把 `torchOn` / `torchSupported` 一起重置 —— 否则下次进来按钮还亮着，但硬件其实已经释放。
+
+### 78.4 活动页「返回就白屏」（`ui/OaWebViewActivity.kt` 58,349 → 59,975 字节）
+
+**根因**：第七十七轮的 `lhFixList()` 挂在 `Vue.mixin({ mounted })` 上，只在**组件首次挂载**后跑三次（1.2s / 2.6s / 5s）。而 uni-app 的页面栈是复用的：从活动详情按返回，列表页走的是 `onShow`，`mounted` 不会再触发；偏偏这时 uni-app 把缓存页面重新摆上来，那条 flex 高度链**又塌回 0**，于是又白屏。用户点右下角刷新之所以能恢复，是因为刷新重建了列表 DOM，`.list-bg` 重新出现且这次高度被 `lhFixList` 补上。
+
+**修法（两条并行，缺一不可）**：
+
+1. `created` 里给页面的 `$options.onShow` 包一层，返回时立刻补修：
+
+```javascript
+created: function () {
+    var opts = this['$options'] || {};
+    if (opts.__lhShowWrapped) return;
+    if (typeof opts.onShow !== 'function') return;
+    opts.__lhShowWrapped = true;
+    var orig = opts.onShow;
+    opts.onShow = function () {
+        var r = orig.apply(this, arguments);
+        setTimeout(lhFixList, 120);
+        setTimeout(lhFixList, 500);
+        setTimeout(lhFixList, 1500);
+        return r;
+    };
+}
+```
+
+三次延时是必要的：`onShow` 那一刻列表 DOM 可能还没重建好，`.list-bg` 找不到就白跑；120ms 抓「已经有 DOM」、500ms 抓「数据回来重排完」、1500ms 收尾。
+
+2. 700ms 低频轮询兜底 —— 有些折返路径不走 `onShow`（例如从别的 tab 切回来）：
+
+```javascript
+if (!window.__lhFixTimer) {
+    window.__lhFixTimer = setInterval(function () {
+        if (document.hidden) return;
+        lhFixList();
+    }, 700);
+}
+```
+
+`lhFixList` 第一句就是 `document.querySelector('.list-bg')`，找不到立即 `return`，开销可以忽略；`document.hidden` 时直接跳过，后台不占 CPU。
+
+### 78.5 验证（模拟器 1220×2656）
+
+| 项 | 结果 |
+|---|---|
+| 扫码页比例 | 书架/猫/电视比例正确，无拉伸；四周压暗、四角亮框、中间扫描线齐全（截图 `scratch/s78_scan.png`，1,321,934 B） |
+| 手电筒 | 点按后提示「这个摄像头不支持手电筒」—— 模拟器虚拟摄像头 `supportedFlashModes` 为空，降级正确；真机有补光灯即可用（截图 `scratch/s78_torch.png`） |
+| 列表首屏 | 四条活动卡片正常（`s78_list1.png`，582,447 B） |
+| 进详情 | 905,640 B 正常打开（`s78_detail.png`） |
+| **返回列表** | **583,051 B —— 不白屏**（白屏时约 63,000 B） |
+| 二次往返（换一条活动） | 583,154 B ✓ |
+| 切 tab「我创建的」再切回「全部」 | 905,733 B ✓ |
+
+### 78.6 产物
+- `versionCode 80` / `versionName "1.1.28"`
+- `ScanQrActivity.kt` 10,287 → 19,866 字节；`OaWebViewActivity.kt` 58,349 → 59,975 字节
+- 备份 `scratch/bak78/`：`ScanQrActivity.kt.bak78`、`OaWebViewActivity.kt.bak78`、`AGENTS.md.bak78`
+
+### 78.7 三条教训
+1. **Camera1 预览永远不会自动保持比例** —— `MATCH_PARENT` 就是拉伸，必须自己按摄像头分辨率算 centerCrop；而且 `setDisplayOrientation(90)` 之后宽高要**对调**再算，否则竖屏下反而更歪。
+2. **uni-app 的页面是复用的，别把修复只挂在 `mounted` 上** —— 返回、切 tab、缓存恢复走的都是 `onShow`，任何「只在首次挂载时跑一次」的 DOM 补丁都会在第二次进入时失效。这次的现象（「点刷新才恢复」）正是「只有重建 DOM 才触发修复」的典型指纹。
+3. **硬件能力必须先探测再使用** —— `setFlashMode(FLASH_MODE_TORCH)` 在不支持的设备上直接抛异常；`supportedFlashModes` 为空就该老老实实告诉用户「不支持」，而不是假装成功。
+
 #### 77.14 「我的活动」白屏收官：祖先链高度塌陷（2026-11-15）
 
 **现象**：二课「我的」→「我的活动」→ 右侧「更多」进去，顶栏、四个 tab、刷新按钮都正常，**列表区一片空白**。

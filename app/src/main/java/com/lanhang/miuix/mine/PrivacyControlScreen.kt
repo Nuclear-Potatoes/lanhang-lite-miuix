@@ -31,6 +31,8 @@ import com.lanhang.miuix.net.RceApi
 import com.lanhang.miuix.net.UserPrivacy
 import com.lanhang.miuix.ui.miuix.CardActionBar
 import com.lanhang.miuix.ui.miuix.CardActionChip
+import com.lanhang.miuix.ui.miuix.SettingRow
+import com.lanhang.miuix.ui.miuix.SettingSwitchRow
 import com.lanhang.miuix.ui.miuix.showMiuixPicker
 import com.lanhang.miuix.ui.miuix.pressableRow
 import kotlinx.coroutines.Dispatchers
@@ -242,71 +244,20 @@ fun PrivacyControlScreen(
     }
 }
 
-/** 「标题 —— 当前档位 ›」一行 */
+/** 「标题 —— 当前档位 + 箭头」一行；与设置页同一套字号 / 行高 / 箭头 */
 @Composable
 private fun PrivacyValueRow(title: String, value: String, onClick: () -> Unit) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .pressableRow(onClick = onClick, corner = 16.dp)
-            .padding(horizontal = 16.dp, vertical = 14.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(
-            text = title,
-            style = MiuixTheme.textStyles.body2.copy(fontSize = 17.sp, fontWeight = FontWeight.Medium),
-            color = MiuixTheme.colorScheme.onSurface,
-            modifier = Modifier.weight(1f),
-        )
-        Spacer(Modifier.width(12.dp))
-        Text(
-            text = value,
-            style = MiuixTheme.textStyles.body2.copy(fontSize = 14.5.sp),
-            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-        )
-        Text(
-            text = "  \u203A",
-            style = MiuixTheme.textStyles.body2.copy(fontSize = 14.5.sp),
-            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-        )
-    }
+    SettingRow(title = title, value = value, onClick = onClick)
 }
 
-/** 「标题 + 开关」一行 */
+/** 「标题 + 开关」一行；与设置页同一套字号 / 行高 */
 @Composable
 private fun PrivacySwitchRow(title: String, checked: Boolean, onCheckedChange: (Boolean) -> Unit) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 15.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(
-            text = title,
-            style = MiuixTheme.textStyles.body2.copy(fontSize = 17.sp, fontWeight = FontWeight.Medium),
-            color = MiuixTheme.colorScheme.onSurface,
-            modifier = Modifier.weight(1f),
-        )
-        Spacer(Modifier.width(12.dp))
-        Switch(checked = checked, onCheckedChange = onCheckedChange)
-    }
+    SettingSwitchRow(title = title, checked = checked, onCheckedChange = onCheckedChange)
 }
 
 /** 只有一行的可点条目（用于「重试」） */
 @Composable
 private fun SimpleRow(title: String, onClick: () -> Unit) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .pressableRow(onClick = onClick, corner = 16.dp)
-            .padding(horizontal = 16.dp, vertical = 14.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(
-            text = title,
-            style = MiuixTheme.textStyles.body2.copy(fontSize = 17.sp, fontWeight = FontWeight.Medium),
-            color = MiuixTheme.colorScheme.primary,
-            modifier = Modifier.weight(1f),
-        )
-    }
+    SettingRow(title = title, onClick = onClick)
 }

@@ -291,6 +291,10 @@ object ScheduleWidgetRenderer {
      * 2026-10-27 第二十六轮（用户：「如果今日课程上完，那就在 4×2 小组件上显示明天的课表」）：
      * 今天的课全部上完后，由 [ScheduleWidgetData.wideTarget] 把 targetDate 换成明天、快照也换成明天，
      * 这里只负责把表头写成「明天 / 周三」并关掉按钟点淘汰。
+     *
+     * 第八十轮（用户 2026-11-15）：翻到明天时也不显示「N 分钟结束」/ 进行中高亮 ——
+     * 倒计时只对「今天」有意义。原先只按钟点判断进行中，周末预览「明天 / 周一」时
+     * 明天 10:00-11:40 的课恰好和现在的 10:50 重叠，就被误画成「50 分钟结束」。
      */
     fun renderWide(
         appContext: Context,
@@ -300,8 +304,8 @@ object ScheduleWidgetRenderer {
         targetDate: LocalDate? = null,
         now: LocalDateTime = LocalDateTime.now(),
         /**
-         * 展示的是「明天」。只影响表头前缀（今天 / %s → 明天 / %s），
-         * 以及不按钟点淘汰课程（明天当然还没上完）。
+         * 展示的是「明天」，只影响表头前缀（今天 / %s → 明天 / %s）。
+         * 是否按钟点淘汰课程、是否显示倒计时，一律由 [targetDate] 与 now 的日期比较决定。
          */
         tomorrow: Boolean = false
     ): Bitmap {
@@ -441,15 +445,23 @@ object ScheduleWidgetRenderer {
         private val rowGap = dp(5f)
         private val slotCount = 2
 
+        /**
+         * 只有展示「今天」才允许判断「正在上」（倒计时 + 进行中高亮）。
+         * 翻到明天预览课程时，明天的 10:00-11:40 与现在的 10:50 重叠只是钟点巧合，
+         * 不是真的在上课。2×2 的 TodayRenderer 早有同一条规则（filterByClock = offsetDays == 0L）。
+         */
+        private val isToday = target == now.toLocalDate()
+
         /** 只有「今天」才按钟点淘汰已下课的课（与 2×2 同一条规则） */
-        private val filterByClock = target == now.toLocalDate()
+        private val filterByClock = isToday
 
         /** 进行中那行的底色：主色兑进卡底（浅 10% / 深 16%），一眼能看出「正在上」 */
         private fun activeSlotColor(): Int =
             ColorUtils.blendARGB(slotColor, palette.primary, if (palette.isDark) 0.16f else 0.10f)
 
-        /** 还剩几分钟下课（向上取整）；不在进行中就返回 null */
+        /** 还剩几分钟下课（向上取整）；不是今天 / 不在进行中都返回 null */
         private fun minutesLeft(course: CourseBlock): Int? {
+            if (!isToday) return null
             val startMin = PeriodClock.startMinute(course.start)
             val endMin = PeriodClock.endMinute(course.end)
             if (nowMinute < startMin || nowMinute >= endMin) return null

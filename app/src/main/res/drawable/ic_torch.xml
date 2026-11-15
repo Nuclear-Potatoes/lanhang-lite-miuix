@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    手电筒图标：照 ByteDance IconPark「flashlight」重做（Hardware 分类，48x48 网格，Apache-2.0）
+    官网：https://iconpark.oceanengine.com/official
+    源图：https://github.com/bytedance/IconPark/blob/master/source/Hardware/flashlight.svg
+
+    取官网默认 outline 主题的形状：官方源图是「蓝色填充 + 黑色轮廓 + 两条白色细节线」，
+    这里统一改成「无填充 + 单色描边」，圆头圆角，与项目 Miuix 图标口径一致。
+    颜色不写死状态：ScanQrActivity.applyTorchLook() 用 setColorFilter 把整张图染成
+    白色（关闭：半透明黑底）或深色（点亮：白底），fill / stroke 同走一个 colorFilter。
+
+    注意：注释只能放在元素之间，不能插进属性列表（AAPT2 会报错）。
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="48"
+    android:viewportHeight="48">
+
+    <!-- 灯头 + 筒身外轮廓：y=4 处宽 9..39，曲线收窄到 17..31，底边 y=44 -->
+    <path
+        android:fillColor="@android:color/transparent"
+        android:pathData="M17 22.1961C17 22.0726 16.9419 21.9564 16.8431 21.8824C11.9058 18.1793 9 12.3678 9 6.19608L9 4H39V6.19608C39 12.3678 36.0942 18.1793 31.1569 21.8824C31.0581 21.9564 31 22.0726 31 22.1961V44H17V22.1961Z"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="4"
+        android:strokeLineJoin="round" />
+
+    <!-- 灯头横向纹理（IconPark 原图 M38 11H10） -->
+    <path
+        android:fillColor="@android:color/transparent"
+        android:pathData="M38 11H10"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="4"
+        android:strokeLineCap="round" />
+
+    <!-- 筒身开关（IconPark 原图 M24 28.0083V32.0083） -->
+    <path
+        android:fillColor="@android:color/transparent"
+        android:pathData="M24 28.0083V32.0083"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="4"
+        android:strokeLineCap="round" />
+</vector>

@@ -34,6 +34,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.lanhang.miuix.R
+import com.lanhang.miuix.ui.miuix.SettingRow
+import com.lanhang.miuix.ui.miuix.SettingSwitchRow
 import com.lanhang.miuix.ui.miuix.pressableRow
 import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.HorizontalDivider
@@ -216,25 +218,7 @@ private fun NotifyValueRow(
     value: String,
     onClick: () -> Unit,
 ) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .pressableRow(onClick = onClick, corner = 16.dp)
-            .padding(horizontal = 16.dp, vertical = 15.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(
-            text = title,
-            style = MiuixTheme.textStyles.body1,
-            color = MiuixTheme.colorScheme.onSurface,
-            modifier = Modifier.weight(1f),
-        )
-        Text(
-            text = value,
-            style = MiuixTheme.textStyles.body2,
-            color = MiuixTheme.colorScheme.primary,
-        )
-    }
+    SettingRow(title = title, value = value, onClick = onClick)
 }
 
 /** 开始 / 结束时间共用的两列滚轮：小时 00–23，分钟 5 分一格（00/05/…/55） */

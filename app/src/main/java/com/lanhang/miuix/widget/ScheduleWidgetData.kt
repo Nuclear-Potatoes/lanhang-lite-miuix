@@ -48,7 +48,7 @@ object ScheduleWidgetData {
     data class WideTarget(
         val date: LocalDate,
         val snapshot: WeekSnapshot?,
-        /** 展示的是明天：表头写「明天 / 周三」，且不按钟点淘汰课程 */
+        /** 展示的是明天：表头写「明天 / 周三」，不按钟点淘汰课程，也不显示倒计时 */
         val tomorrow: Boolean
     )
 

@@ -11,6 +11,8 @@
 ## 历史
 | versionName | versionCode | 内容 |
 |---|---|---|
+| 1.1.29 | 81 | 第八十一轮：设置类页面设计风格统一（设置/账号与安全/权限控制/通知/上课提醒/我的全部走同一个 SettingRow，去掉 17sp Medium + 文本「›」那套）；4×2 小组件翻到明天不再显示「N 分钟结束」；手电筒改 IconPark 矢量图 |
+| 1.1.28 | 80 | 第七十八轮：扫码页居中裁剪不变形 + 取景框 + 手电筒；活动页返回后不再白屏 |
 | 1.1.27 | 79 | 第七十七轮：赣青二课扫码打通（原生 Camera1 + zxing 桥接）、「我的活动」白屏修复（祖先链高度塌陷） |
 | 1.1.26 | 78 | 第 75-77 轮：赣青二课扫码能力打通 —— WebView 补 CAMERA 权限与 onPermissionRequest/定位回调，扫码按钮不再走青新闻注入的 window.CP2 而是主推站点自带的 html5-qrcode 扫码页；另接入 WebChromeClient.onConsoleMessage，网页 console 全部进 logcat（tag OaWebView），uni-app 白屏可定位 |
 | 1.1.25 | 77 | 第 74 轮修正：私信消息时间一律带日期（当天也显示 MM-dd HH:mm） |
