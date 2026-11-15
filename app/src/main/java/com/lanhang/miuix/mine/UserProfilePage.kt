@@ -1,5 +1,7 @@
 package com.lanhang.miuix.mine
 
+import android.widget.Toast
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -10,20 +12,32 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.lanhang.miuix.ui.miuix.CardActionChip
 import com.lanhang.miuix.R
+import com.lanhang.miuix.im.FriendStore
 import com.lanhang.miuix.moments.CommentEntry
 import com.lanhang.miuix.moments.MomentItem
 import com.lanhang.miuix.moments.MomentsScreen
 import com.lanhang.miuix.moments.UserInfoCache
+import com.lanhang.miuix.net.RceApi
 import com.lanhang.miuix.net.StaffInfo
 import com.lanhang.miuix.net.cleanOrgName
 import com.lanhang.miuix.session.Session
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import com.lanhang.miuix.ui.miuix.LanhangAvatar
 import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.HorizontalDivider
@@ -58,7 +72,7 @@ fun UserProfilePage(
     onPostComment: (MomentItem, String?, String) -> Unit,
     onDeleteComment: (MomentItem, CommentEntry) -> Unit,
     onDeletePost: (MomentItem) -> Unit,
-    onImage: (List<String>, Int, android.graphics.Rect?) -> Unit,
+    onImage: (List<String>, List<String>, Int, android.graphics.Rect?) -> Unit,
     /** 主页里再点头像/名字 → 进那个人的主页（由宿主决定怎么导航） */
     onOpenProfile: (String) -> Unit = {},
     /** 别人的主页才有「发私信」（自己主页传 null） */
@@ -169,13 +183,20 @@ fun ProfileHeader(
                     )
                     ProfileInfoRow(stringResource(R.string.profile_label_phone), mobile)
                 }
-                if (!isSelf && onMessage != null) {
+                // 第九十一轮：他人主页在「发私信」旁加「加好友」；已经是好友 / 发过申请时
+                // 按钮变灰不可点（CardActionChip 自带 enabled 的灰态）。
+                if (!isSelf) {
                     Spacer(Modifier.padding(top = 6.dp))
-                    CardActionChip(
-                        text = stringResource(R.string.profile_message),
-                        onClick = onMessage,
-                        primary = true,
-                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        if (onMessage != null) {
+                            CardActionChip(
+                                text = stringResource(R.string.profile_message),
+                                onClick = onMessage,
+                                primary = true,
+                            )
+                        }
+                        AddFriendChip(uid = fallbackId)
+                    }
                 }
             }
         }
@@ -188,6 +209,75 @@ fun ProfileHeader(
             }
         )
     }
+}
+
+/**
+ * 第九十一轮：他人主页的「加好友」按钮。
+ *
+ * 学校私有云只给 `POST /friends/invite`（`RceApi.inviteFriend`），**没有好友列表查询接口**。
+ * 所以「已添加」用两层判定：① 本地台账 [FriendStore]（发过申请或服务端回
+ * `FRIEND_ALREADY_CREATED` 就记一笔）；② 进页面时拿 `/friends/request_list` 校准一次 ——
+ * 该列表也含「我发出的申请 / 已互为好友」（state 1/2/3），能覆盖以前用官方客户端加过的人。
+ * 网络不通时以本地台账为准，按钮照样可用。
+ */
+@Composable
+private fun AddFriendChip(uid: String) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var added by remember(uid) { mutableStateOf(FriendStore.isAdded(uid)) }
+    var busy by remember(uid) { mutableStateOf(false) }
+
+    LaunchedEffect(uid) {
+        if (added || uid.isBlank()) return@LaunchedEffect
+        val known = withContext(Dispatchers.IO) {
+            runCatching { RceApi.friendRequests(0L).data }
+                .getOrDefault(emptyList())
+                .any { it.uid == uid && it.state in 1..3 }
+        }
+        if (known) {
+            FriendStore.markAdded(uid)
+            added = true
+        }
+    }
+
+    CardActionChip(
+        text = stringResource(
+            if (added) R.string.profile_friend_added else R.string.profile_add_friend
+        ),
+        enabled = !added && !busy,
+        onClick = {
+            if (added || busy || uid.isBlank()) return@CardActionChip
+            busy = true
+            scope.launch {
+                val greeting = context.getString(
+                    R.string.friend_invite_greeting, Session.name.orEmpty().ifBlank { "蓝航用户" },
+                )
+                val result = withContext(Dispatchers.IO) { RceApi.inviteFriend(uid, greeting) }
+                busy = false
+                val failure = result.exceptionOrNull()
+                // 服务端返回 FRIEND_ALREADY_CREATED 也算「已添加」，别让用户反复点。
+                val already = failure?.message?.let {
+                    it.contains("ALREADY", true) || it.contains("已添加", true) ||
+                        it.contains("已是好友", true)
+                } ?: false
+                if (result.isSuccess || already) {
+                    FriendStore.markAdded(uid)
+                    added = true
+                    Toast.makeText(
+                        context, context.getString(R.string.friend_invite_sent), Toast.LENGTH_SHORT,
+                    ).show()
+                } else {
+                    Toast.makeText(
+                        context,
+                        context.getString(
+                            R.string.friend_invite_failed, failure?.message.orEmpty(),
+                        ),
+                        Toast.LENGTH_SHORT,
+                    ).show()
+                }
+            }
+        },
+    )
 }
 
 @Composable

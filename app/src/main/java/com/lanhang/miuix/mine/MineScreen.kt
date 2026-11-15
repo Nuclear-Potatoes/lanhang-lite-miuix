@@ -26,7 +26,6 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -52,6 +51,7 @@ import com.lanhang.miuix.profile.ProfileStackState
 import com.lanhang.miuix.profile.ProfileStore
 import com.lanhang.miuix.session.Session
 import com.lanhang.miuix.settings.UpdateChecker
+import com.lanhang.miuix.settings.UpdatePrompt
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -266,7 +266,7 @@ fun MineScreen(
     onPostComment: (MomentItem, String?, String) -> Unit,
     onDeleteComment: (MomentItem, CommentEntry) -> Unit,
     onDeletePost: (MomentItem) -> Unit,
-    onImage: (List<String>, Int, android.graphics.Rect?) -> Unit,
+    onImage: (List<String>, List<String>, Int, android.graphics.Rect?) -> Unit,
     // 别人的个人主页：整块交给共享实现（profile/ProfileHost.kt，与工作圈同一份代码）
     profileStack: ProfileStackState,
     profileStore: ProfileStore,
@@ -288,7 +288,6 @@ fun MineScreen(
     // LazyColumn 的 item 滚出屏幕就会被回收，正在查的时候滑下去再滑回来，
     // 「正在检查…」和上次的结果都会不见；放在 MineScreen 里则跨页往返都还在。
     val checkUpdateContext = androidx.compose.ui.platform.LocalContext.current
-    val checkUpdateScope = rememberCoroutineScope()
     var updateChecking by remember { mutableStateOf(false) }
     var updateHint by remember { mutableStateOf<String?>(null) }
 
@@ -565,75 +564,15 @@ fun MineScreen(
                                         confirm = ctx.getString(R.string.common_ok),
                                     )
                                 } else {
-                                    updateChecking = true
+                                    // 2026-11-15 第八十三轮：检查更新的整条链路收进 UpdatePrompt，
+                                    // 与「打开 App 自动检查一次」共用同一份实现（用户要求走一个渠道）。
                                     updateHint = null
-                                    checkUpdateScope.launch {
-                                        val result = withContext(Dispatchers.IO) {
-                                            UpdateChecker.check(state.version)
-                                        }
-                                        updateChecking = false
-                                        when (result) {
-                                            is UpdateChecker.Result.Available -> {
-                                                val release = result.release
-                                                updateHint = ctx.getString(
-                                                    R.string.settings_check_update_available,
-                                                    release.version,
-                                                )
-                                                val notes = release.notes.trim()
-                                                val message = buildString {
-                                                    append(
-                                                        ctx.getString(
-                                                            R.string.settings_check_update_message,
-                                                            state.version,
-                                                            release.version,
-                                                        )
-                                                    )
-                                                    if (notes.isNotEmpty()) {
-                                                        append("\n\n")
-                                                        append(notes.take(300))
-                                                        if (notes.length > 300) append('…')
-                                                    }
-                                                }
-                                                showMiuixConfirm(
-                                                    context = ctx,
-                                                    title = ctx.getString(R.string.settings_check_update_available_title),
-                                                    message = message,
-                                                    confirmText = ctx.getString(R.string.settings_check_update_download),
-                                                    dismissText = ctx.getString(R.string.settings_check_update_later),
-                                                    onConfirm = {
-                                                        // 优先给 APK 直链（点了就开始下），没有就退回 release 页
-                                                        openUrl(ctx, release.apkUrl ?: release.pageUrl)
-                                                    },
-                                                )
-                                            }
-
-                                            UpdateChecker.Result.Latest -> {
-                                                updateHint = ctx.getString(R.string.settings_check_update_latest)
-                                                showMiuixInfo(
-                                                    context = ctx,
-                                                    title = ctx.getString(R.string.settings_check_update),
-                                                    message = ctx.getString(
-                                                        R.string.settings_check_update_latest_message,
-                                                        state.version,
-                                                    ),
-                                                    confirm = ctx.getString(R.string.common_ok),
-                                                )
-                                            }
-
-                                            is UpdateChecker.Result.Failed -> {
-                                                updateHint = ctx.getString(R.string.settings_check_update_failed)
-                                                showMiuixInfo(
-                                                    context = ctx,
-                                                    title = ctx.getString(R.string.settings_check_update),
-                                                    message = ctx.getString(
-                                                        R.string.settings_check_update_failed_message,
-                                                        result.message,
-                                                    ),
-                                                    confirm = ctx.getString(R.string.common_ok),
-                                                )
-                                            }
-                                        }
-                                    }
+                                    UpdatePrompt.checkAndPrompt(
+                                        context = ctx,
+                                        currentVersion = state.version,
+                                        onChecking = { updateChecking = it },
+                                        onHint = { updateHint = it },
+                                    )
                                 }
                             },
                         )

@@ -1,3 +1,574 @@
+> **交接文档（2026-11-15）**：项目根 `lanhang-miuix\HANDOFF.md` 是给新对话用的上手文档 —— 当前状态、构建与发版命令、功能地图、踩坑清单、待办。本文档继续按轮次记录细节。
+>
+> **本文档已知缺漏**：① 缺 `## 80.` 与 `## 81.` 两轮记录（代码与 `VERSION.md` 已有，要点见 HANDOFF.md 第七节）；② 缺 `## 55.`（历史遗漏）。
+
+## 91. 第九十一轮（2026-11-15）：加好友按钮、工作圈缩略图、二课白屏通用修复（发版 1.1.32）
+
+### 91.1 用户原话
+
+> 第一，给除了用户自己的个人主页中的发私信按钮旁边加一个加好友按钮，点击后向这个用户发送好友申请，
+> 如果已经添加过好友的按钮显示为已添加（灰色状态）。第二，工作圈加载图片的速度太慢，可以先加载缩略图，
+> 用户点击显示原图按钮后再加载原图。第三，点入赣青二课-二课成绩-右上角的奖杯按钮进入成绩排行榜页面时，
+> 图片显示为图二效果，无法加载出底下的排名，应该显示为图一的效果，彻查原因，我猜测与活动页面无法加载的
+> 原因相同，彻查所有页面的类似情况。第四，赣青二课点击获得成绩之后进入的页面也是一片空白，我猜测原因同上，
+> 修复所有页面的类似问题，做完后 push 发版，将电脑休眠
+
+### 91.2 第一条：他人主页「加好友」
+
+- 新增 `im/FriendStore.kt`：本地台账（SharedPreferences）记「已发申请 / 已是好友」的 uid，
+  换账号时 `clear()`。学校私有云只有 `/friends/invite` 等五个接口，**没有好友列表查询**，
+  所以不能每次现查；进页面时再用 `RceApi.friendRequests(0L)` 校准一次 —— 该列表也含
+  「我发出的申请 / 已互为好友」（state 1/2/3），能覆盖以前用官方客户端加过的人。
+- `mine/UserProfilePage.kt`：`ProfileHeader` 的单个「发私信」改成一行两个 chip
+  （`Row` + `CardActionChip`，后者本来就带 `enabled=false` 的灰态），新增 `AddFriendChip`：
+  点按 → `RceApi.inviteFriend(uid, 验证语)` → 成功或服务端回 `FRIEND_ALREADY_CREATED`
+  就 `markAdded` 并置灰；失败 Toast 出原因。自己主页（`isSelf`）不显示这一行。
+- 中英文 strings 补 `profile_add_friend` / `profile_friend_added` / `friend_invite_*`，
+  顺手补上英文缺失的 `profile_message`。
+
+### 91.3 第二条：工作圈看大图默认走缩略图
+
+第 58 轮已经把**解码**压到屏幕尺寸，但打开预览时传的仍是 `MediaItem.url`（原图），
+学校图片动辄几 MB —— 慢在**下载**不在解码，所以之前的压缩没解决体感。
+
+- `moments/ImagePreviewActivity.kt`：新增 `EXTRA_THUMBS` / `thumbs`，
+  `PreviewAdapter.onBindViewHolder` 默认取 `thumbs[position]`，只有该页进了
+  `originalPages`（按过「显示原图」）才换 `items[position]`（原图）。
+  `showOriginalForCurrentPage()` 原有的 `notifyItemChanged` 正好复用。
+  长按保存相册改成一律用 `items[position]`，不会把糊图存进去。
+- `onImage` 回调签名从 `(urls, index, rect)` 扩成 `(urls, thumbs, index, rect)`，
+  `MomentImageGrid` 里 `thumbs = media.map { it.displayUrl }`；同步改
+  `MomentsScreen` / `MomentSearchScreen` / `MineScreen` / `UserProfilePage` /
+  `ProfileHost` / `MomentsFragment` / `MineFragment` 共 10 余处。
+  聊天里的图片预览不带缩略图，`thumbs` 为空自动退回原图。
+
+### 91.4 第三、四条：二课白屏的**通用**根因（用户猜对了）
+
+反查 `GQHW_COMPAT_JS` 发现第 77/78 轮的 `lhFixList()` **硬编码 `.list-bg`** ——
+那是「我的活动」页专用的类名；而且 `mounted` 钩子还有
+`if (!this.seachList && !this.listData) return;` 挑组件。排行榜与获得成绩页用的是别的
+class，压根不在修复范围里。实测日志印证：`listBg=0 scrollView=4 / 12`，
+但 `bodyH=0 / 110` 而 `bodyBits` 有几百 —— 就是同一条「uni-app 祖先链高度塌陷」，
+内容在 DOM 里、被 `overflow:hidden` 的 `.uni-scroll-view` 整块裁掉。
+
+**改成不认 class 的几何修复**（`OaWebViewActivity.GQHW_COMPAT_JS` 全量重写）：
+- A 路径保留老逻辑（`.list-bg` 往上爬到第一个 `overflow:hidden` 祖先），不破坏已修好的活动页；
+- B 通用路径：遍历 DOM，凡「自身高 ≤40px、`scrollHeight ≥120px`（有真实内容）、在视口内、
+  且是滚动容器或 uni-app 列表/内容容器」→ 按视口剩余高度补 `height` + `min-height`；
+- C 行高塌陷：`v-for` 已把条目渲进 DOM 但每行被算成 0 高时补 `min-height:56px`；
+- 触发点从「挑组件的 mounted」扩到 `DOMContentLoaded` / `load` / `hashchange` /
+  `popstate` / 全组件 `mounted` / 包装 `onShow` / 700ms 兜底轮询，
+  因此二课内**所有页面和视图切换**自动覆盖，不用再给每个新页面打补丁；
+- 加限频 `console.log('LhCompat fix …')` 诊断（`WebChromeClient.onConsoleMessage` →
+  logcat tag `OaWebView`），以后再白屏能直接看修了几个容器、当前 hash、body 尺寸。
+
+### 91.5 实机验证（模拟器 emulator-5554，二课登录态还在）
+
+| 页面 | 结果 |
+|---|---|
+| 他人主页（王俊轩） | 「发私信」蓝色 + 「已添加」灰色并排，自己主页不显示 |
+| 排行榜（奖杯入口） | 表头下 1~5 名（乔文昊 9.55 / 张卉彤 6.4 / 杨硕 5.75 / 李璞冠 5.7 / 江萍 5.6）全部显示，与用户图一一致 |
+| 获得成绩 · 分类统计 | 分类切换 + 统计卡片正常 |
+| 获得成绩 · 学期统计 | 6 条成绩记录 + 「没有更多了」全部显示 |
+| 二课首页 / 成绩单页 | 未被通用修复误伤，正常 |
+
+关键日志：
+```
+LhCompat fix fixed=1 hash=#/pages/home/reportCard/rankingList listBg=0 scrollView=4 bodyH=1049 bodyBits=463
+LhCompat fix fixed=5 hash=#/pages/home/achievement        listBg=0 scrollView=12 bodyH=110 bodyBits=548
+LhCompat fix fixed=1 hash=#/pages/home/achievement（切学期统计）scrollView=6 bodyH=151 bodyBits=289
+```
+截图：`scratch/s91_rank.png` / `s91_score.png` / `s91_term.png` / `s91_profile.png`。
+
+### 91.6 发版
+
+`BUILD SUCCESSFUL`（编译两次：先 83 临时包实测，定稿后升 84 再编）。
+按用户要求 **push 发版**：版本 `84 / 1.1.32`（Z +1），`VERSION.md` 插行，本文档记第 91 轮，
+APK 放项目根与 `artifacts/apk/`，同步 `push/repo` 后 commit + tag + push。
+
+## 90. 第九十轮（2026-11-15）：彻查 `size out of limit` —— 根因是视频封面撑爆消息体
+
+### 90.1 用户原话
+
+> 我发送视频会提示 size out of limit 彻查原因（附两张真机截图）
+
+截图证据：私信列表页顶部「发送失败：RC_MSG_SIZE_OUT_OF_LIMIT」；聊天页里 300.0 MB 的
+`lh_300m.bin` 与 40s 彩条视频都已成功，唯独两条 20s 的「课表录屏」一条发送中、一条发送失败。
+
+### 90.2 根因（SDK 字节码 + 官方文档 + 现象，三方交叉验证）
+
+1. 融云官方文档：`RC_MSG_SIZE_OUT_OF_LIMIT` = **消息体（序列化成 JSON 的 content）最大 128KB**，
+   不是媒体文件体积。第八十九轮「300MB 文件能发，所以没有大小限制」的结论对 `FileMessage`
+   成立，但**不能外推到 `SightMessage`** —— 这是上一轮误判的地方。
+2. 反编译 `scratch/rong/c29.jar`（IMLib 2.9.24，`javap -c -p`）：
+   - `SightMessage.encode()` 把 `mBase64` 原样写进 JSON 的 `content` 字段
+     （外加 name / size / localPath / sightUrl / duration / extra 等）；
+   - `SightMessageHandler.encodeMessage()` 只要 `thumbUri.scheme == "file"`，就走
+     `FileUtils.file2byte(file)` → `Base64.encodeToString(bytes, NO_WRAP)` → `setBase64()`，
+     **完全不缩放、不压缩**。对照 `ImageMessageHandler` 会走 `BitmapUtil.getThumbBitmap`
+     缩放 + `THUMB_COMPRESSED_QUALITY` 压缩 —— 这正是「图片从不出问题、只有视频出问题」的原因；
+   - 两参 `SightMessage.obtain(Uri, int)` 只设 localPath / duration / name / size，
+     **不设 thumbUri**；封面完全是我们手动塞进去的，所以锅在我们这头。
+3. 我们 `ImMedia.videoInfo()` 原来抽的是**全分辨率首帧 + JPEG 82**，1080p 课表截图 200~600KB，
+   base64 膨胀 4/3 后 260~800KB > 131072 → 服务端拒绝。40s 彩条视频首帧是纯色块压完几 KB
+   所以成功，20s 课表录屏信息量大所以失败 —— **两张截图里的现象完全吻合**。
+4. 第二颗雷：`sendVideo()` 里 `val cover = thumb ?: video`，抽帧失败时会把**整个视频文件**
+   当封面，几十 MB 直接 base64，必然超限甚至 OOM。
+
+### 90.3 离线复现（`scratch/ThumbCheck.java`，JDK ImageIO 复刻同一套压缩参数）
+
+1080×2400 彩色噪声（比任何课表截图都难压）：
+- 旧做法 q82 全分辨率 = 1,335,598 B，base64 ≈ 1,780,800 B → **超 128KB 13.6 倍**，复现成功；
+- 新做法（最长边 360、质量 78 起递减）q78 = 38,423 B，base64 ≈ 51,232 B，
+  距 131072 上限还余 79,040 B → 安全。
+
+### 90.4 修法（`im/ImMedia.kt` + `im/ImRepository.kt`）
+
+- `ImMedia` 新增 `THUMB_MAX_EDGE = 360` / `THUMB_MAX_BYTES = 48KB`、
+  `writeThumb()`（等比缩放 + 质量 78→65→52→39→26 递减，极端图再砍半边长）、
+  `normalizeThumbFile()`（二次防线，读大图用 `inSampleSize` 防 OOM，非图片返回 null）；
+  `videoInfo()` 与异常兜底的占位封面都改走 `writeThumb()`。
+- 新增 `ImRepository.resolveThumb()`：封面先 normalize → 不合格 / 拿不到就自己
+  `ThumbnailUtils.createVideoThumbnail` 抽帧再压 → 仍失败返回 null，**绝不再塞视频文件**；
+  `sendVideo()` 去掉 `thumb ?: video`，日志补「封面字节 / 估算消息体」。
+- 新增 `describeSendError()`：`RC_MSG_SIZE_OUT_OF_LIMIT` → 「消息体超过 128KB（视频封面过大）」，
+  文本 / 媒体 / 语音三处回调统一走它。
+- **不压缩视频本体**：媒体文件走独立上传通道，压了既绕不开消息体限制又白掉画质；
+  1GB 极端兜底（`MAX_SEND_BYTES`）保留。
+
+### 90.5 验证与交付
+
+- `assembleRelease` **BUILD SUCCESSFUL**（1m40s）。中途一次编译失败是
+  `let(::java.io.File)` 构造函数引用写法不合法，改成 `let { java.io.File(it) }` 后通过。
+- 模拟器（`emulator-5554`，设备原装 84 用 `adb install -r -d` 降级装 83，登录态保留）
+  **实机发视频到王俊轩**：用刚才的课表截图生成 20s / 720×1568 / 176,084 B 的 mp4，
+  Photo Picker 选中后 logcat：
+  ```
+  封面压缩 720x1568 → 165x360 bytes=14491 base64≈19324
+  封面已合规 bytes=14491
+  准备发送视频 size=176084 封面字节=14491 估算消息体≈19324 文件存在=true
+  上传中 SightMessage 25% / 50% / 75% / 100%
+  发送成功 SightMessage
+  ```
+  聊天页出现正常的 20s 视频气泡（封面就是那张课表），**无「发送中 / 发送失败」字样**，
+  对照用户截图里同款课表封面那条正是「发送失败」。截图存 `scratch/s90_ok.png`。
+- APK `lanhang-miuix-release.apk` 8,839,356 B，SHA256 `d98da8da5c84d7463b264ac79cb99b88a5002b1819a4b04cf1680ba97b45fbb6`；
+  `aapt2 dump badging` 仍是 **83 / 1.1.31**、`apksigner verify` = Verifies (v2)；
+  dex 里能查到「消息体超过 128KB / 封面压缩 / 封面已合规 / thumb_small_ / thumb_fb_」等新字符串
+  （方法名被 R8 混淆属正常）。
+- 按用户规矩**不 push、不改版本号**。
+
+## 89. 第八十九轮（2026-11-15）：QQ 式截图重做（范围选择长图）+ 大小限制探测
+
+### 89.1 用户原话
+
+> 截图功能设计依然有问题，截图应该只截取选中的消息，而不是一整个消息页面，参考 qq 的设计方法，
+> 做一下截图功能。另外，在探测一下蓝航发送视频或文件的大小限制，如果有的话在发送视频时需要
+> 本地压缩视频，发送文件时则需要提醒用户文件太大无法发送
+
+### 89.2 大小限制探测（实测，登录态是用户帮忙登的）
+
+模拟器发真实消息到王俊轩会话，看 `ImSend` 日志：
+- 文件 **1MB / 8MB / 20MB / 60MB / 130MB / 300MB 全部发送成功**；
+- 视频（SightMessage）**15MB / 40 秒发送成功**。
+- 结论：学校 media 服务器（`nginx-1.app.nchu.edu.cn:1446`）**没有可感知的大小上限**（≥300MB）。
+  SDK 客户端也没有本地限制（FileTransferClient 只透传）。
+- 处理：**不做本地视频压缩、不做常规文件拦截**（用户说「如果有的话」——没有），只留 1GB 的极端兜底
+  （`ImRepository.MAX_SEND_BYTES`，超了取消发送并提示）。
+
+### 89.3 QQ 式截图重做
+
+旧的「截图」直接截当前聊天页整屏，不对。按 QQ 的交互重做：
+
+1. 多选栏点「截图」→ 进入**截图模式**（退出多选）：
+   - 顶栏：「取消 | 截图 + 副标题『点击起止消息可选择范围』 | 清空选择」；
+   - 消息列表：**范围外的消息整条灰化**（45% 黑遮罩），点消息 = 选起止（第一次起点、第二次终点，
+     已完整再点 = 重新开始）；
+   - 底栏：「预览 / 隐藏昵称 ◯ / 完成」（QQ 同款粗体文字按钮）；
+2. 「完成」→ 只把**范围内的消息**用 `ImShot.renderLongImage` 渲染成一张长图 →
+   QQ 式底部白色弹层：「发送给好友（系统分享）/ 保存到手机（MediaStore）/ 取消」；
+3. 「预览」→ 黑底全屏浮层显示长图，点击关闭；
+4. 「隐藏昵称」开关 → 渲染时关掉群聊名字行。
+
+**长图渲染是本栏最难的部分**（第八十八轮已经死过两次），`ImShot.renderLongImage` 最终方案：
+- 离屏 ComposeView 挂窗口（0×0 FrameLayout 裁得不可见）等组合完成（4 帧）；
+- `RenderNode.beginRecording` 拿**硬件画布**让 ComposeView 画进去
+  （Compose 的 GraphicsLayer 画不进软件画布，这是 88 轮两次 IAE 的根源）；
+- `HardwareRenderer` + `ImageReader(RGBA_8888)` 把节点渲到 Surface，
+  `setWaitForPresent(true).syncAndDraw()` 后读像素（注意 rowStride 可能带对齐填充要逐行拷）；
+- 高度上限 12000px（GPU 纹理限制），超了返回 null 提示少选；
+- API 29+（minSdk 26 的低版本设备由调用方降级）。
+- 分享走已有的 FileProvider（cache-path 覆盖 cacheDir），长图先落 `cacheDir/shot` 再 `ACTION_SEND`。
+
+### 89.4 验证
+
+- 多选 → 截图 → 点 copytest 与 lh_8m.bin 起止 → 完成 → 弹层出现 ✓
+- 保存到手机 → `Pictures/LanHang/lanhang_chat_*.png`（1220×900，113KB），图里正好是起止之间的
+  4 条消息（copytest + 对方的 APK/TXT + lh_8m.bin），头像/气泡/文件卡全部渲染正常 ✓
+- 预览 → 黑底浮层显示长图 + 「点击任意位置关闭」，范围外消息灰化 ✓
+- `clean assembleDebug assembleRelease` 通过。
+
+### 89.5 版本号
+
+按用户规矩不改版本号，仍 **83 / 1.1.31**。
+
+## 88. 第八十八轮（2026-11-15）：长按消息菜单（复制 / 多选 / 删除）+ 多选批量删除 / 截图
+
+### 88.1 用户原话
+
+> 继续执行指令，增加删除聊天记录功能，长按后仿照 qq 的弹窗功能，设计复制、多选、删除功能，
+> 多选功能设计成类似 qq 的样式，可以多选选中删除、或单独截图出来
+
+### 88.2 实现
+
+1. **长按菜单**（`BubbleActionMenu`）：QQ 风格深色圆角卡片（0xF03A3A3A、18dp 圆角），
+   「图标在上文字在下」三项：复制（仅文本消息显示）/ 多选 / 删除。位置贴着气泡（上方放不下就挪下方），
+   锚点用每个列表项 `onGloballyPositioned` 记下的 `boundsInRoot` 换算。
+2. **多选模式**：顶栏「取消 + 已选择 N 条消息」（QQ 同款布局）、左侧 22dp 勾选圆圈、
+   底部操作栏换成「截图 / 删除」（未选中时置灰）。返回键先退多选不退会话（`BackHandler`）。
+3. **删除**：QQ 的「删除」语义 = 只删本机（IMLib `deleteMessages(int[])` + 我们的线程与缓存），不是撤回。
+   `ImMessage` 补了 `messageId`（SDK 删除认的是它不是 uId），落盘字段 `mid`；批量/单条共用一个确认弹窗。
+   删不掉 SDK 里的（onError）时心跳同步会把它拉回来，不会静默丢记录。
+4. **截图**：QQ 多选栏的「截图」= 对当前聊天区截一张图存进相册（`Pictures/LanHang`，MediaStore 免权限）。
+
+### 88.3 踩的坑（都在模拟器实测出来，别走回头路）
+
+- **Compose 手势父子抢占**：媒体气泡自己的 `clickable` 会把手势吃掉。
+  - 多选态点气泡要勾选 → 不能写 `clickable(enabled=false)`（disabled 的 clickable **仍然装手势节点并吞点按**），
+    必须干脆不加修饰符：`Modifier.tapWhen(interactive) { ... }`。
+  - 长按媒体气泡要弹菜单 → 子层 `clickable` 只认 tap（按住 900ms 松手照样算点击、直接开了预览），
+    所以媒体分支换成 `combinedClickable` 自己带 `onLongClick`（`Modifier.longPressable`）。
+  - 文本气泡没有子手势节点，靠外层列表项的 `combinedClickable` 就够。
+- **离屏渲染截长图死了两次**：① 新挂 ComposeView 组合没完成就 `drawToBitmap` → `LayoutNode.draw` 抛 IAE；
+  ② 对正在显示的 ComposeView `drawToBitmap` → Compose 的 GraphicsLayer（硬件 RenderNode）画不进软件画布，
+  `drawContainedDrawModifiers` 一样抛 IAE。**正确姿势是 `PixelCopy`**（从窗口硬件表面拷像素，
+  Rect 用 decor 坐标系换算），退出多选 + `withFrameNanos` 等两帧再截，勾选圆圈才不会入镜。
+- **浮层必须放外层 Box**：菜单浮层 `fillMaxSize`，放进 Column 会把带 `weight(1f)` 的消息列表挤成 0 高
+  （消息全消失、输入条顶到上面），要和 Column 平级。
+
+### 88.4 验证
+
+模拟器实测（截图 `scratch/ui-audit/lp*.png / lr*.png / del*.png / cp*.png / shot-export.png`）：
+- 长按文本 → 复制/多选/删除；长按视频 → 多选/删除（无复制）✓
+- 多选 2 条（含点视频气泡勾选）→「已选择 2 条消息」✓
+- 删除 2 条：确认弹窗 → toast → 缓存 26→25，SDK 心跳同步不再拉回 ✓
+- 单条删除：确认弹窗 → 缓存 25→24、视频 3→2 ✓
+- 截图：退出多选后 PixelCopy → `Pictures/LanHang/lanhang_chat_*.png`（1220×2163，361KB）✓
+- 复制：菜单点击后菜单关闭（剪贴板内容模拟器 shell 读不了，代码是标准 ClipboardManager，真机可验）
+
+### 88.5 版本号
+
+按用户规矩（不 push 不改版本号），仍是 **83 / 1.1.31**；装机验证时临时提到 84，测完已改回。
+
+## 86. 第八十六轮（2026-11-15）：私信输入条右侧按钮改成纯图标
+
+### 86.1 用户原话
+
+> 私信页面语音按钮不要加阴影，与左侧的按钮设计不统一，只保留右侧的图标就好，不需要加入「语音」的文字。
+> 同理，不要加「键盘」这样的文字，只保留 icon 图标。另外，键盘的图标与主流图标相差甚远，
+> 连接网络图标矢量库获得键盘的图标
+
+### 86.2 根因：同一行里两套按钮语言
+
+输入条左侧「+ / 表情」是 38dp 透明圆形图标（`onSurfaceVariantSummary` 着色），
+右侧却是第七十三轮自绘的 `IconPill`：38dp 胶囊 + `surfaceContainerHigh` 容器底色 + 文字。
+容器底色在浅色主题下是比背景亮一档的灰（看起来像浮起一块阴影），于是左右两边**根本不是一套东西**。
+另外「键盘」那一格借的是 `LanhangIcons.Backspace`——退格键（左边一个尖角 + 一个叉），
+不是键盘该有的样子。
+
+### 86.3 改法
+
+1. `IconPill(text, icon, primary, onClick)` → `IconCircle(icon, description, primary, onClick)`：
+   38dp 圆形、无常驻底色、图标 22dp。普通态透明底 + `onSurfaceVariantSummary`（与 `+`、表情逐像素一致），
+   发送态主色实心 + 白色图标（全条唯一强调色）。文字彻底去掉，`contentDescription` 仍然保留
+   「语音 / 键盘 / 发送」给无障碍用，所以 `im_voice / im_keyboard / im_send` 三条字符串没变成死资源。
+2. 新增 `LanhangIcons.Keyboard`：按 **Lucide `keyboard`**（ISC，24×24 / stroke 2 / 圆头圆角）的几何重画 ——
+   外框 `rect(2,4,20,16,r2)`、第一排 4 个键点、第二排 3 个键点、空格条 `7→17`，
+   再整体收进本项目「四周留 3dp 安全边」的口径（2.9~21.1 / 5.4~18.6）。
+   **键点用实心小圆（r≈0.98）而不是 Lucide 的 `h.01` 零长度线段**：零长度子路径能不能出点取决于
+   Skia 的 cap 处理，而 `path(fill = ...)` 是确定能画出来的（Emoji 那只眼睛的教训）。
+3. `LanhangIcons.Backspace` 保留不动（表情面板右下角仍在用），只是不再兼职「键盘」。
+
+### 86.4 验证
+
+模拟器（1220×2656 / 468dpi）实测，截图 `scratch/ui-audit/kb1..kb4.png`、放大图 `kb-icon-zoom.png`：
+- 语音态：输入条右侧只剩一个麦克风图标，没有胶囊、没有底色、没有「语音」二字；
+- 键盘态：「按住 说话」右侧是圆角外框 + 4/3 两排键点 + 空格条的键盘图标（放大图确认三段都在，
+  没有多余连线），与 `+`、表情同尺寸同色；
+- 输入态：右侧变成主色实心圆 + 白色纸飞机，仍是纯图标；
+- `:app:assembleDebug` 通过；`clean assembleDebug assembleRelease` 通过。
+
+### 86.5 版本号
+
+按用户 2026-11-15 的规矩（不 push 不改版本号），仍是 **83 / 1.1.31**，本轮只重出 APK。
+模拟器上装着 versionCode 84 的旧测试包，装机验证时临时把 versionCode 提到 84 编译，测完已改回 83。
+
+## 85. 第八十五轮（2026-11-15）：私信发不出语音 / 视频 / 文件
+
+### 85.1 用户原话
+
+> 探测一下私信无法发送视频、语音、文件的根本原因
+>
+> 全部修改，可以发给私信中的王俊轩同学，这个同学可以用于测试
+
+### 85.2 三条独立根因（都是代码级，不是网络）
+
+**① 语音：`VoiceMessage` 不属于 `MediaMessageContent`，不能走 `sendMediaMessage`。**
+SDK 里 `public class io.rong.message.VoiceMessage extends io.rong.imlib.model.MessageContent`，
+而 `RongIMClient.sendMediaMessage()` 的第一句就是 `checkcast MediaMessageContent`（字节码 offset 58），
+传进去必抛 `ClassCastException`，被 `sendRich` 的 `runCatching` 兜住 → 气泡标红「发送失败」。
+官方 IMKit 发普通语音走的是 `RongIM.getInstance().sendMessage(...)`（`AudioRecordManager.sendAudioFile`），
+只有高清语音 `HQVoiceMessage`（它才是 MediaMessageContent）用 sendMediaMessage。
+**修法**：`sendRich` 里按类型分流，`is VoiceMessage -> sendMessage(message, push, null, voiceCallback)`
+（给语音单独一份 `ISendMessageCallback`）。
+
+**② 视频：SDK 默认注册的消息类型里没有 `SightMessage`。**
+`RongIMClient.init()` 内部只 `registerMessageType` 了 Text / Voice / HQVoice / Image / Location / File…
+**没有 Sight**；而 `NativeClient.sendMediaMessage` 第一步是 `getMessageHandler(objectName)`，
+拿不到就 `onError(PARAMETER_ERROR)`。所以视频永远失败，且报的是「参数错误」，非常误导。
+**修法**：init 之后补 `RongIMClient.registerMessageType(SightMessage::class.java)`（幂等）。
+顺带把构造方式改成官方写法：`SightMessage.obtain(video, duration)`（两参，内部走 File 版构造，
+会把 name/size 填好）再 `thumbUri = cover`；三参 `obtain(thumb, local, duration)` 只设
+`mThumbUri` 和 localPath，不设 name/size。
+
+**③ 文件：`size` 被 `OpenableColumns.SIZE` 覆盖成 0。**
+`FileMessage.obtain(file://…)` 内部已经填好 `name = File.getName()`、`size = File.length()`；
+我们原来又用 picker 的 name/size 覆盖一遍，而 SAF / 微信 QQ 的 provider 经常查不到 SIZE（返回 0），
+消息就成了「0 字节文件」。官方 `FilePlugin` 只 `setType(后缀)`，其余交给 SDK。
+**修法**：不再覆盖 size（用 `content.size`，0 才回退参数），只补 `name` 与 `type`（后缀）。
+
+### 85.3 验证（模拟器 → 王俊轩，用户授权）
+
+- 语音：长按录音 2s → `ImSend` 无错误，聊天页出现 `▶ 1″` 气泡、**没有**「发送失败」✅
+- 文件：`+ → 文件 → 下载 → lh_test_file.txt` → `ImSend: 上传中 FileMessage 100%` → `发送成功`，
+  气泡显示 `TXT lh_test_file.txt 483 B`（大小正确，不是 0）✅
+- 视频：`+ → 视频 → 选中 3s 测试片` → `ImSend: 上传中 SightMessage 100%` → `发送成功 SightMessage`，
+  会话列表预览变成 `[视频]`（07:28）✅
+- 未动版本号（用户规则）：仍是 83 / 1.1.31，`VERSION.md` 这轮并进 1.1.31 那条。
+
+### 85.4 遗留（下一轮接着查）
+
+成功发出的**视频气泡在聊天列表里不显示**：`mark` 日志证明本地 echo 已被标成 SENT，
+但重新进会话后只剩修复前那几条失败视频（带缩略图），成功的两三条看不见；
+会话预览却是 `[视频]`，说明消息本身在 SDK 里。怀疑点：
+`loadMessages` 的 `mapped + pending` 合并（SENT 的本地 echo 不在 pending 里，
+如果 `mapped` 里没有对应的服务端副本就会被丢掉）、以及 `ImMessage.of(SightMessage)`
+取 `mediaUrl/localPath` 与 `thumbUri` 时对「自己发的、服务端回读」的字段是否有值。
+下一轮先打点 `mapped.size` 与每条 sight 的 `mediaUrl/localPath/thumbUri`。
+
+### 85.5 教训
+
+1. **「参数错误」不等于参数传错。** 这次的 PARAMETER_ERROR 是「找不到消息处理器」，
+   来自 SDK 默认注册表缺少 Sight，靠读 `NativeClient.sendMediaMessage` 才看到。
+2. 用第三方 SDK 的自定义消息类型，**先确认它是否在默认注册表里**；不在就自己 register。
+3. 官方 App 是最好的参考实现：`AudioRecordManager`（语音走 sendMessage）、`SightPlugin`（两参 obtain）、
+   `FilePlugin`（不覆盖 size）三处一对，三个 bug 全暴露。
+4. 用户授权测试对象后，发消息这条验证链才算真正闭环 —— 只读代码永远看不到
+   「handler 为 null」这种运行时事实。
+
+
+
+## 84. 第八十四轮（2026-11-15）：弹窗标题离顶部太近
+
+### 84.1 用户原话
+
+> 顶栏标题与弹窗的顶部的距离太小 很不美观 将距离改大一些
+
+### 84.2 根因：自定义 content 没有内边距
+
+第八十三轮的充值二维码弹窗是唯一一个用 `MiuixDialogSpec.content` 自己排版的弹窗。
+`MiuixDialogCard` 只负责圆角/底色/宽度，**Card 本身没有 insideMargin**，
+而标准弹窗的标题是靠 `DialogCardBody` 里的 `padding(top = 22.dp)` 撑开的 ——
+content 路径完全绕过了这段，所以标题直接贴在卡片顶边上（截图里约 10px）。
+
+### 84.3 改法
+
+`ui/miuix/RechargeQrDialog.kt` 的 content 根 Column 加
+`padding(start = 22.dp, end = 22.dp, top = 26.dp)`（顶部比标准弹窗的 22dp 再松一点，
+因为标题下面是二维码，视觉重心更低）；说明文字原来那句 `padding(horizontal = 6.dp)` 删掉，
+避免和 22dp 叠加。同时在 `MiuixDialog.kt` 的 `spec.content` 调用处写了警示注释：
+**content 自己负责留白，标题也要在 content 里自己画（spec.title 排在 content 之后）**。
+
+### 84.4 验证到哪一步（诚实记录）
+
+- 改前截图：`scratch/ui-audit/qr7.png`（标题贴边）。
+- 改后**没能截到**：这一轮反复触发「确认充值」时，学校的下单接口
+  `/wechat/basicTransaction/wechatRechargeCard.html` 不再返回（前几轮已经建了 5~6 笔未支付订单，
+  疑似触发限流）。表现是：点按钮既不弹「金额不能为空」（说明按钮与 `qrcz()` 正常），
+  也拿不到 `LhWx invoke` 日志 —— 卡在 ajax，压根没走到 `WeixinBridge`。
+  只有 8px→26dp 这一处纯内边距改动，几何上不会出问题，但**真机观感仍需用户确认**。
+- **版本号没动**（用户 2026-11-15 规则：「如果不让你 push 的话，不要更改版本号」）：本轮一度升成
+  84/1.1.32，随即回退到 83/1.1.31 —— 本地修 bug、不发版就保持原版本，`VERSION.md` 里把这一轮并进
+  1.1.31 那条说明。临时升过的 APK 已被同版本号的新包覆盖。
+
+### 84.5 教训
+
+1. 自定义 `content` 的弹窗是「自带布局」的，别指望外壳给留白 —— 以后新增这类弹窗先照抄
+   `RechargeQrDialog` 的 padding 写法。
+2. 同一账号在同一站点反复下单会被限流；**验 UI 不要依赖必须下单才出现的分支**，
+   否则一旦接口不配合，界面改动就变成「只能用代码保证」。
+
+## 83. 第八十三轮（2026-11-15）：充值扫码、启动查更新、课表自动刷新、私信自愈
+
+### 83.1 用户原话
+
+> 采用生成充值页二维码方案，方便我在微信中扫码。另外，做一个打开app自动检查更新的功能，与关于页中的检查更新走一个渠道，每次打开课表页都刷新一次课表，不要等我手动刷新。第三，做一个自动刷新私信消息的功能，参考主流聊天软件的解决方案，防止一次私信接受失败后无法再次刷新新的私信内容
+
+### 83.2 一卡通充值：复制链接 → 扫码
+
+第八十二轮的兜底是「复制链接」，用户要扫码。新增 `ui/miuix/RechargeQrDialog.kt`：
+`showRechargeQr(context, url)` 用 zxing（`QRCodeWriter`，640px、纠错 M、MARGIN 1）把**当前充值页地址**
+画成二维码，标题/说明/提示 + 底部「知道了 / 复制链接」；`MiuixDialogSpec.content` 排在标题之前，
+所以标题也在 content 里自己画，别用 `spec.title`（会跑到二维码下面去）。
+二维码内容取 `location.href`，里面带学校网关下发的 `token`，微信扫码打开不用重新登录。
+
+验证方式（可复用）：`scratch/qrdec/DecodeQr.java` —— 用 gradle 缓存里的 zxing-core，
+把截图整图解码（`MultiFormatReader` + `TRY_HARDER`），实测解出
+`http://ykt-wechat.ykt.nchu.edu.cn/wechat/ChZhController/ChongZhiurl.html?json=…&token=…`。
+
+### 83.3 打开 App 自动检查更新
+
+新增 `settings/UpdatePrompt.kt`，把「取版本号 → 查 GitHub releases → 三种结果弹窗」收成一份实现：
+- 关于页：`silent = false`，三种结果都给反馈（行尾 hint 照旧）；
+- 启动：`MainActivity.onCreate` 里 `checkOnStartup()`，延后 1.2s、**同一进程只查一次**
+  （`startupChecked`，主题 recreate 不会重复弹）、`silent = true`（只有真出新版才弹窗，
+  GitHub 连不上时绝不打扰）。
+版本号走 `packageManager`，比大小仍用 `UpdateChecker.isNewer`，**没有新增任何依赖**。
+
+### 83.4 每次进课表页自动刷新
+
+`ScheduleFragment`：`onResume` 与 `onTabSelected` 都调 `autoRefresh()`，内部 8s 节流
+（这两个回调常常几百毫秒内先后到，不节流就是一次进入两个请求）；`refresh(quiet = true)`
+不弹失败 Toast；无缓存时才走的 `loadCacheOrRefresh` 那条 refresh 会占用节流窗口，避免冷启动连发两次。
+浏览周保持逻辑不变（`keepBrowseWeek`），刷新不会把周次栏打回本周。
+
+### 83.5 私信自动刷新与自愈（重点）
+
+用户的原话点出了真问题：**一次接收失败之后就再也刷不出新消息**。三个根因：
+
+1. 会话列表轮询写在 Compose 的 `LaunchedEffect` 里（20s），页面不在就没了，而且没有失败恢复；
+2. `refreshConversations()` 的 SDK 回调一旦不回来，`loadingConversations` 永远是 `true`，
+   之后每次刷新都被自己挡住；
+3. `setConnectionStatusListener` 只认 CONNECTED / CONNECTING，其余一律「保持原状」——
+   断网/被踢之后 `status` 还写着 CONNECTED，**所有刷新都会失败却没有人去重连**。
+
+改成一份心跳（`ImRepository`）：
+- `setForeground()` 由 MainActivity 的 onResume/onPause 驱动：前台每 12s 一次
+  `refreshNow()`（会话列表 + 当前打开的会话 `syncThread`），后台停掉（靠融云长连接与推送）；
+- **卡死解锁**：`loadingConversations` 超过 12s 没回调就当它丢了，解锁并计一次失败；
+- **假死判定**：连着却 45s 没有一次成功同步 → `forceReconnect()`（先 `RongIMClient.reconnect`，
+  失败回落到完整 `doConnect`，必要时刷 token）；
+- **连续失败重连**：会话列表连错 2 次直接重建连接；
+- **退避重试**：FAILED 状态按 12s → 24s → 48s → 60s（封顶）**一直**重试，不再「试 3 次就躺平」；
+- 聊天页 `DisposableEffect` 里 `setActiveChat(peerId, isGroup)`，心跳顺带补拉最近 30 条
+  （`syncThread` 不清未读、内容没变就不写，避免 12s 一次无意义重组）；
+- `release()` 停心跳、清计时器，换账号不会带病运行。
+
+### 83.6 验证（模拟器 1220×2656）
+
+- 二维码：点「确认充值」→ 弹窗带二维码；`DecodeQr` 解码得到带 token 的充值页地址 ✅
+- 启动查更新：`UpdatePrompt: 启动检查更新 version=1.1.30` → `检查结果 Failed`（GitHub 403 限流）
+  且**没有弹窗**（silent 生效）；关于页手动点「检查更新」→ 行尾「检查失败」+ 弹窗
+  「检查失败：请求太频繁，稍后再试」✅
+- 课表：冷启动 `Schedule: 进入课表页，自动刷新一次`；切到工作再切回，又一条 ✅
+- 私信自愈（断网实验）：`svc wifi disable` → `forceReconnect: 连接状态 NETWORK_UNAVAILABLE`
+  → `reconnect 失败：RC_SOCKET_NOT_CREATED，改走完整连接` → `失败后自动重试 #1(12s) #2(24s) #3(48s)`
+  → 恢复网络后第 #4 次（60s 档）`connect ok`，**全程未点任何按钮** ✅
+- release 包（R8）同样验证过：`LhPay 已注册 host=ottapp.api.nchu.edu.cn`、
+  页面 `LhWx bridge=undefined pay=object`（注入生效、桥已挂）、点确认充值打出
+  `LhWx invoke getBrandWCPayRequest` + `PayBridge.needWeixin`，弹窗二维码解码仍是同一条充值页地址 ✅
+  启动检查：`检查结果 Latest current=1.1.31`，无弹窗（远端最新 v1.1.29 < 本机）✅
+- 踩坑记录：在充值页上「确认充值」按钮的真实 y 比目测低一点，`input tap` 点空会表现为
+  「点了没反应」，一开始误判成 release 里的桥失效 —— 多点几个 y 才验证出来。**别急着改代码，先确认点击落点。**
+
+### 83.7 教训
+
+1. 「轮询不生效」先看它挂在谁的生命周期上：Compose 的 `LaunchedEffect` 只代表「页面在」，
+   收消息/重连这种要在仓库里做，页面进出只是开关。
+2. 状态机里 `else -> status`（保持原状）最容易埋雷：断线了还自称 CONNECTED，比报错更糟。
+3. 自动重试必须有上限之外的**节奏**：3 次就放弃 = 用户断网 40 秒回来就永久失效。
+4. 手写二维码不用引库：zxing-core 项目里早就有（身份码页在用），`QRCodeWriter` 十行搞定。
+
+## 82. 第八十二轮（2026-11-15）：校园一卡通充值拉不起微信
+
+### 82.1 用户原话
+
+> 校园一卡通点击充值时无法拉起微信app，修复问题
+
+### 82.2 先查证据：把页面脚本抓回 logcat
+
+这一条不能靠猜。做法：在 `onPageFinished` 里对一卡通站点（`ykt-wechat.ykt.nchu.edu.cn`）
+注入一小段诊断脚本，用 `XMLHttpRequest` 把页面自己的 js 读回来打 `console.log`
+（WebChromeClient 的 `onConsoleMessage` 会把它写进 logcat，tag `OaWebView`）。
+
+读到的关键代码（`/wechat/resource/project/Chongzhi.js`，全文 4731 字节）：
+
+```js
+function weixinpay(){ wechatRecharge(yuanToFen(order_amount), acctype, wechatOrder) }
+function wechatOrder(retMap){
+  var post_data = retMap.post_data;
+  ajax(ctxpath + "/ChZhController/parseweixinjson" + ctrlSuffix,
+       post_data.replace(/package/,'packageValue'), parseJson, true);
+}
+function onBridgeReady(wechatJson){
+  WeixinJSBridge.invoke('getBrandWCPayRequest', {appId, timeStamp, nonceStr,
+      package: bridgejson.packageValue, signType, paySign}, function(res){
+      if (res.err_msg == "get_brand_wcpay_request:ok") { location.href = ... }
+  })
+}
+```
+
+### 82.3 根因：这条路只存在于微信里
+
+- 这是**微信内 JSAPI 支付**：`package` 是学校公众号下单拿到的 JSAPI `prepay_id`，
+  只有微信内置浏览器里的 `WeixinJSBridge` 能拿它发起付款。
+- 全文件检索确认：`Chongzhi.js` 里**没有** `weixin://`、没有 mweb 兜底、没有
+  `isNchuApp()` 分支（只有页面内联那段用它隐藏 `#weixin`）。也就是说浏览器里根本没有第二条路。
+- 我们的 WebView 里 `WeixinJSBridge` 是 `undefined`（诊断脚本实测 `bridge=undefined`），
+  于是 `WeixinJSBridge.invoke(...)` 直接抛 `ReferenceError`，异常没人接 ——
+  用户看到的就是**点「确认充值」毫无反应**，连报错都没有。
+- 第三方 App 无法伪造这个桥（伪造 = 假支付回执，绝对不能做），也不能把 JSAPI 的
+  prepay_id 塞进 `weixin://wap/pay`（那只认 MWEB 单）。**"直接拉起微信付款"在技术上做不到。**
+
+### 82.4 修法：不再静默失败 + 给一条真能走通的路
+
+1. `OaWebViewActivity.WX_BRIDGE_FALLBACK_JS`：一卡通页面加载完成后注入一个
+   **只拦 `getBrandWCPayRequest`** 的 `WeixinJSBridge` 假桥（其它 `invoke` 一律忽略，
+   绝不回假回执），拦到就调原生 `window.LhPay.needWeixin(location.href)`。
+2. `ui/PayBridge.kt` + `OaWebViewActivity.showWeixinPayHint()`：弹 Miuix 对话框说明原因，
+   「复制链接」把当前充值页地址写进剪贴板，用户粘到微信里打开即可正常付款。
+3. **桥要全局注册，不能按入口域名判断**。踩到的坑：工作模块预检出来的落地地址是网关
+   `ottapp.api.nchu.edu.cn`，真正的充值页是网关 302 过去的 `ykt-wechat...`；
+   按 `host.contains("ykt")` 判断 → 桥永远注册不上（实测 `window.LhPay` 是 `undefined`，
+   页面调 `needWeixin` 被 `if (window.LhPay)` 静默吞掉）。所以统一挂桥，
+   域名校验改在 `showWeixinPayHint` 里按**当前页面地址**做（只认 `ykt` 域）。
+4. 顺带把 `openExternal` 补强：`ACTION_VIEW` 加 `CATEGORY_BROWSABLE`（浏览器都这么发，
+   微信/支付宝的支付页认这个 category）、每次跳转与失败都写一行日志；
+   `onReceivedError` 里主框架 `ERROR_UNSUPPORTED_SCHEME` 也会把失败的地址交给系统 ——
+   3xx 重定向到 `weixin://` 时 `shouldOverrideUrlLoading` 是不回调的（见 1113 行老注释），
+   以前这种链接就此丢掉。
+
+### 82.5 验证（模拟器 1220×2656，debug 包，实测）
+
+- 进入「工作 → 校园服务 → 校园一卡通 → 卡片充值」，选 30 元点「确认充值」：
+  logcat 依次出现
+  `xhr /wechat/basicTransaction/wechatRechargeCard.html st=200 resp={...post_data...}` →
+  `invoke getBrandWCPayRequest` →
+  `PayBridge.needWeixin http://ykt-wechat.../ChZhController/ChongZhiurl.html?json=...`，
+  随后弹出「充值需要在微信里完成」弹窗；点「复制链接」出现
+  「链接已复制，粘贴到微信里打开即可充值」。
+- 模拟器没装微信（`pm list packages` 无 `com.tencent.mm`），所以**真机拉起微信这一步
+  在这里无法验证** —— 而按 82.3 的结论，这一步本来就不该发生（微信的 JSAPI 不允许）。
+- 注意：点确认充值时服务端确实会生成一笔未支付订单（`out_id` 可见），不会扣钱。
+
+### 82.6 教训
+
+1. **"点了没反应"先抓页面脚本，别先怀疑 Intent。** 这一轮 `<queries>`、`openExternal` 都是好的，
+   页面压根没发出任何 scheme —— 全是 JSAPI 桥缺失。
+2. **JS 桥不要按入口 host 注册。** 校内的入口基本都是网关，真正的业务站在 302 之后。
+3. 能证明"做不到"比"猜着修"更有价值：把 JSAPI 的限制写清楚，用户才知道为什么改成引导。
+
+
 ## 79. 第七十九轮（2026-11-15）：账号鉴权修复 + 手电筒图标化
 
 ### 79.1 用户原话

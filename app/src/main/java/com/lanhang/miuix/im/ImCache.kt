@@ -102,6 +102,7 @@ object ImCache {
             o.addProperty("mine", m.mine)
             o.addProperty("time", m.time)
             o.addProperty("state", m.state)
+            o.addProperty("mid", m.messageId)
             o.addProperty("senderId", m.senderId)
             o.addProperty("kind", m.kind)
             o.addProperty("uri", m.uri)
@@ -136,6 +137,7 @@ object ImCache {
                     mine = o.bool("mine"),
                     time = o.long("time"),
                     state = o.num("state"),
+                    messageId = o.num("mid"),
                     senderId = o.str("senderId"),
                     kind = o.num("kind"),
                     uri = o.str("uri"),
@@ -149,12 +151,23 @@ object ImCache {
                 )
             }.getOrNull()
         }.orEmpty()
-        peerId to list
+        // 老版本把「发送中 / 发送失败」的回声也写进了磁盘（第八十七轮之前），
+        // 读的时候一并丢掉，避免升级后旧幽灵继续在会话底部排队。
+        peerId to list.filter {
+            it.state != ImMessage.STATE_SENDING && it.state != ImMessage.STATE_FAILED
+        }
     }.getOrDefault("" to emptyList())
 
     fun saveMessages(peerId: String, list: List<ImMessage>) {
         if (peerId.isBlank()) return
-        write("msg_" + safeName(peerId) + ".json", encodeMessages(peerId, list.takeLast(MAX_MESSAGES)))
+        // 2026-11-15 第八十七轮：**「发送中 / 发送失败」的本地回声不落盘**。
+        // 它们不是会话的真实内容（真实失败的那条由 IMLib 自己的本地库保存），落盘以后
+        // 每次进会话都会被 mergeThread 当成「待合并」重新塞回列表，越堆越多，
+        // 一屏「发送失败」把真正发出去的内容顶到上面去（用户反馈的「发出去的视频不显示」）。
+        val stable = list.filter {
+            it.state != ImMessage.STATE_SENDING && it.state != ImMessage.STATE_FAILED
+        }
+        write("msg_" + safeName(peerId) + ".json", encodeMessages(peerId, stable.takeLast(MAX_MESSAGES)))
     }
 
     fun loadMessages(peerId: String): List<ImMessage> = runCatching {

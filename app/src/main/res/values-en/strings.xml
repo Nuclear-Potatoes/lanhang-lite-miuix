@@ -432,6 +432,29 @@
     <string name="im_attach_file">File</string>
     <string name="im_attach_location">Location</string>
     <string name="im_attach_failed">This file can’t be read, try another one</string>
+    <string name="im_send_offline">Not connected to the chat service. Message was not sent.</string>
+    <string name="im_copied">Copied</string>
+    <string name="im_shot_title">Screenshot</string>
+    <string name="im_shot_hint">Tap start &amp; end messages to pick a range</string>
+    <string name="im_shot_clear">Clear</string>
+    <string name="im_shot_preview">Preview</string>
+    <string name="im_shot_hide_names">Hide names</string>
+    <string name="im_shot_done">Done</string>
+    <string name="im_shot_generating">Generating image…</string>
+    <string name="im_shot_send">Send to friend</string>
+    <string name="im_shot_save">Save to phone</string>
+    <string name="im_shot_tap_close">Tap anywhere to close</string>
+    <string name="im_shot_too_tall">Too many messages, pick fewer</string>
+    <string name="im_too_large">File too large, it may fail to send</string>
+    <string name="im_menu_copy">Copy</string>
+    <string name="im_menu_multi">Multi-select</string>
+    <string name="im_action_capture">Screenshot</string>
+    <string name="im_selected_count">%1$d selected</string>
+    <string name="im_delete_title">Delete messages</string>
+    <string name="im_delete_message">Delete %1$d message(s) on this device only. The other side keeps their copy.</string>
+    <string name="im_deleted">Deleted %1$d message(s)</string>
+    <string name="im_shot_saved">Saved to gallery (Pictures/LanHang)</string>
+    <string name="im_shot_failed">Export failed</string>
     <string name="im_voice">Voice</string>
     <string name="im_voice_hold">Hold to talk</string>
     <string name="im_voice_release">Release to send</string>
@@ -696,4 +719,11 @@
     <string name="class_reminder_perm_missing">Not granted</string>
     <string name="class_reminder_advance_title">Advance notice</string>
     <string name="class_reminder_back">Back</string>
+    <!-- Round 91: add friend on other people's profile -->
+    <string name="profile_message">Message</string>
+    <string name="profile_add_friend">Add friend</string>
+    <string name="profile_friend_added">Added</string>
+    <string name="friend_invite_greeting">Hi, I am %1$s. Would you like to be friends?</string>
+    <string name="friend_invite_sent">Friend request sent</string>
+    <string name="friend_invite_failed">Failed: %1$s</string>
 </resources>

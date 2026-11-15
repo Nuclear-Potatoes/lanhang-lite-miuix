@@ -219,9 +219,9 @@ class MineFragment : Fragment() {
                     onPostComment = { item, replyTo, text -> selfComment(item, replyTo, text) },
                     onDeleteComment = { item, comment -> selfDeleteComment(item, comment) },
                     onDeletePost = { item -> selfDeletePost(item) },
-                    onImage = { urls, index, rect ->
+                    onImage = { urls, thumbs, index, rect ->
                         // rect = 缩略图在窗口里的位置，预览页据此做「从缩略图放大 / 缩回原位」
-                        ImagePreviewActivity.start(requireContext(), urls, index, rect)
+                        ImagePreviewActivity.start(requireContext(), urls, index, rect, thumbs)
                     },
                     profileStack = profileStack,
                     profileStore = profileStore,

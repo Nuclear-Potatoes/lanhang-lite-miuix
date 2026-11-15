@@ -124,6 +124,8 @@ private fun DialogCardBody(spec: MiuixDialogSpec, dismiss: () -> Unit) {
     val screenHeightDp = androidx.compose.ui.platform.LocalConfiguration.current.screenHeightDp.dp
     MiuixDialogCard {
         // 自定义内容优先（其余字段留空时不占任何高度）
+        // ⚠️ 卡片外壳没有 padding：content 必须自己给上下左右留白，标题也要在 content 里自己画
+        //    （spec.title 排在 content **之后**，见下方 Column）。参见 RechargeQrDialog 的写法。
         spec.content?.invoke(dismiss)
         Column(Modifier.fillMaxWidth()) {
             if (spec.title != null || spec.summary != null) {

@@ -283,8 +283,8 @@ class MomentsFragment : Fragment() {
                                 (activity as? com.lanhang.miuix.ui.MainActivity)
                                     ?.openDirectChat(uid)
                             },
-                            onImage = { urls, index, rect ->
-                                ImagePreviewActivity.start(requireContext(), urls, index, rect)
+                            onImage = { urls, thumbs, index, rect ->
+                                ImagePreviewActivity.start(requireContext(), urls, index, rect, thumbs)
                             },
                             emptyText = getString(R.string.profile_empty_other),
                         )
@@ -303,8 +303,8 @@ class MomentsFragment : Fragment() {
                                 closeSearch()
                             },
                             // 搜索结果里的图片照样能点开全屏预览
-                            onImage = { urls, index, rect ->
-                                ImagePreviewActivity.start(requireContext(), urls, index, rect)
+                            onImage = { urls, thumbs, index, rect ->
+                                ImagePreviewActivity.start(requireContext(), urls, index, rect, thumbs)
                             },
                         )
 
@@ -327,9 +327,9 @@ class MomentsFragment : Fragment() {
                             onPostComment = { item, replyTo, text -> postComment(item, replyTo, text) },
                             onDeleteComment = { item, comment -> deleteComment(item, comment) },
                             onDeletePost = { item -> deletePost(item) },
-                            onImage = { urls, index, rect ->
+                            onImage = { urls, thumbs, index, rect ->
                                 // rect = 缩略图在窗口里的位置，预览页据此做「从缩略图放大 / 缩回原位」
-                                ImagePreviewActivity.start(requireContext(), urls, index, rect)
+                                ImagePreviewActivity.start(requireContext(), urls, index, rect, thumbs)
                             },
                             onOpenPublish = { openPublish() },
                             onOpenProfile = { openProfile(it) },

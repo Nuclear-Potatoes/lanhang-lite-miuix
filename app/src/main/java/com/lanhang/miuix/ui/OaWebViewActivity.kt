@@ -432,8 +432,52 @@ IconButton(onClick = { finishNow() }) {
      *    异常把页面直接打死。Vue 构造器不从 window 暴露（打包内联），只能从
      *    getApp() 拿到的根实例往上取 constructor。
      */
-    private val GQHW_COMPAT_JS = """
+    /**
+     * 一卡通「充值」的微信支付兜底（2026-11-15 第八十二轮）。
+     *
+     * 用户反馈：「校园一卡通点击充值时无法拉起微信 app」。抓页面脚本确认了根因，不是我们的
+     * Intent 有问题，而是这条路**根本不在浏览器里走**：
+     *
+     * `Chongzhi.js` 里确认充值只有一条微信分支 ——
+     * ```
+     * weixinpay() → wechatRecharge() → wechatOrder() → onBridgeReady()
+     *            → WeixinJSBridge.invoke('getBrandWCPayRequest', {appId,timeStamp,nonceStr,package,signType,paySign})
+     * ```
+     * 这是**微信内 JSAPI 支付**：appId/签名都由学校公众号下单生成，`package` 是 JSAPI 的
+     * prepay_id，只有微信内置浏览器里的 `WeixinJSBridge` 能拿它发起付款。整个 `Chongzhi.js`
+     * 里既没有 `weixin://` 也没有 mweb 兜底（已全文检索确认）。
+     *
+     * 我们的 WebView 里 `WeixinJSBridge` 是 `undefined`，于是 `WeixinJSBridge.invoke(...)`
+     * 直接抛 `ReferenceError`，异常没人接 —— 用户看到的就是「点确认充值毫无反应」。
+     *
+     * 第三方 App 无法伪造这个桥（伪造就是假支付回执，绝不能做），也不能把 JSAPI 的
+     * prepay_id 塞进 `weixin://wap/pay`（那只认 MWEB 单）。所以这里做的是「不再静默失败」：
+     * 补一个只拦 `getBrandWCPayRequest` 的桥，把用户引到真正能付款的地方（微信里打开本页）。
+     */
+    private val WX_BRIDGE_FALLBACK_JS = """
         (function () {
+            console.log('LhWx bridge=' + (typeof window.WeixinJSBridge) +
+                ' pay=' + (typeof window.LhPay) + ' hooked=' + !!window.__lhWxBridgeHooked);
+            if (window.__lhWxBridgeHooked) return;
+            window.__lhWxBridgeHooked = true;
+            if (typeof window.WeixinJSBridge !== 'undefined') return;
+            window.WeixinJSBridge = {
+                invoke: function (name, params, cb) {
+                    console.log('LhWx invoke ' + name);
+                    if (name === 'getBrandWCPayRequest') {
+                        try {
+                            if (window.LhPay) window.LhPay.needWeixin(String(location.href));
+                        } catch (e) { }
+                    }
+                },
+                call: function () { },
+                on: function () { }
+            };
+        })();
+    """.trimIndent()
+
+    private val GQHW_COMPAT_JS = """
+(function () {
             if (window.__lhCompatDone) return;
             window.__lhCompatDone = true;
             function getVue() {
@@ -486,49 +530,121 @@ IconButton(onClick = { finishNow() }) {
             }
             patch();
 
-            // 「我的活动」列表不可见的修复。
-            // 实测 DOM：8 条记录都在（.list-bg = 8，每条 159px，列表总高 1387px），
-            // 但从 .content-list 往下整条祖先链高度全是 0，
-            // 而 .uni-scroll-view 带 overflow:hidden，于是内容被整块裁掉，看上去就是白屏。
-            // 这条链本来靠 flex 撑开，页面在这个 WebView 里没撑起来，
-            // 所以这里在高度塌陷时按视口高度补一个确定高度，让子层重新有尺寸。
-            function lhFixList() {
+            // ============ 第九十一轮：通用「列表容器高度塌陷」修复 ============
+            // 第七十八轮只修了「我的活动」页（硬编码 .list-bg），mounted 钩子还挑组件
+            // （if (!this.seachList && !this.listData) return;），排行榜 / 获得成绩页
+            // 用的是另一套 class，压根不在修复范围里 —— 用户图二里表头在、下面全空就是这么来的。
+            // 改成不认 class、按几何特征找：自身被量成 0 高、scrollHeight 却有真实内容、
+            // 且是滚动容器（uni-app 的 .uni-scroll-view 一律 overflow:hidden）就补高到视口。
+            var lhDiagAt = 0;
+            function lhDiag(tag, n) {
                 try {
-                    var first = document.querySelector('.list-bg');
-                    if (!first) return;
-                    // 从列表项往上爬，找到第一个自带 overflow:hidden 的滚动容器，
-                    // 这条链在这个 WebView 里整排高度都是 0，必须给它一个确定高度才行。
-                    var el = first.parentElement;
-                    var guard = 0;
-                    while (el && guard < 12) {
-                        var cs = getComputedStyle(el);
-                        if (String(cs.overflow).indexOf('hidden') >= 0) {
-                            var box = el.getBoundingClientRect();
-                            if (Math.round(box.height) <= 40) {
-                                var want = Math.max(240, window.innerHeight - Math.round(box.top) - 6);
-                                el.style.height = want + 'px';
-                            }
-                            break;
+                    var now = Date.now();
+                    if (now - lhDiagAt < 4000) return;
+                    lhDiagAt = now;
+                    console.log('LhCompat ' + tag + ' fixed=' + n +
+                        ' hash=' + (location.hash || '') +
+                        ' listBg=' + document.querySelectorAll('.list-bg').length +
+                        ' scrollView=' + document.querySelectorAll('.uni-scroll-view').length +
+                        ' bodyH=' + Math.round(document.body.getBoundingClientRect().height) +
+                        ' bodyBits=' + (document.body.innerText || '').trim().length);
+                } catch (e) { }
+            }
+
+            // 诊断用：把几个疑似列表容器的真实尺寸 / 子节点数打出来（logcat 搜 LhCompat probe）。
+            function lhProbe() {
+                try {
+                    var sels = ['.list-bg', '[class*="rank"]', '[class*="list"]', '.uni-scroll-view'];
+                    for (var k = 0; k < sels.length; k++) {
+                        var ns = document.querySelectorAll(sels[k]);
+                        for (var m = 0; m < Math.min(2, ns.length); m++) {
+                            var n = ns[m];
+                            console.log('LhCompat probe ' + sels[k] + ' #' + m +
+                                ' class=' + String(n.className || '').slice(0, 70) +
+                                ' kids=' + n.children.length +
+                                ' h=' + Math.round(n.getBoundingClientRect().height) +
+                                ' sh=' + n.scrollHeight + ' ch=' + n.clientHeight +
+                                ' txt=' + (n.innerText || '').trim().length);
                         }
-                        el = el.parentElement;
-                        guard++;
                     }
                 } catch (e) { }
             }
 
+            function lhFixHeights() {
+                var fixed = 0;
+                try {
+                    var vh = window.innerHeight || 800;
+
+                    // A. 老路径保留：.list-bg 往上爬到第一个 overflow:hidden 的祖先（已实测有效）。
+                    var first = document.querySelector('.list-bg');
+                    if (first) {
+                        var el = first.parentElement, guard = 0;
+                        while (el && guard < 12) {
+                            var csA = getComputedStyle(el);
+                            if (String(csA.overflow).indexOf('hidden') >= 0) {
+                                var boxA = el.getBoundingClientRect();
+                                if (Math.round(boxA.height) <= 40) {
+                                    var wantA = Math.max(240, vh - Math.round(boxA.top) - 6);
+                                    el.style.height = wantA + 'px';
+                                    fixed++;
+                                }
+                                break;
+                            }
+                            el = el.parentElement;
+                            guard++;
+                        }
+                    }
+
+                    // B. 通用路径：任何「明明有内容却被压成 0 高」的容器。
+                    var all = document.body ? document.body.getElementsByTagName('*') : [];
+                    for (var i = 0; i < all.length && fixed < 8; i++) {
+                        var n = all[i], st, r;
+                        try { st = getComputedStyle(n); r = n.getBoundingClientRect(); } catch (e) { continue; }
+                        if (!st || st.display === 'none' || st.visibility === 'hidden') continue;
+                        if (Math.round(r.height) > 40) continue;
+                        if (n.scrollHeight < 120) continue;
+                        if (r.top > vh || r.bottom < -40) continue;
+                        var ov = String(st.overflow || '') + String(st.overflowY || '') + String(st.overflowX || '');
+                        var scrollish = ov.indexOf('hidden') >= 0 || ov.indexOf('auto') >= 0 || ov.indexOf('scroll') >= 0;
+                        var cn = String(n.className || '');
+                        var uniish = /uni-|list|rank|content|scroll|table|wrap|item|card/i.test(cn);
+                        if (!scrollish && !uniish) continue;
+                        var want = Math.max(240, vh - Math.round(r.top) - 6);
+                        n.style.height = want + 'px';
+                        n.style.minHeight = want + 'px';
+                        fixed++;
+                    }
+
+                    // C. 行高塌陷：v-for 已把条目渲染进 DOM，但每行被算成 0 高
+                    //    （排行榜表头正常、下面一片空白就是这种）。
+                    var rows = document.querySelectorAll('.list-bg, [class*="rank-item"], [class*="list-item"], [class*="table-row"], [class*="row-item"]');
+                    for (var j = 0; j < rows.length; j++) {
+                        var row = rows[j], rr;
+                        try { rr = row.getBoundingClientRect(); } catch (e) { continue; }
+                        if (Math.round(rr.height) > 4) continue;
+                        if ((row.innerText || '').trim().length < 1 && row.children.length < 1) continue;
+                        row.style.minHeight = '56px';
+                        fixed++;
+                    }
+                } catch (e) { }
+                if (fixed > 0) lhDiag('fix', fixed);
+                return fixed;
+            }
+
+            function lhKick(delay) { setTimeout(lhFixHeights, delay || 0); }
+            document.addEventListener('DOMContentLoaded', function () { lhKick(120); lhKick(600); lhKick(1600); });
+            window.addEventListener('load', function () { lhKick(200); lhKick(1000); lhKick(2400); });
+            window.addEventListener('hashchange', function () {
+                lhKick(100); lhKick(500); lhKick(1400);
+                setTimeout(lhProbe, 1200);
+            });
+            window.addEventListener('popstate', function () { lhKick(100); lhKick(600); });
+
             var lhApp = getApp();
-            var lhVue = lhApp && lhApp["${'$'}vm"] && lhApp["${'$'}vm"].constructor;
+            var lhVue = lhApp && lhApp['${'$'}vm'] && lhApp['${'$'}vm'].constructor;
             if (lhVue) {
                 lhVue.mixin({
-                    mounted: function () {
-                        if (!this.seachList && !this.listData) return;
-                        setTimeout(lhFixList, 400);
-                        setTimeout(lhFixList, 1200);
-                        setTimeout(lhFixList, 2600);
-                    },
-                    // 第七十八轮：从活动详情返回列表页时这个组件是复用的，
-                    // mounted 不会再跑一次，而 uni-app 把缓存页面重新摆上来时高度又塌回 0，
-                    // 于是又变成白屏（用户必须点右下角刷新才恢复）。所以挂在 onShow 上补修。
+                    mounted: function () { lhKick(400); lhKick(1200); lhKick(2600); },
                     created: function () {
                         try {
                             var opts = this['${'$'}options'] || {};
@@ -538,9 +654,7 @@ IconButton(onClick = { finishNow() }) {
                             var orig = opts.onShow;
                             opts.onShow = function () {
                                 var r = orig.apply(this, arguments);
-                                setTimeout(lhFixList, 120);
-                                setTimeout(lhFixList, 500);
-                                setTimeout(lhFixList, 1500);
+                                lhKick(120); lhKick(500); lhKick(1500);
                                 return r;
                             };
                         } catch (e) { }
@@ -548,14 +662,14 @@ IconButton(onClick = { finishNow() }) {
                 });
             }
 
-            // 兜底轮询：有些折返路径不会触发 onShow（例如从别的 tab 切回来），
-            // 低频补一刀。lhFixList 第一句就是找 .list-bg，找不到立即返回，开销可以忽略。
             if (!window.__lhFixTimer) {
                 window.__lhFixTimer = setInterval(function () {
                     if (document.hidden) return;
-                    lhFixList();
+                    lhFixHeights();
                 }, 700);
             }
+            console.log('LhCompat init ' + (location.href || '').slice(0, 160));
+            setTimeout(lhProbe, 2600);
         })()
     """.trimIndent()
 
@@ -635,12 +749,24 @@ IconButton(onClick = { finishNow() }) {
      * 现在按「解包 → 直接 VIEW → 兜底地址 → 明确提示」四级依次尝试，绝不再静默失败。
      */
     private fun openExternal(raw: String, uri: Uri) {
+        // 第八十二轮：这类跳转以前完全静默，出问题只能靠猜。打一行日志，后面查「拉不起来」直接看它。
+        android.util.Log.i("OaWebView", "openExternal " + hideQuery(raw))
+
         fun fail() {
+            android.util.Log.w("OaWebView", "openExternal failed: " + hideQuery(raw))
             android.widget.Toast.makeText(
                 this,
                 getString(R.string.oa_open_app_failed),
                 android.widget.Toast.LENGTH_SHORT,
             ).show()
+        }
+
+        /** 按浏览器的方式发起跳转：带 BROWSABLE，微信/支付宝的支付页就认这个 category */
+        fun view(u: Uri): Boolean {
+            val it = Intent(Intent.ACTION_VIEW, u).addCategory(Intent.CATEGORY_BROWSABLE)
+            return runCatching { startActivity(it) }
+                .onFailure { e -> android.util.Log.w("OaWebView", "startActivity failed: " + e) }
+                .isSuccess
         }
 
         if (raw.startsWith("intent:", ignoreCase = true)) {
@@ -658,23 +784,35 @@ IconButton(onClick = { finishNow() }) {
             // `intent://` 里可能是 weixin:// 之类，再按普通 scheme 试一次
             val scheme = raw.substringAfter("scheme=", "").substringBefore(";")
             if (scheme.isNotBlank()) {
-                if (runCatching {
-                        startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("$scheme://")))
-                    }.isSuccess
-                ) return
+                if (view(Uri.parse("$scheme://"))) return
             }
             fail()
             return
         }
 
-        val view = Intent(Intent.ACTION_VIEW, uri)
-        if (runCatching { startActivity(view) }.isSuccess) return
+        if (view(uri)) return
         fail()
     }
     private fun finishNow() {
         cancelBackFallback()
         restoringHistory = false
         if (!isFinishing && !isDestroyed) finish()
+    }
+
+    /**
+     * 第八十二轮：一卡通充值点了没反应时给出一条真能走通的路。
+     *
+     * 微信 JSAPI 支付只认微信内置浏览器，第三方 App 不可能代它完成，所以这里不假装成功：
+     * 把当前充值页地址画成二维码，用微信「扫一扫」即可在微信里打开同一页付款
+     *（二维码里的地址带学校网关下发的 token，过去不用重新登录）；也留了「复制链接」兜底。
+     * 第八十三轮按用户要求从「复制链接」升级成扫码。
+     */
+    internal fun showWeixinPayHint(pageUrl: String) {
+        if (isFinishing || isDestroyed) return
+        val link = pageUrl.ifBlank { webView?.url.orEmpty() }
+        // 桥是全局挂的，这里按**当前页面**的域名收口：只认一卡通站点，别的站点调进来直接忽略
+        if (!android.net.Uri.parse(link).host.orEmpty().contains("ykt")) return
+        com.lanhang.miuix.ui.miuix.showRechargeQr(this, link)
     }
 
     /**
@@ -830,6 +968,16 @@ IconButton(onClick = { finishNow() }) {
             scanHostWebView = view
             view.addJavascriptInterface(ScanBridge(this), "LhScan")
         }
+
+        // 第八十二轮：一卡通充值要微信 JSAPI 桥，WebView 里没有 —— 桥缺失时由页面回调到这里，
+        // 弹窗把用户引到微信里打开充值页（详见 WX_BRIDGE_FALLBACK_JS 的注释）。
+        //
+        // 这里**不能**按入口域名判断：工作模块预检出来的是网关 `ottapp.api.nchu.edu.cn`，
+        // 真正的充值页是网关 302 过去的 `ykt-wechat.ykt.nchu.edu.cn`（实测抓到的初始 host
+        // 就是 ottapp.api，按 host 判断永远注册不上，桥等于不存在）。所以统一挂上，
+        // 真正的域名校验放在 showWeixinPayHint 里按当前页面地址做。
+        view.addJavascriptInterface(PayBridge(this), "LhPay")
+        android.util.Log.i("OaWebView", "LhPay 已注册 host=" + host)
 
         // 照抄原版指纹：去掉 "; wv"，追加 NchuApp UA
         val baseUa = settings.userAgentString.replace("; wv", "")
@@ -1094,6 +1242,10 @@ IconButton(onClick = { finishNow() }) {
                         // 临时诊断（「我的活动」白屏定位用，验完删）
                         v.evaluateJavascript(GQHW_COMPAT_JS) { }
                     }
+                    // 一卡通充值：微信 JSAPI 桥缺失时的兜底（详见 WX_BRIDGE_FALLBACK_JS）
+                    if (url.contains("ykt-wechat")) {
+                        v.evaluateJavascript(WX_BRIDGE_FALLBACK_JS) { }
+                    }
                 }
             }
 
@@ -1103,10 +1255,27 @@ IconButton(onClick = { finishNow() }) {
                 error: WebResourceError,
             ) {
                 super.onReceivedError(v, request, error)
-                if (request.isForMainFrame) {
-                    android.util.Log.w("OaWebView", "主框架加载失败 code=" + error.errorCode)
-                    pageTrouble = true
+                if (!request.isForMainFrame) return
+                // 第八十二轮：3xx 跳到 weixin:// 这类地址时 WebView 不会走 shouldOverrideUrlLoading，
+                // 只在主框架报一个 ERR_UNKNOWN_URL_SCHEME。以前这里只当成「白板」，支付链接就此丢掉。
+                // 现在把那次失败的地址捡回来交给系统，微信/支付宝才有机会被拉起。
+                if (error.errorCode == WebViewClient.ERROR_UNSUPPORTED_SCHEME) {
+                    val failed = request.url?.toString().orEmpty()
+                    val scheme = request.url?.scheme.orEmpty().lowercase()
+                    val ignorable = scheme.isEmpty() ||
+                        scheme == "about" || scheme == "data" ||
+                        scheme == "blob" || scheme == "javascript" || scheme == "file"
+                    android.util.Log.w(
+                        "OaWebView",
+                        "unknown scheme code=" + error.errorCode + " scheme=" + scheme,
+                    )
+                    if (!ignorable && failed.isNotEmpty()) {
+                        openExternal(failed, request.url)
+                        return
+                    }
                 }
+                android.util.Log.w("OaWebView", "主框架加载失败 code=" + error.errorCode)
+                pageTrouble = true
             }
 
             /**

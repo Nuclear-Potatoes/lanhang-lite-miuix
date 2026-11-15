@@ -310,6 +310,14 @@
     <!-- 2026-10-27 第十八轮：OA 应用页的空白/失败出路 -->
     <string name="oa_open_app_failed">没有找到能打开它的应用</string>    <string name="oa_page_blank_hint">页面可能是空白的</string>
     <string name="oa_page_reload">重新加载</string>
+    <!-- 2026-11-15 第八十二/八十三轮：一卡通充值走微信内 JSAPI，外部 App 拉不起来时的出路 -->
+    <string name="oa_ykt_pay_qr_title">用微信扫码充值</string>
+    <string name="oa_ykt_pay_qr_message">校园一卡通充值用的是微信内支付，微信不允许其它应用直接调起它付这笔钱，所以在这里点确认不会有反应。</string>
+    <string name="oa_ykt_pay_qr_hint">打开微信 →「扫一扫」扫上面的码即可继续付款；也可以复制链接，粘到微信任意聊天里打开。</string>
+    <string name="oa_ykt_pay_qr_failed">二维码生成失败，请点「复制链接」到微信里打开充值页</string>
+    <string name="oa_ykt_pay_copy">复制链接</string>
+    <string name="oa_ykt_pay_dismiss">知道了</string>
+    <string name="oa_ykt_pay_copied">链接已复制，粘贴到微信里打开即可充值</string>
     <string name="oa_page_open_browser">用浏览器打开</string>
     <string name="menu_debug_schedule">调试课表接口</string>
 
@@ -536,6 +544,12 @@
     <string name="im_notify_member">群成员</string>
     <string name="im_member_short">成员 · %1$s</string>
     <string name="profile_message">发私信</string>
+    <!-- 第九十一轮：他人主页的加好友 -->
+    <string name="profile_add_friend">加好友</string>
+    <string name="profile_friend_added">已添加</string>
+    <string name="friend_invite_greeting">你好，我是%1$s，想加你为好友</string>
+    <string name="friend_invite_sent">好友申请已发送</string>
+    <string name="friend_invite_failed">发送失败：%1$s</string>
 
     <string name="im_attach">附件</string>
     <string name="im_attach_image">图片</string>
@@ -543,6 +557,29 @@
     <string name="im_attach_file">文件</string>
     <string name="im_attach_location">位置</string>
     <string name="im_attach_failed">这个文件读不出来，换一个试试</string>
+    <string name="im_send_offline">连接不上私信服务，消息没有发出去（网络恢复后会自动重连）</string>
+    <string name="im_copied">已复制</string>
+    <string name="im_shot_title">截图</string>
+    <string name="im_shot_hint">点击起止消息可选择范围</string>
+    <string name="im_shot_clear">清空选择</string>
+    <string name="im_shot_preview">预览</string>
+    <string name="im_shot_hide_names">隐藏昵称</string>
+    <string name="im_shot_done">完成</string>
+    <string name="im_shot_generating">正在生成图片…</string>
+    <string name="im_shot_send">发送给好友</string>
+    <string name="im_shot_save">保存到手机</string>
+    <string name="im_shot_tap_close">点击任意位置关闭</string>
+    <string name="im_shot_too_tall">消息范围太长，请少选一些</string>
+    <string name="im_too_large">文件太大，可能无法发送</string>
+    <string name="im_menu_copy">复制</string>
+    <string name="im_menu_multi">多选</string>
+    <string name="im_action_capture">截图</string>
+    <string name="im_selected_count">已选择 %1$d 条消息</string>
+    <string name="im_delete_title">删除消息</string>
+    <string name="im_delete_message">只从本机删除这 %1$d 条消息，对方的记录不受影响。确定删除吗？</string>
+    <string name="im_deleted">已删除 %1$d 条消息</string>
+    <string name="im_shot_saved">已保存到相册（Pictures/LanHang）</string>
+    <string name="im_shot_failed">导出失败</string>
     <string name="im_voice">语音</string>
     <string name="im_voice_hold">按住 说话</string>
     <string name="im_voice_release">松开发送</string>

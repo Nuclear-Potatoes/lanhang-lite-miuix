@@ -67,7 +67,7 @@ fun MomentSearchScreen(
     onOpenProfile: (String) -> Unit,
     modifier: Modifier = Modifier,
     onOpenPost: (MomentItem) -> Unit = {},
-    onImage: (List<String>, Int, Rect?) -> Unit = { _, _, _ -> },
+    onImage: (List<String>, List<String>, Int, Rect?) -> Unit = { _, _, _, _ -> },
     listState: LazyListState = rememberLazyListState(),
 ) {
     val words = remember(query) { MomentTextMatcher.words(query.take(MomentTextMatcher.MAX_QUERY_LENGTH)) }
@@ -149,7 +149,7 @@ private fun SearchResultCard(
     timeText: String,
     onOpenProfile: (String) -> Unit,
     onOpenPost: (MomentItem) -> Unit,
-    onImage: (List<String>, Int, Rect?) -> Unit,
+    onImage: (List<String>, List<String>, Int, Rect?) -> Unit,
 ) {
     val uid = item.feed.user_id
     val user = UserInfoCache.get(uid)

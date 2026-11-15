@@ -127,7 +127,7 @@ fun MomentsScreen(
     onPostComment: (MomentItem, String?, String) -> Unit,
     onDeleteComment: (MomentItem, CommentEntry) -> Unit,
     onDeletePost: (MomentItem) -> Unit,
-    onImage: (List<String>, Int, android.graphics.Rect?) -> Unit,
+    onImage: (List<String>, List<String>, Int, android.graphics.Rect?) -> Unit,
     onOpenPublish: () -> Unit,
     /** 点作者头像/姓名 → 打开这个人的个人主页（工作圈里是真人，相册里是自己） */
     onOpenProfile: (String) -> Unit = {},
@@ -481,7 +481,7 @@ private fun MomentCard(
     onCommentsLongPress: () -> Unit,
     onOpenProfile: (String) -> Unit = {},
     onCommentDelete: (CommentEntry) -> Unit,
-    onImage: (List<String>, Int, android.graphics.Rect?) -> Unit,
+    onImage: (List<String>, List<String>, Int, android.graphics.Rect?) -> Unit,
     postMenuEnabled: Boolean = true,
 ) {
     // MomentItem.likes/comments 是普通可变列表（非 Compose 状态），
@@ -794,8 +794,11 @@ private fun MomentCard(
 }
 
 @Composable
-internal fun MomentImageGrid(media: List<MediaItem>, onImage: (List<String>, Int, android.graphics.Rect?) -> Unit) {
+internal fun MomentImageGrid(media: List<MediaItem>, onImage: (List<String>, List<String>, Int, android.graphics.Rect?) -> Unit) {
     val urls = media.map { it.url?.takeIf { u -> u.isNotBlank() } ?: it.displayUrl.orEmpty() }
+    // 第九十一轮：缩略图地址随回调一起传给预览页。九宫格早就把它们缓存好了，
+    // 预览页默认用这份，只有点「显示原图」才换成上面的 urls。
+    val thumbs = media.map { it.displayUrl.orEmpty() }
     // 2026-11-01 第五十八轮（用户第 3 条：「图片不一定要加载原图，可以进行压缩以加快加载速度」）：
     // 这格子只有屏宽的三分之一（九宫格排三列），而服务端图动辄 2000~4000px，
     // 按原图尺寸解码等于把一张 12M 像素的位图塞进一个 390px 的小框里 ——
@@ -831,7 +834,7 @@ internal fun MomentImageGrid(media: List<MediaItem>, onImage: (List<String>, Int
                                     b.right.toInt(), b.bottom.toInt(),
                                 )
                             }
-                            .clickable { onImage(urls, index, bounds) },
+                            .clickable { onImage(urls, thumbs, index, bounds) },
                         // 取图中 / 取图失败：都画占位骨架，不给用户看透明空洞
                         loading = {
                             ImageLoadingBox(modifier = Modifier.fillMaxSize(), corner = 10.dp)

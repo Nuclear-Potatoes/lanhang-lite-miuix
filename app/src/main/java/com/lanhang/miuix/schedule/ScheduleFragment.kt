@@ -236,6 +236,8 @@ class ScheduleFragment : Fragment() {
         super.onResume()
         // 从「课表背景」设置返回后，背景/配色可能已变化
         applyThemeStyle()
+        // 2026-11-15 第八十三轮（用户：「每次打开课表页都刷新一次课表，不要等我手动刷新」）
+        autoRefresh()
     }
 
     /**
@@ -894,6 +896,9 @@ class ScheduleFragment : Fragment() {
             renderAll()
         } else {
             progress.visibility = View.VISIBLE
+            // 还没有缓存：这一趟刷新已经在对网络了，把节流时间占上，
+            // 免得紧接着的 onResume 自动刷新再发一次（首次冷启动会连着来两次）
+            lastAutoRefreshAt = android.os.SystemClock.elapsedRealtime()
             refresh()
         }
     }
@@ -922,8 +927,35 @@ class ScheduleFragment : Fragment() {
         if (!keepBrowseWeek) updateWeekPill()
     }
 
+    /**
+     * 进入课表页（切 Tab / 从二级页返回）时静默刷新一次课表。
+     *
+     * 2026-11-15 第八十三轮，用户原话：「每次打开课表页都刷新一次课表，不要等我手动刷新」。
+     * 以前数据只在本机：有缓存就显示、要新数据必须下拉 —— 换教室/调课之后看到的还是旧课表。
+     *
+     * 三个细节：
+     *  · **节流 8 秒**：`onResume` 与 `onTabSelected` 常常在几百毫秒内先后触发（切 Tab 也会走 resume），
+     *    不节流就是一次进入发两个请求，教务接口那边没必要；
+     *  · **静默**：不走下拉圈、失败不弹 Toast —— 用户没主动要求刷新，网络差时不该被弹窗追着；
+     *  · 浏览周保持不变（复用 [refresh] 里已有的 `keepBrowseWeek` 逻辑），刷新不会把周次栏打回本周。
+     */
+    private fun autoRefresh() {
+        if (!isAdded || view == null) return
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (now - lastAutoRefreshAt < AUTO_REFRESH_GAP_MS) return
+        lastAutoRefreshAt = now
+        android.util.Log.i("Schedule", "进入课表页，自动刷新一次")
+        refresh(quiet = true)
+    }
+
+    /** 进入课表自动刷新的节流窗口（见 [autoRefresh]） */
+    private var lastAutoRefreshAt = 0L
+
+    /** 自动刷新的最小间隔：够挡掉 onResume + onTabSelected 的双触发，又不影响「每次进来都更新」 */
+    private val AUTO_REFRESH_GAP_MS = 8_000L
+
     /** 手动下拉刷新：从教务系统重新拉取并覆盖本地缓存；刷新期间保持当前浏览周不变 */
-    private fun refresh() {
+    private fun refresh(quiet: Boolean = false) {
         viewLifecycleOwner.lifecycleScope.launch {
             try {
                 val browseWeek = currentWeek
@@ -945,11 +977,15 @@ class ScheduleFragment : Fragment() {
                 updateWeekPill()
                 renderAll()
             } catch (e: Exception) {
-                Toast.makeText(
-                    requireContext(),
-                    getString(R.string.schedule_refresh_failed, e.message.orEmpty()),
-                    Toast.LENGTH_SHORT
-                ).show()
+                // 自动刷新的失败一律静默：用户没点任何东西，不该被一条 Toast 追着；
+                // 页面下方已经有「暂无数据」的提示兜底。
+                if (!quiet) {
+                    Toast.makeText(
+                        requireContext(),
+                        getString(R.string.schedule_refresh_failed, e.message.orEmpty()),
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
                 // 拉取失败且本来就没数据：重画一次，让**当前可见层**里出现「暂无数据」提示
                 // （以前只把 tvEmpty 点亮，而 tvEmpty 住在周视图层里，网格模式下根本看不见
                 //  → 用户看到的就是「课表一片空白」，2026-10-26 第十一轮）
@@ -1245,6 +1281,8 @@ class ScheduleFragment : Fragment() {
      */
     fun onTabSelected() {
         if (!isAdded || view == null || !::contentGrid.isInitialized) return
+        // 每次切回课表都悄悄拉一次最新课表（用户 2026-11-15 第八十三轮要求）
+        autoRefresh()
         // 第六十五轮第 2 条：从现在起 500ms 内算「顶栏还在动」的过渡窗口，
         // renderGrid() 在这个窗口里不会采用比上次稳定值更大的可用高度。
         tabSettleUntil = android.os.SystemClock.uptimeMillis() + 900L

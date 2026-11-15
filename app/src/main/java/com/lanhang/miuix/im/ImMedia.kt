@@ -29,6 +29,25 @@ import java.util.Locale
  */
 object ImMedia {
 
+    /**
+     * 第九十轮（用户：「我发送视频会提示 size out of limit 彻查原因」）：
+     * 融云 `RC_MSG_SIZE_OUT_OF_LIMIT` 指的是**消息体（序列化成 JSON 的 content）超过 128KB**，
+     * 不是媒体文件体积。反编译 `SightMessageHandler.encodeMessage()` 可见：它拿到 `thumbUri`
+     * 之后直接 `FileUtils.file2byte(file)` → `Base64.encodeToString` → `setBase64()`，
+     * **既不缩放也不压缩**（对照 `ImageMessageHandler` 会走 `BitmapUtil.getThumbBitmap` 缩放）。
+     * `SightMessage.encode()` 再把这段 base64 塞进 JSON 的 `content` 字段一起发服务端。
+     *
+     * 我们原来 `videoInfo()` 抽的是**全分辨率首帧 + JPEG 82**，1080p 课表截图轻松 200~600KB，
+     * base64 膨胀 4/3 后 260~800KB，服务端当场拒收 —— 这就是 size out of limit 的全部原因。
+     * 而 40s 彩条测试视频首帧是纯色块，压完只有几 KB，所以「大视频能发、20s 录屏不能发」。
+     *
+     * 修法：封面一律压到最长边 ≤ [THUMB_MAX_EDGE]、文件 ≤ [THUMB_MAX_BYTES]
+     * （base64 后约 64KB，给 name/size/localPath/sightUrl 等字段留足余量）。
+     * **不需要压缩视频本体** —— 媒体文件走独立上传通道，压了既没用又掉画质。
+     */
+    private const val THUMB_MAX_EDGE = 360
+    internal const val THUMB_MAX_BYTES = 48L * 1024L
+
     /** 图片 / 视频 / 文件都先落到这个目录，SDK 上传完再随系统清理 */
     private fun cacheDir(context: Context): File =
         File(context.cacheDir, "im").apply { mkdirs() }
@@ -66,7 +85,91 @@ object ImMedia {
         } ?: 0L
     }.getOrDefault(0L)
 
-    /** 视频时长（秒）与封面（抽第一帧存 PNG，SightMessage 需要一张缩略图） */
+    /**
+     * 把任意 Bitmap 写成合规封面：等比缩到最长边 ≤ [THUMB_MAX_EDGE]，
+     * JPEG 质量从 78 逐档递减，直到文件 ≤ [THUMB_MAX_BYTES]。
+     */
+    internal fun writeThumb(src: android.graphics.Bitmap, out: File): File? = runCatching {
+        val longest = maxOf(src.width, src.height).coerceAtLeast(1)
+        val scale = minOf(1f, THUMB_MAX_EDGE.toFloat() / longest)
+        val tw = (src.width * scale).toInt().coerceAtLeast(1)
+        val th = (src.height * scale).toInt().coerceAtLeast(1)
+        val small = if (tw == src.width && th == src.height) src
+        else android.graphics.Bitmap.createScaledBitmap(src, tw, th, true)
+        var quality = 78
+        var done = false
+        while (quality >= 26) {
+            out.outputStream().use {
+                small.compress(android.graphics.Bitmap.CompressFormat.JPEG, quality, it)
+            }
+            if (out.length() <= THUMB_MAX_BYTES) {
+                done = true
+                break
+            }
+            quality -= 13
+        }
+        if (!done) {
+            // 极端的噪声 / 密集文字图：再砍一半边长，几乎必然达标
+            val tiny = android.graphics.Bitmap.createScaledBitmap(
+                small, (tw / 2).coerceAtLeast(1), (th / 2).coerceAtLeast(1), true,
+            )
+            out.outputStream().use {
+                tiny.compress(android.graphics.Bitmap.CompressFormat.JPEG, 40, it)
+            }
+            if (tiny !== small) tiny.recycle()
+        }
+        if (small !== src) small.recycle()
+        android.util.Log.i(
+            "ImSend",
+            "封面压缩 " + src.width + "x" + src.height + " → " + tw + "x" + th +
+                " bytes=" + out.length() + " base64≈" + ((out.length() + 2) / 3) * 4,
+        )
+        out.takeIf { it.exists() && it.length() > 0 }
+    }.getOrNull()
+
+    /** 封面文件是否合规：存在、非空、不超限，且确实是能解码的图片 */
+    private fun isThumbSafe(file: File): Boolean {
+        if (!file.exists() || file.length() !in 1..THUMB_MAX_BYTES) return false
+        val opts = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        runCatching { android.graphics.BitmapFactory.decodeFile(file.absolutePath, opts) }
+        return opts.outWidth > 0 && opts.outHeight > 0
+    }
+
+    /**
+     * 发送前的二次防线（[ImRepository.sendVideo] 调用）：封面不合格就重压一份合规的。
+     * 读大图用 inSampleSize 避免 OOM；不是图片则返回 null，由调用方自己抽帧兜底。
+     */
+    internal fun normalizeThumbFile(file: File): File? = runCatching {
+        if (!file.exists()) {
+            null
+        } else if (isThumbSafe(file)) {
+            android.util.Log.i("ImSend", "封面已合规 bytes=" + file.length())
+            file
+        } else {
+            val probe = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            android.graphics.BitmapFactory.decodeFile(file.absolutePath, probe)
+            if (probe.outWidth <= 0 || probe.outHeight <= 0) {
+                null
+            } else {
+                var sample = 1
+                while (probe.outWidth / sample > 1200 || probe.outHeight / sample > 1200) sample *= 2
+                val bmp = android.graphics.BitmapFactory.decodeFile(
+                    file.absolutePath,
+                    android.graphics.BitmapFactory.Options().apply { inSampleSize = sample },
+                )
+                if (bmp == null) {
+                    null
+                } else {
+                    val out = File(file.parentFile, "thumb_small_" + System.currentTimeMillis() + ".jpg")
+                    val result = writeThumb(bmp, out)
+                    if (!bmp.isRecycled) bmp.recycle()
+                    result
+                }
+            }
+        }
+    }.getOrNull()
+
+    /** 视频时长（秒）与封面（抽第一帧，压成 ≤48KB 的 JPEG；SightMessage 会把它 base64 进消息体） */
     fun videoInfo(context: Context, uri: Uri): Pair<File?, Int> {
         val retriever = MediaMetadataRetriever()
         return try {
@@ -76,8 +179,9 @@ object ImMedia {
             val frame = retriever.getFrameAtTime(0, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
             val cover = frame?.let { bitmap ->
                 val file = File(cacheDir(context), "thumb_${System.currentTimeMillis()}.jpg")
-                file.outputStream().use { bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 82, it) }
-                file
+                val written = writeThumb(bitmap, file)
+                if (!bitmap.isRecycled) bitmap.recycle()
+                written
             }
             cover to ((ms / 1000).toInt().coerceAtLeast(1))
         } catch (e: Exception) {
@@ -89,9 +193,9 @@ object ImMedia {
                 val f = File(cacheDir(context), "thumb_ph_" + System.currentTimeMillis() + ".jpg")
                 val bmp = android.graphics.Bitmap.createBitmap(320, 320, android.graphics.Bitmap.Config.ARGB_8888)
                 bmp.eraseColor(android.graphics.Color.rgb(60, 60, 60))
-                f.outputStream().use { bmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, 80, it) }
-                bmp.recycle()
-                f
+                val written = writeThumb(bmp, f)
+                if (!bmp.isRecycled) bmp.recycle()
+                written
             }.getOrNull()
             placeholder to 1
         } finally {

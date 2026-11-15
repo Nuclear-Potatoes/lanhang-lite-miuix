@@ -132,6 +132,11 @@ class MainActivity : AppCompatActivity() {
         }
         handleWidgetIntent(intent)
         applyPendingTab()
+
+        // 2026-11-15 第八十三轮（用户：「做一个打开 app 自动检查更新的功能，与关于页中的检查更新走一个渠道」）：
+        // 与关于页同一个实现（settings/UpdatePrompt），启动延后 1.2s 发，只有真的出了新版才弹窗，
+        // 查不到 / 已是最新一律不打扰。同一进程只查一次，主题重建 Activity 不会重复。
+        com.lanhang.miuix.settings.UpdatePrompt.checkOnStartup(this)
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
@@ -292,11 +297,15 @@ class MainActivity : AppCompatActivity() {
         applyPendingTab()
         ImNotify.appForeground = true
         ImNotify.ensureChannel(this)
+        // 2026-11-15 第八十三轮：回到前台就恢复私信心跳（并在必要时补一次刷新/重连），
+        // 后台期间心跳是停的 —— 靠融云自己的长连接与推送，不额外耗电。
+        com.lanhang.miuix.im.ImRepository.setForeground(true)
     }
 
     override fun onPause() {
         super.onPause()
         ImNotify.appForeground = false
+        com.lanhang.miuix.im.ImRepository.setForeground(false)
     }
 
     /**

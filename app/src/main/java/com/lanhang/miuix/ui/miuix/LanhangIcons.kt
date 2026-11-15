@@ -336,6 +336,157 @@ object LanhangIconSet {
         }
     }
 
+    /**
+     * 键盘：圆角外框 + 两排按键盘点 + 底部空格条（私信输入条“切回键盘”用）。
+     *
+     * 2026-11-15 第八十六轮（用户：「键盘的图标与主流图标相差甚远，连接网络图标矢量库获得键盘的图标」）：
+     * 原来这里借用的是 `Backspace`（退格键，左边带一个尖角），确实不是键盘的样子。
+     * 现在按 **Lucide** 的 `keyboard`（ISC，24×24、stroke 2、圆头圆角）的几何重画：
+     * 外框 `rect(2,4,20,16,r2)`、第一排 4 个键点、第二排 3 个键点、空格条 `7→17`。
+     * 坐标系整体收进本项目那套「四周留 3dp 安全边」的口径（外框 2.9~21.1 / 5.4~18.6）。
+     * 键点用**实心小圆**而不是 Lucide 的 `h.01` 零长度线段：零长度子路径是否出点依赖
+     * Skia 的 cap 处理，实心圆是确定能画出来的（同文件 Emoji 的教训）。
+     */
+    val Keyboard: ImageVector by lazy {
+        strokeIcon("Lanhang.Keyboard") {
+            // 外框
+            path(
+                stroke = SolidColor(Color.Black),
+                strokeLineWidth = 1.9f,
+                strokeLineCap = StrokeCap.Round,
+                strokeLineJoin = StrokeJoin.Round,
+            ) {
+                roundedRect(left = 2.9f, top = 5.4f, right = 21.1f, bottom = 18.6f, radius = 2.6f)
+            }
+            // 键点（两排 + 空格条）。颜色交给 Icon(tint = ...)，所以这里也用可着色的黑
+            path(fill = SolidColor(Color.Black)) {
+                // 第一排 4 个
+                circle(cx = 6.5f, cy = 8.7f, r = 0.98f)
+                circle(cx = 10.2f, cy = 8.7f, r = 0.98f)
+                circle(cx = 13.8f, cy = 8.7f, r = 0.98f)
+                circle(cx = 17.5f, cy = 8.7f, r = 0.98f)
+                // 第二排 3 个（错开半格）
+                circle(cx = 8.4f, cy = 12.0f, r = 0.98f)
+                circle(cx = 12.0f, cy = 12.0f, r = 0.98f)
+                circle(cx = 15.6f, cy = 12.0f, r = 0.98f)
+            }
+            // 空格条
+            path(
+                stroke = SolidColor(Color.Black),
+                strokeLineWidth = 1.9f,
+                strokeLineCap = StrokeCap.Round,
+                strokeLineJoin = StrokeJoin.Round,
+            ) {
+                moveTo(7.6f, 15.3f)
+                lineTo(16.4f, 15.3f)
+            }
+        }
+    }
+
+    /** 复制：前后两张纸（长按消息菜单用，第八十八轮） */
+    val Copy: ImageVector by lazy {
+        strokeIcon("Lanhang.Copy") {
+            path(
+                stroke = SolidColor(Color.Black),
+                strokeLineWidth = 1.9f,
+                strokeLineCap = StrokeCap.Round,
+                strokeLineJoin = StrokeJoin.Round,
+            ) {
+                // 后面的纸（右上）
+                moveTo(9.6f, 3.4f)
+                lineTo(16.4f, 3.4f)
+                quadTo(20.2f, 3.4f, 20.2f, 7.0f)
+                lineTo(20.2f, 14.4f)
+                quadTo(20.2f, 17.0f, 17.4f, 17.0f)
+                // 前面的纸
+                roundedRect(left = 3.6f, top = 7.6f, right = 14.6f, bottom = 20.4f, radius = 2.4f)
+            }
+        }
+    }
+
+    /** 多选：圆圈打勾 */
+    val CheckCircle: ImageVector by lazy {
+        strokeIcon("Lanhang.CheckCircle") {
+            path(
+                stroke = SolidColor(Color.Black),
+                strokeLineWidth = 1.9f,
+                strokeLineCap = StrokeCap.Round,
+                strokeLineJoin = StrokeJoin.Round,
+            ) {
+                circle(cx = 12f, cy = 12f, r = 8.6f)
+                moveTo(7.6f, 12.4f)
+                lineTo(10.6f, 15.4f)
+                lineTo(16.6f, 8.8f)
+            }
+        }
+    }
+
+    /** 删除：垃圾桶（桶身 + 盖 + 提手 + 两条竖线） */
+    val Trash: ImageVector by lazy {
+        strokeIcon("Lanhang.Trash") {
+            path(
+                stroke = SolidColor(Color.Black),
+                strokeLineWidth = 1.9f,
+                strokeLineCap = StrokeCap.Round,
+                strokeLineJoin = StrokeJoin.Round,
+            ) {
+                // 桶身
+                moveTo(5.6f, 7.6f)
+                lineTo(6.6f, 19.4f)
+                quadTo(6.8f, 20.6f, 8.2f, 20.6f)
+                lineTo(15.8f, 20.6f)
+                quadTo(17.2f, 20.6f, 17.4f, 19.4f)
+                lineTo(18.4f, 7.6f)
+                // 盖
+                moveTo(3.6f, 7.6f)
+                lineTo(20.4f, 7.6f)
+                // 提手
+                moveTo(9.2f, 7.6f)
+                lineTo(9.2f, 5.2f)
+                quadTo(9.2f, 3.6f, 10.8f, 3.6f)
+                lineTo(13.2f, 3.6f)
+                quadTo(14.8f, 3.6f, 14.8f, 5.2f)
+                lineTo(14.8f, 7.6f)
+                // 桶里两条竖线
+                moveTo(10.0f, 11.2f)
+                lineTo(10.0f, 16.8f)
+                moveTo(14.0f, 11.2f)
+                lineTo(14.0f, 16.8f)
+            }
+        }
+    }
+
+    /** 截图：两个对角的取景框（QQ 多选栏的「截图」） */
+    val Crop: ImageVector by lazy {
+        strokeIcon("Lanhang.Crop") {
+            path(
+                stroke = SolidColor(Color.Black),
+                strokeLineWidth = 1.9f,
+                strokeLineCap = StrokeCap.Round,
+                strokeLineJoin = StrokeJoin.Round,
+            ) {
+                // 左上 + 右下的角
+                moveTo(3.8f, 9.2f)
+                lineTo(3.8f, 5.4f)
+                quadTo(3.8f, 3.8f, 5.4f, 3.8f)
+                lineTo(9.2f, 3.8f)
+                moveTo(20.2f, 14.8f)
+                lineTo(20.2f, 18.6f)
+                quadTo(20.2f, 20.2f, 18.6f, 20.2f)
+                lineTo(14.8f, 20.2f)
+                // 左下 / 右上各补一角，四个角凑成取景框
+                moveTo(3.8f, 14.8f)
+                lineTo(3.8f, 18.6f)
+                quadTo(3.8f, 20.2f, 5.4f, 20.2f)
+                lineTo(9.2f, 20.2f)
+                moveTo(14.8f, 3.8f)
+                lineTo(18.6f, 3.8f)
+                quadTo(20.2f, 3.8f, 20.2f, 5.4f)
+                lineTo(20.2f, 9.2f)
+            }
+        }
+    }
+
     val Backspace: ImageVector by lazy {
         strokeIcon("Lanhang.Backspace") {
             path(

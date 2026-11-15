@@ -62,6 +62,16 @@ class ImagePreviewActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityImagePreviewBinding
     private val urls by lazy { intent.getStringArrayListExtra(EXTRA_URLS).orEmpty() }
+
+    /**
+     * 第九十一轮（用户：「工作圈加载图片的速度太慢，可以先加载缩略图，点显示原图后再加载原图」）。
+     *
+     * 服务端 `MediaItem.thumbnail` 本来就有缩略图地址，九宫格一直用的是它；但点开预览时
+     * 传进来的却是 `url`（原图），于是每次看大图都要重新下载几 MB 原图 —— 这就是慢的根源，
+     * 和解码尺寸无关（第 58 轮已经把解码压到屏幕大小了）。现在默认只拉 [thumbs]，
+     * 按「显示原图」把该页换到 [urls] 再重新加载。
+     */
+    private val thumbs by lazy { intent.getStringArrayListExtra(EXTRA_THUMBS).orEmpty() }
     private var closing = false
 
     /** 页码对应的适配器：需要单独通知「这一页改用原图」 */
@@ -134,7 +144,7 @@ class ImagePreviewActivity : AppCompatActivity() {
             }
         }
 
-        adapter = PreviewAdapter(urls, onLoading = { busy -> showImageLoading(busy) }) { closeSmoothly() }
+        adapter = PreviewAdapter(urls, thumbs, onLoading = { busy -> showImageLoading(busy) }) { closeSmoothly() }
         // 压缩解码的目标框：一个屏幕那么大就够看了，再大只是白占内存
         adapter.screenW = resources.displayMetrics.widthPixels
         adapter.screenH = resources.displayMetrics.heightPixels
@@ -547,6 +557,7 @@ class ImagePreviewActivity : AppCompatActivity() {
 
     private inner class PreviewAdapter(
         private val items: List<String>,
+        private val thumbs: List<String>,
         private val onLoading: (Boolean) -> Unit,
         private val onClose: () -> Unit
     ) : RecyclerView.Adapter<PreviewAdapter.VH>() {
@@ -576,7 +587,10 @@ class ImagePreviewActivity : AppCompatActivity() {
         override fun getItemCount(): Int = items.size
 
         override fun onBindViewHolder(holder: VH, position: Int) {
-            val url = items[position]
+            // 第九十一轮：默认取缩略图（九宫格已缓存过，秒开）；这一页点过「显示原图」
+            // 之后才换成原图地址。翻页 / 重新绑定都会重新走这里。
+            val thumb = thumbs.getOrNull(position)?.takeIf { it.isNotBlank() }
+            val url = if (position in originalPages) items[position] else (thumb ?: items[position])
             onLoading(true)
             holder.iv.load(url) {
                 crossfade(150)
@@ -594,7 +608,8 @@ class ImagePreviewActivity : AppCompatActivity() {
                 )
             }
             // 长按 → 「是否保存图片」（用户第二十四轮第 2 条）
-            holder.iv.onLongPress = { askSaveImage(url) }
+            // 保存相册一律用原图地址：屏幕上显示缩略图只是为了秒开，不该把糊图存进相册。
+            holder.iv.onLongPress = { askSaveImage(items[position]) }
         }
 
         inner class VH(val iv: ZoomImageView) : RecyclerView.ViewHolder(iv)
@@ -602,6 +617,7 @@ class ImagePreviewActivity : AppCompatActivity() {
 
     companion object {
         private const val EXTRA_URLS = "urls"
+        private const val EXTRA_THUMBS = "thumbs"
         private const val EXTRA_INDEX = "index"
         private const val EXTRA_RECT = "source_rect"
 
@@ -624,11 +640,19 @@ class ImagePreviewActivity : AppCompatActivity() {
         /** 甩出关闭时长 */
         private const val FLING_CLOSE_MS = 260L
 
-        fun start(context: Context, urls: List<String>, index: Int, sourceRect: Rect? = null) {
+        fun start(
+            context: Context,
+            urls: List<String>,
+            index: Int,
+            sourceRect: Rect? = null,
+            thumbs: List<String> = emptyList(),
+        ) {
             if (urls.isEmpty()) return
             context.startActivity(
                 Intent(context, ImagePreviewActivity::class.java).apply {
                     putStringArrayListExtra(EXTRA_URLS, ArrayList(urls))
+                    // 与 urls 一一对应；没有缩略图的页留空串，预览页会退回原图地址。
+                    putStringArrayListExtra(EXTRA_THUMBS, ArrayList(thumbs))
                     putExtra(EXTRA_INDEX, index)
                     if (sourceRect != null) {
                         putExtra(

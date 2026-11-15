@@ -349,7 +349,7 @@ fun ProfileStackHost(
     onTitle: (String) -> Unit,
     onOpenProfile: (String) -> Unit,
     onMessage: (String, String) -> Unit,
-    onImage: (List<String>, Int, Rect?) -> Unit,
+    onImage: (List<String>, List<String>, Int, Rect?) -> Unit,
     emptyText: String,
 ) {
     val uid = stack.current ?: return

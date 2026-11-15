@@ -57,6 +57,11 @@ data class ImMessage(
     val mine: Boolean,
     val time: Long,
     val state: Int = STATE_SENT,
+    /**
+     * IMLib 本地库的 messageId。**删除消息要用它**（`deleteMessages(int[])` 认的是这个
+     * 数字 id，不是 uId）；本地回声在 SDK 还没入库时是 0，那种直接本地移除即可。
+     */
+    val messageId: Int = 0,
     /** 发送者 id（群聊里用来显示「谁说的」；单聊用不到） */
     val senderId: String = "",
     val kind: Int = KIND_TEXT,
@@ -90,9 +95,25 @@ data class ImMessage(
             val sender = message.senderUserId.orEmpty()
             val mine = message.messageDirection == Message.MessageDirection.SEND
             val time = if (message.sentTime > 0) message.sentTime else message.receivedTime
-            val key = message.uId ?: message.messageId.toString()
+            // uId 有时是**空串**（本地刚建、还没被服务端确认），拿空串当 key 会让两条消息
+            // 互相当成同一条（缓存里就出现过 key="" 的条目），这里退回 messageId。
+            val key = message.uId?.takeIf { it.isNotBlank() } ?: message.messageId.toString()
+            /**
+             * 2026-11-15 第八十七轮（用户：「把显示问题一并修掉」）：
+             * 以前完全忽略 `sentStatus`，于是**本地库里真实的失败消息被画成已发送**，
+             * 而界面上那些「发送失败」其实是另一份本地回声 —— 一份内容两个气泡。
+             * 现在按 SDK 的状态映射，服务端那份就是唯一真相。
+             */
+            val state = when (message.sentStatus) {
+                Message.SentStatus.SENDING -> STATE_SENDING
+                Message.SentStatus.FAILED, Message.SentStatus.CANCELED -> STATE_FAILED
+                else -> STATE_SENT
+            }
             fun plain(text: String, kind: Int) =
-                ImMessage(key = key, text = text, mine = mine, time = time, senderId = sender, kind = kind)
+                ImMessage(
+                    key = key, text = text, mine = mine, time = time, state = state,
+                    messageId = message.messageId, senderId = sender, kind = kind,
+                )
 
             return when (val content = message.content) {
                 is TextMessage -> plain(content.content.orEmpty(), KIND_TEXT)
@@ -160,6 +181,13 @@ object ImRepository {
 
     enum class Status { IDLE, CONNECTING, CONNECTED, FAILED }
 
+    /**
+     * 发送体积防御上限（第八十九轮探测后定的）：
+     * 学校 media 服务器实测 1MB/8MB/20MB/60MB/130MB/300MB 文件与 15MB/40s 视频全部发送成功，
+     * **没有可感知的上限**，所以不做常规拦截、也不做本地压缩，这个 1GB 只是极端兜底。
+     */
+    private const val MAX_SEND_BYTES = 1024L * 1024 * 1024
+
     private const val TAG = "LanhangIM"
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -210,6 +238,50 @@ object ImRepository {
     /** 自动重连次数（onSuccess 归零）。IPC_DISCONNECT 这类瞬时错误最多自动补 3 次 */
     private var retryAttempt = 0
     private var retryJob: kotlinx.coroutines.Job? = null
+
+    // ---------------------------------------------------------------- 自动刷新与自愈（第八十三轮）
+    //
+    // 用户原话：「做一个自动刷新私信消息的功能，参考主流聊天软件的解决方案，防止一次私信接收失败后
+    // 无法再次刷新新的私信内容」。原来只有两条刷新路径：会话列表 20s 轮询（写在 Compose 的
+    // LaunchedEffect 里，页面不在就没)、以及融云的消息回调。于是三种情况会「彻底不动」：
+    //   1. 回调丢一条（弱网/心跳），聊天页进过一次之后就再也不拉新消息；
+    //   2. 会话列表请求的 SDK 回调没回来 —— `loadingConversations` 永远是 true；
+    //   3. 连接假死（状态还写着 CONNECTED，其实早就断了）—— 所有刷新都失败却没人重连。
+    // 现在收成一份心跳：每 12s 对齐一次会话列表 + 当前打开的会话；请求超时自动解锁、
+    // 连续失败或长时间没有一次成功同步就强制重连；前台的进入/离开由 MainActivity 通知。
+
+    /** 心跳间隔（前台）。融云本身有长连接，这只是「一定有新数据」的兜底 */
+    private const val HEARTBEAT_MS = 12_000L
+
+    /** 多久没有一次成功同步就认定连接假死，强制重连 */
+    private const val STALE_AFTER_MS = 45_000L
+
+    /** 单个 SDK 查询超过这么久没有回调就当它丢了，否则会永远卡在「加载中」 */
+    private const val REQUEST_TIMEOUT_MS = 12_000L
+
+    private var heartbeatJob: kotlinx.coroutines.Job? = null
+
+    @Volatile
+    private var appForeground = false
+
+    /** 当前正在看的会话（聊天页进来时设置，离开清空），心跳会顺带刷新它 */
+    @Volatile
+    private var activePeer: String? = null
+
+    @Volatile
+    private var activePeerIsGroup = false
+
+    private var lastConversationOkAt = 0L
+    private var lastThreadOkAt = 0L
+    private var conversationRequestAt = 0L
+    private var conversationFailures = 0
+    private var connectingSince = 0L
+    private var reconnecting = false
+
+    /** FAILED 状态下的下一次重试时刻（uptimeMillis）。退避重试用，见 heartbeatTick */
+    private var nextRetryAt = 0L
+
+    private fun nowMs(): Long = android.os.SystemClock.elapsedRealtime()
 
     /**
      * 这些错误是**瞬时**的：IPC 服务还没就绪、弱网、连不上导航服务器。
@@ -277,6 +349,8 @@ object ImRepository {
      * 已经连上就只刷新一下会话列表。
      */
     fun ensureStarted() {
+        // 第八十三轮：真正开始用私信了，把心跳拉起来（前台才跑，见 setForeground）
+        if (appForeground) startHeartbeat()
         // 先把上次的快照铺上（会话列表 / 各家最近 60 条 / 群名），再慢慢连融云。
         // 用户 2026-10-26 第七轮要求：「如果刷新速度跟不上触发速度，先加载缓存的聊天记录，
         // 等到连接成功后再刷新」——所以这里是**同步 entry 的第一步**，不等网络。
@@ -291,7 +365,10 @@ object ImRepository {
         }
         if (connectStarted && status == Status.CONNECTING) return
         // 用户手动刷新（或重新进页面）= 愿意再试一次，把自动重连的次数归还
-        if (status == Status.FAILED) retryAttempt = 0
+        if (status == Status.FAILED) {
+            retryAttempt = 0
+            nextRetryAt = 0
+        }
         connectStarted = true
         status = Status.CONNECTING
         error = null
@@ -300,11 +377,18 @@ object ImRepository {
 
     private fun doConnect(allowTokenRefresh: Boolean) {
         // 1) appKey：学校下发的配置里带
-        val im = runCatching { RceApi.configurationAll().features?.im }.getOrNull()
+        val config = runCatching { RceApi.configurationAll() }
+        val im = config.getOrNull()?.features?.im
         val appKey = im?.appKey?.takeIf { it.isNotBlank() }
         if (appKey == null) {
             status = Status.FAILED
-            error = "学校未下发 IM 配置（app_key 为空）"
+            // 第八十七轮：断网时这条配置请求本身就是失败的，以前一律报「学校未下发 app_key」，
+            // 用户会以为是服务端的问题（截图里就在私信页顶上挂着这么一句）。
+            error = if (config.isFailure) {
+                "连不上学校服务器，稍后会自动重试"
+            } else {
+                "学校未下发 IM 配置（app_key 为空）"
+            }
             return
         }
         val navi = im.naviUrls?.firstOrNull { it.isNotBlank() }
@@ -315,6 +399,14 @@ object ImRepository {
                 // 否则 SDK 会拿默认的 nav.cn.ronghub.com 去连（本机 DNS 直接不通）
                 if (navi != null) RongIMClient.setServerInfo(navi, media.orEmpty())
                 RongIMClient.init(AppContext.instance, appKey)
+                // 第八十五轮：**小视频（Sight）不在 SDK 默认注册的消息类型里**。
+                // `RongIMClient.init()` 内部只注册 Text/Voice/HQVoice/Image/Location/File…
+                //（见 SDK 的初始化列表，里面没有 SightMessage），而 `NativeClient.sendMediaMessage`
+                // 第一步就是 `getMessageHandler(objectName)`，拿不到就回 PARAMETER_ERROR ——
+                // 表现就是「视频一发就失败，其余类型正常」。这里补注册一次（幂等，重复调用无害），
+                // 收发两个方向都靠它。
+                runCatching { RongIMClient.registerMessageType(SightMessage::class.java) }
+                    .onFailure { android.util.Log.w("LanhangIM", "注册 SightMessage 失败", it) }
                 android.util.Log.i("LanhangIM", "init appKey=" + appKey + " navi=" + navi + " media=" + media)
             }.onFailure {
                 status = Status.FAILED
@@ -350,6 +442,7 @@ object ImRepository {
                 status = Status.CONNECTED
                 error = null
                 retryAttempt = 0
+                nextRetryAt = 0
                 // 通知渠道先建好（没有授权时 showMessage 会自己跳过，不弹也不崩）
                 ImNotify.ensureChannel(AppContext.instance)
                 refreshConversations()
@@ -438,15 +531,327 @@ object ImRepository {
                 true
             }
             RongIMClient.setConnectionStatusListener { s ->
-                status = when (s) {
-                    RongIMClient.ConnectionStatusListener.ConnectionStatus.CONNECTED ->
-                        Status.CONNECTED
-                    RongIMClient.ConnectionStatusListener.ConnectionStatus.CONNECTING ->
-                        Status.CONNECTING
-                    else -> status
+                // 第八十三轮：以前这里只认 CONNECTED / CONNECTING，其余一律「保持原状」——
+                // 断网、被踢下线之后 `status` 还写着 CONNECTED，于是所有刷新都被放行、
+                // 全部失败，却没有任何人去重连。这就是「一次失败之后再也刷不出新私信」。
+                when (s) {
+                    RongIMClient.ConnectionStatusListener.ConnectionStatus.CONNECTED -> {
+                        status = Status.CONNECTED
+                        error = null
+                        conversationFailures = 0
+                        retryAttempt = 0
+                        nextRetryAt = 0
+                        lastConversationOkAt = nowMs()
+                        refreshNow()
+                    }
+
+                    RongIMClient.ConnectionStatusListener.ConnectionStatus.CONNECTING -> {
+                        status = Status.CONNECTING
+                        connectingSince = nowMs()
+                    }
+
+                    RongIMClient.ConnectionStatusListener.ConnectionStatus.DISCONNECTED,
+                    RongIMClient.ConnectionStatusListener.ConnectionStatus.NETWORK_UNAVAILABLE -> {
+                        status = Status.CONNECTING
+                        error = "聊天连接已断开，正在重新连接…"
+                        connectingSince = nowMs()
+                        forceReconnect("连接状态 " + s.name)
+                    }
+
+                    RongIMClient.ConnectionStatusListener.ConnectionStatus.KICKED_OFFLINE_BY_OTHER_CLIENT -> {
+                        status = Status.FAILED
+                        error = "账号在其它设备登录，消息已断开"
+                    }
+
+                    RongIMClient.ConnectionStatusListener.ConnectionStatus.TOKEN_INCORRECT -> {
+                        status = Status.FAILED
+                        error = "登录状态已失效，请重新登录"
+                    }
+
+                    RongIMClient.ConnectionStatusListener.ConnectionStatus.SERVER_INVALID,
+                    RongIMClient.ConnectionStatusListener.ConnectionStatus.CONN_USER_BLOCKED -> {
+                        status = Status.FAILED
+                        error = "聊天服务器拒绝连接：" + s.name
+                    }
+
+                    else -> Unit
                 }
-                if (status == Status.CONNECTED) refreshConversations()
             }
+        }
+    }
+
+    /**
+     * 前台 / 后台切换（由 MainActivity 的 onResume / onPause 调）。
+     *
+     * 后台期间心跳停掉：融云自己的长连接 + 系统推送负责收消息，我们不该在后台每 12 秒唤醒一次。
+     * 回前台先补一次刷新（后台期间推送可能漏），失败状态顺便重置重试次数，让它自己长回来。
+     */
+    fun setForeground(foreground: Boolean) {
+        if (appForeground == foreground) return
+        appForeground = foreground
+        if (!foreground) {
+            heartbeatJob?.cancel()
+            heartbeatJob = null
+            return
+        }
+        // 私信从没被用过（status 还是 IDLE 且没连过）就别在启动时把 IM 拉起来
+        if (status == Status.IDLE && !connectStarted) return
+        startHeartbeat()
+        when (status) {
+            Status.CONNECTED -> refreshNow()
+            Status.FAILED -> {
+                retryAttempt = 0
+                nextRetryAt = 0
+                ensureStarted()
+            }
+            else -> Unit
+        }
+    }
+
+    /** 心跳只跑一份 */
+    private fun startHeartbeat() {
+        if (heartbeatJob?.isActive == true) return
+        heartbeatJob = scope.launch {
+            while (true) {
+                kotlinx.coroutines.delay(HEARTBEAT_MS)
+                runCatching { heartbeatTick() }
+            }
+        }
+    }
+
+    /** 立刻对齐一次：会话列表 + 正在看的那个会话 */
+    private fun refreshNow() {
+        if (status != Status.CONNECTED) return
+        refreshConversations()
+        activePeer?.let { syncThread(it, activePeerIsGroup) }
+    }
+
+    /**
+     * 一次心跳。三件事：卡死解锁 → 假死重连 → 正常刷新。
+     */
+    private fun heartbeatTick() {
+        if (!appForeground) return
+        val now = nowMs()
+        android.util.Log.d(TAG, "心跳 status=" + status + " 会话=" + conversations.size + " active=" + activePeer)
+
+        // 1) 请求卡死自救：SDK 回调丢了就解锁。以前 `loadingConversations` 一旦卡在 true，
+        //    后面每次刷新都会以为「正在加载」，看上去就是私信再也不更新了。
+        if (loadingConversations && conversationRequestAt > 0 &&
+            now - conversationRequestAt > REQUEST_TIMEOUT_MS
+        ) {
+            android.util.Log.w(TAG, "会话列表请求超时，解锁后重试")
+            loadingConversations = false
+            conversationFailures++
+        }
+
+        when (status) {
+            Status.CONNECTED -> {
+                // 2) 假死判定：连着却一直没成功同步过，说明长连接已经不行了
+                if (lastConversationOkAt > 0 && now - lastConversationOkAt > STALE_AFTER_MS) {
+                    forceReconnect("超过 " + STALE_AFTER_MS / 1000 + "s 没有同步成功")
+                    return
+                }
+                // 3) 正常同步
+                refreshNow()
+            }
+
+            Status.CONNECTING -> {
+                // 连接卡在「连接中」太久：重来一次（弱网切换网络时很常见）
+                if (connectingSince > 0 && now - connectingSince > STALE_AFTER_MS) {
+                    forceReconnect("连接超时")
+                }
+            }
+
+            Status.FAILED -> {
+                // 第八十三轮二次修正：失败后**一直**按退避重试（12s → 24s → 48s → 60s 封顶），
+                // 而不是试 3 次就躺平。用户断网走进电梯再出来，是不该需要手动点「刷新」的。
+                if (now >= nextRetryAt) {
+                    retryAttempt++
+                    val wait = (HEARTBEAT_MS shl (retryAttempt - 1).coerceAtMost(3))
+                        .coerceAtMost(60_000L)
+                    nextRetryAt = now + wait
+                    android.util.Log.i(TAG, "失败后自动重试 #" + retryAttempt + "，下次间隔 " + wait + "ms")
+                    connectStarted = false
+                    status = Status.CONNECTING
+                    scope.launch { doConnect(allowTokenRefresh = true) }
+                }
+            }
+
+            Status.IDLE -> if (connectStarted) ensureStarted()
+        }
+    }
+
+    /**
+     * 强制重建连接。
+     *
+     * 优先用融云自己的 `reconnect`（它内部认当前的会话票据，重建 socket 比重新 `connect` 轻），
+     * 失败再退回完整流程 `doConnect`（会重新拿配置、必要时刷 token）。
+     */
+    private fun forceReconnect(reason: String) {
+        if (reconnecting) return
+        reconnecting = true
+        android.util.Log.i(TAG, "forceReconnect: " + reason)
+        status = Status.CONNECTING
+        error = "正在重新连接聊天服务器…"
+        connectingSince = nowMs()
+        retryJob?.cancel()
+        retryJob = scope.launch {
+            kotlinx.coroutines.delay(1200)
+            val client = runCatching { RongIMClient.getInstance() }.getOrNull()
+            if (client == null) {
+                reconnecting = false
+                status = Status.FAILED
+                return@launch
+            }
+            runCatching {
+                client.reconnect(object : RongIMClient.ConnectCallback() {
+                    override fun onSuccess(userId: String?) {
+                        reconnecting = false
+                        status = Status.CONNECTED
+                        error = null
+                        retryAttempt = 0
+                        nextRetryAt = 0
+                        conversationFailures = 0
+                        lastConversationOkAt = nowMs()
+                        refreshNow()
+                    }
+
+                    override fun onError(e: RongIMClient.ErrorCode?) {
+                        reconnecting = false
+                        android.util.Log.w(TAG, "reconnect 失败：" + e + "，改走完整连接")
+                        connectStarted = false
+                        status = Status.CONNECTING
+                        connectingSince = nowMs()
+                        scope.launch { doConnect(allowTokenRefresh = true) }
+                    }
+
+                    override fun onTokenIncorrect() {
+                        reconnecting = false
+                        Session.imToken = ""
+                        connectStarted = false
+                        status = Status.CONNECTING
+                        scope.launch { doConnect(allowTokenRefresh = true) }
+                    }
+                })
+            }.onFailure {
+                reconnecting = false
+                android.util.Log.w(TAG, "reconnect 抛异常：" + it.message)
+                connectStarted = false
+                status = Status.FAILED
+                error = "聊天服务器连接失败：" + (it.message ?: "未知错误")
+            }
+        }
+    }
+
+    /** 聊天页进来 / 离开：告诉心跳该顺带刷新哪条会话 */
+    fun setActiveChat(peerId: String?, isGroup: Boolean) {
+        activePeer = peerId
+        activePeerIsGroup = isGroup
+        if (peerId != null) {
+            lastThreadOkAt = nowMs()
+        }
+    }
+
+    /**
+     * 合并「服务端最新 N 条」与「本机还在发 / 刚发失败的本地回声」。
+     *
+     * 2026-11-15 第八十七轮（用户：「把显示问题一并修掉」）：
+     * 旧写法是 `mapped + pending`——直接往后追加、也不排序。于是每失败一次留下的本地回声
+     * 都堆在列表**最末尾**：一进会话，屏幕最新处全是「发送失败」，真正发出去的那些
+     * 视频/图片反而被顶到上面看不见，看起来就像「发出去的视频不显示」。
+     * 现在先按 key 去重、再按时间排序，失败的回声回到它自己那条消息的时间位置。
+     *
+     * @param current 当前内存里的列表（心跳刷新时也用它取本地回声）
+     */
+    private fun mergeThread(
+        mapped: List<ImMessage>,
+        current: List<ImMessage>,
+    ): List<ImMessage> {
+        val pending = current.filter {
+            it.state == ImMessage.STATE_SENDING || it.state == ImMessage.STATE_FAILED
+        }
+        if (pending.isEmpty()) return mapped
+        val seen = mapped.mapTo(HashSet(mapped.size)) { it.key }
+        return (mapped + pending.filter { it.key !in seen }).sortedBy { it.time }
+    }
+
+    /**
+     * 只同步某个会话的最新消息（不清未读、不建会话）。
+     *
+     * 与 [loadMessages] 的分工：进页面那次用 `loadMessages`（要清未读），之后心跳和兜底用这个，
+     * 免得每 12 秒都发一次 `clearMessagesUnreadStatus` 又把会话列表刷一遍。
+     * 正在发送/失败的本机消息会被保留，不会被服务端结果覆盖掉。
+     */
+    private fun syncThread(peerId: String, isGroup: Boolean) {
+        if (peerId.isBlank() || status != Status.CONNECTED) return
+        val type = if (isGroup) Conversation.ConversationType.GROUP else Conversation.ConversationType.PRIVATE
+        runCatching {
+            RongIMClient.getInstance().getLatestMessages(
+                type,
+                peerId,
+                30,
+                object : RongIMClient.ResultCallback<List<Message>>() {
+                    override fun onSuccess(list: List<Message>?) {
+                        val mapped = list.orEmpty().mapNotNull { ImMessage.of(it) }.sortedBy { it.time }
+                        if (mapped.isEmpty()) return
+                        val old = threads[peerId].orEmpty()
+                        val merged = mergeThread(mapped, old)
+                        lastThreadOkAt = nowMs()
+                        // 没变化就不写，避免每 12 秒把界面重组成同一个列表
+                        // （第八十七轮：比较里带上 state，发送中 → 已发送 / 失败才不会被当成「没变化」）
+                        if (old.size == merged.size &&
+                            old.map { it.key to it.state } == merged.map { it.key to it.state }
+                        ) {
+                            return
+                        }
+                        threads[peerId] = merged
+                        persistThread(peerId)
+                    }
+
+                    override fun onError(e: RongIMClient.ErrorCode?) {
+                        android.util.Log.w(TAG, "同步会话失败 " + peerId + "：" + e)
+                    }
+                }
+            )
+        }
+    }
+
+    /**
+     * 删除聊天记录（2026-11-15 第八十八轮，用户：「增加删除聊天记录功能，长按后仿照 QQ」）。
+     *
+     * 注意这是 QQ 的「删除」不是「撤回」：只是把消息从**本机**移除（IMLib 本地库 + 我们的
+     * 线程与缓存），对方那边的记录不受影响，也不能指望服务端同步撤回。
+     * [keys] 是界面选中的消息 key；messageId 为 0 的（还没入 SDK 库的本地回声）只从本地移除。
+     */
+    fun deleteMessages(peerId: String, keys: Set<String>) {
+        if (keys.isEmpty()) return
+        val before = threads[peerId].orEmpty()
+        val doomed = before.filter { it.key in keys }
+        if (doomed.isEmpty()) return
+        threads[peerId] = before.filterNot { it.key in keys }
+        persistThread(peerId)
+        val ids = doomed.map { it.messageId }.filter { it > 0 }.toIntArray()
+        if (ids.isEmpty()) {
+            refreshConversations()
+            return
+        }
+        runCatching {
+            RongIMClient.getInstance().deleteMessages(
+                ids,
+                object : RongIMClient.ResultCallback<Boolean>() {
+                    override fun onSuccess(t: Boolean?) {
+                        refreshConversations()
+                    }
+
+                    override fun onError(e: RongIMClient.ErrorCode?) {
+                        android.util.Log.w(TAG, "删除消息失败：" + e)
+                        error = "删除失败：${e?.name ?: "未知错误"}"
+                        // SDK 本地库没删掉的话，心跳同步会把它拉回来，不会丢记录
+                    }
+                },
+            )
+        }.onFailure {
+            android.util.Log.w(TAG, "deleteMessages 抛异常", it)
         }
     }
 
@@ -458,10 +863,22 @@ object ImRepository {
      */
     fun refreshConversations() {
         if (status != Status.CONNECTED) return
+        // 第八十三轮：上一次还没回来就别再发（心跳 12s 一次，正好和请求超时对齐）。
+        // 但超过超时时间就当作丢了，重新发 —— 否则一次回调丢失会把刷新永久堵死。
+        val startAt = nowMs()
+        if (loadingConversations && conversationRequestAt > 0 &&
+            startAt - conversationRequestAt < REQUEST_TIMEOUT_MS
+        ) {
+            return
+        }
         loadingConversations = true
+        conversationRequestAt = startAt
         RongIMClient.getInstance().getConversationList(
             object : RongIMClient.ResultCallback<List<Conversation>>() {
                 override fun onSuccess(list: List<Conversation>?) {
+                    // 第八十三轮：记一笔成功时间，假死判定和失败重连都靠它
+                    lastConversationOkAt = nowMs()
+                    conversationFailures = 0
                     val mapped = list.orEmpty()
                         .filter {
                             it.conversationType == Conversation.ConversationType.PRIVATE ||
@@ -506,7 +923,11 @@ object ImRepository {
 
                 override fun onError(e: RongIMClient.ErrorCode?) {
                     loadingConversations = false
+                    conversationFailures++
                     error = "会话列表加载失败：${e?.name ?: "未知错误"}"
+                    // 第八十三轮：连着两次拉不到就别傻等了，重建连接。
+                    // （以前这里只写一句错误文案，连接其实已经坏了，用户只能看着旧列表。）
+                    if (conversationFailures >= 2) forceReconnect("会话列表连续失败 " + conversationFailures + " 次")
                 }
             },
             Conversation.ConversationType.PRIVATE,
@@ -660,14 +1081,11 @@ object ImRepository {
             50,
             object : RongIMClient.ResultCallback<List<Message>>() {
                 override fun onSuccess(list: List<Message>?) {
+                    lastThreadOkAt = nowMs()
                     val mapped = list.orEmpty()
                         .mapNotNull { ImMessage.of(it) }
                         .sortedBy { it.time }
-                    // 还在「发送中」的本地消息不能被覆盖掉
-                    val pending = threads[peerId].orEmpty().filter {
-                        it.state == ImMessage.STATE_SENDING || it.state == ImMessage.STATE_FAILED
-                    }
-                    threads[peerId] = mapped + pending.filter { p -> mapped.none { it.key == p.key } }
+                    threads[peerId] = mergeThread(mapped, threads[peerId].orEmpty())
                     persistThread(peerId)
                     clearUnread(peerId, isGroup)
                     if (isGroup) {
@@ -759,28 +1177,33 @@ object ImRepository {
         notice = null
     }
 
-    /** 发一条文本（乐观上屏，失败标红） */
-    fun sendText(peerId: String, text: String, isGroup: Boolean = false) {
+    /**
+     * 发一条文本（乐观上屏，失败标红）。
+     *
+     * 返回 **是否已经入队**：断网 / 未连接时返回 false，调用方要保留输入框里的草稿 ——
+     * 第八十七轮修的一个小显示问题：以前断网时点发送，气泡没出现、草稿也被清空了，字直接丢掉。
+     */
+    fun sendText(peerId: String, text: String, isGroup: Boolean = false): Boolean {
         val body = text.trim()
-        if (body.isEmpty() || peerId.isBlank()) return
+        if (body.isEmpty() || peerId.isBlank()) return false
         if (status != Status.CONNECTED) {
             error = "IM 未连接，消息没有发出去"
-            return
+            return false
         }
         val message = Message.obtain(
             peerId,
             if (isGroup) Conversation.ConversationType.GROUP else Conversation.ConversationType.PRIVATE,
             TextMessage.obtain(body)
         )
-        val key = message.uId ?: UUID.randomUUID().toString()
-        threads[peerId] = threads[peerId].orEmpty() + ImMessage(
+        val key = message.uId?.takeIf { it.isNotBlank() } ?: UUID.randomUUID().toString()
+        threads[peerId] = (threads[peerId].orEmpty() + ImMessage(
             key = key,
             text = body,
             mine = true,
             time = System.currentTimeMillis(),
             state = ImMessage.STATE_SENDING,
             senderId = Session.userId,
-        )
+        )).sortedBy { it.time }
         persistThread(peerId)
         RongIMClient.getInstance().sendMessage(
             message,
@@ -790,16 +1213,17 @@ object ImRepository {
                 override fun onAttached(message: Message?) = Unit
 
                 override fun onSuccess(message: Message?) {
-                    mark(peerId, key, ImMessage.STATE_SENT)
+                    mark(peerId, key, ImMessage.STATE_SENT, message?.uId, message?.messageId)
                     refreshConversations()
                 }
 
                 override fun onError(message: Message?, e: RongIMClient.ErrorCode?) {
-                    mark(peerId, key, ImMessage.STATE_FAILED)
-                    error = "发送失败：${e?.name ?: "未知错误"}"
+                    mark(peerId, key, ImMessage.STATE_FAILED, message?.uId, message?.messageId)
+                    error = describeSendError(e)
                 }
             }
         )
+        return true
     }
 
     // ---------------------------------------------------------------- 富消息（2026-10-26 第六轮）
@@ -816,35 +1240,123 @@ object ImRepository {
         }
     }
 
-    /** 视频：`SightMessage`（小视频），[thumb] 是本地抽出来的封面 */
+    /**
+     * 视频：`SightMessage`（小视频），[thumb] 是本地抽出来的封面。
+     *
+     * 2026-11-15 第八十五轮：**参数顺序写反了**。SDK 的签名是
+     * `SightMessage.obtain(Uri thumbUri, Uri localPath, int duration)` —— 第一个是封面，
+     * 第二个才是视频本体（反编译 `SightMessage(Uri, Uri, int)`：`mThumbUri = a`、`setLocalPath(b)`）。
+     * 我们原来传的是 `(video, cover)`，于是「上传的视频」其实是那张封面 jpg、
+     * 「缩略图」指向视频文件，服务端按视频解析必然失败 —— 视频一直发不出去就是这个原因。
+     * 官方 IMKit 用的是 `SightMessage.obtain(uri, duration)`，顺序也是「封面在前」。
+     */
     fun sendVideo(peerId: String, video: Uri, thumb: Uri?, durationSec: Int, isGroup: Boolean = false) {
-        val cover = thumb ?: video
-        sendRich(peerId, isGroup, SightMessage.obtain(video, cover, durationSec), "[视频]") { key ->
+        // 第九十轮更正第八十九轮的结论：服务端限制**不在媒体文件体积**，而在消息体
+        // （序列化成 JSON 的 content ≤ 128KB）。视频文件走独立上传通道，300MB 文件实测能发，
+        // 所以这里不压缩视频本体 —— 压了既绕不开限制又白掉画质。要压的是封面，见 [ImMedia]。
+        val videoSize = video.path?.let { java.io.File(it).length() } ?: 0L
+        if (videoSize > MAX_SEND_BYTES) {
+            error = "视频超过 1GB，服务器可能无法接收，已取消发送"
+            return
+        }
+        // 第九十轮：`thumb ?: video` 是致命兜底 —— 抽帧失败时会把**整个视频文件**当封面，
+        // SDK 直接 file2byte + base64，几十 MB 必然超限甚至 OOM。现在强制收口到 ≤48KB 的 JPEG。
+        val cover = resolveThumb(thumb, video)
+        // 第八十五轮二次修正：必须用**两参** obtain(video, duration)。
+        // 三参 `obtain(thumb, local, duration)` 只设 mThumbUri 和 localPath，
+        // **不设 name / size**（那是 File 版构造函数干的活，两参 obtain 内部才会走 File 版），
+        // 实测这样发出去 SDK 直接回 PARAMETER_ERROR。官方 SightPlugin 用的也是两参版。
+        val sight = SightMessage.obtain(video, durationSec) ?: run {
+            android.util.Log.e("ImSend", "SightMessage.obtain 返回 null video=" + video)
+            error = "视频文件读不出来"
+            return
+        }
+        // 封面：两参 obtain 不带缩略图，单独补一次（接收端气泡靠它显示预览）
+        // 拿不到封面就干脆不设，让 SDK 走它自己的抽帧分支，绝不能塞视频文件。
+        if (cover != null) runCatching { sight.thumbUri = cover }
+        val thumbBytes = cover?.path?.let { java.io.File(it).length() } ?: 0L
+        android.util.Log.i(
+            "ImSend",
+            "准备发送视频 size=" + sight.size + " 封面字节=" + thumbBytes +
+                " 估算消息体≈" + ((thumbBytes + 2) / 3) * 4 +
+                " 文件存在=" + (sight.localPath?.path?.let { java.io.File(it).exists() } ?: false),
+        )
+        sendRich(peerId, isGroup, sight, "[视频]") { key ->
             ImMessage(
                 key = key, text = "[视频]", mine = true, time = System.currentTimeMillis(),
                 state = ImMessage.STATE_SENDING, senderId = Session.userId,
-                kind = ImMessage.KIND_VIDEO, uri = video.toString(), thumb = cover.toString(),
-                duration = durationSec,
+                kind = ImMessage.KIND_VIDEO, uri = video.toString(),
+                thumb = cover?.toString().orEmpty(), duration = durationSec,
             )
         }
     }
 
-    /** 文件：任意本地文件，带文件名与大小 */
+    /**
+     * 第九十轮：把封面收口到「一定 ≤48KB 的 JPEG」。
+     *
+     * 反编译 `SightMessageHandler.encodeMessage()`：只要 `thumbUri` 是 file://，
+     * 它就 `FileUtils.file2byte` → `Base64.encodeToString` → `setBase64`，
+     * **不缩放不压缩**；`SightMessage.encode()` 再把它作为 `content` 写进 JSON。
+     * ① 传进来的封面先走 [ImMedia.normalizeThumbFile]（合规原样用，不合规重压）；
+     * ② 没有封面 / 封面不是图片，就自己用 ThumbnailUtils 抽一帧再压；
+     * ③ 都失败返回 null —— **绝不把视频文件本身当封面**。
+     */
+    @Suppress("DEPRECATION")
+    private fun resolveThumb(thumb: Uri?, video: Uri): Uri? {
+        val supplied = thumb?.path?.let { java.io.File(it) }?.let { ImMedia.normalizeThumbFile(it) }
+        if (supplied != null) return Uri.fromFile(supplied)
+        val path = video.path ?: return null
+        val bmp = runCatching {
+            android.media.ThumbnailUtils.createVideoThumbnail(
+                path, android.provider.MediaStore.Video.Thumbnails.MINI_KIND,
+            )
+        }.getOrNull() ?: return null
+        val out = java.io.File(java.io.File(path).parentFile, "thumb_fb_" + System.currentTimeMillis() + ".jpg")
+        val result = ImMedia.writeThumb(bmp, out)
+        if (!bmp.isRecycled) bmp.recycle()
+        return result?.let { Uri.fromFile(it) }
+    }
+
+    /**
+     * 文件：任意本地文件，带文件名与大小。
+     *
+     * 2026-11-15 第八十五轮：**不要再覆盖 name/size**。`FileMessage.obtain(file://…)` 内部已经
+     * 用 `File.getName()` / `File.length()` 填好了；原来我们又拿 `OpenableColumns` 的值覆盖一遍，
+     * 而 SAF / 微信 QQ 的文件 provider 经常查不到 SIZE（返回 0），消息就变成「0 字节文件」，
+     * 服务端与对端都当成非法文件 —— 文件发不出去/对方收到 0 字节就是这个原因。
+     * 官方 `FilePlugin` 只 `setType(后缀)`，其余交给 SDK。
+     */
     fun sendFile(peerId: String, uri: Uri, name: String, size: Long, isGroup: Boolean = false) {
-        val content = FileMessage.obtain(uri).apply {
-            this.name = name
-            this.size = size
+        // 第八十九轮探测：300MB 都能发，这里只挡极端情况
+        if (size > MAX_SEND_BYTES) {
+            error = "文件超过 1GB，服务器可能无法接收，已取消发送"
+            return
         }
+        val content = FileMessage.obtain(uri) ?: run {
+            error = "文件不存在或读不出来"
+            return
+        }
+        if (name.isNotBlank()) content.name = name
+        name.substringAfterLast('.', "").lowercase().takeIf { it.isNotEmpty() }
+            ?.let { content.type = it }
+        // 大小以 SDK 从本地文件读到的那份为准（[size] 参数只作兜底，通常用不上）
+        val realSize = content.size.takeIf { it > 0 } ?: size
         sendRich(peerId, isGroup, content, "[文件]") { key ->
             ImMessage(
                 key = key, text = "[文件]", mine = true, time = System.currentTimeMillis(),
                 state = ImMessage.STATE_SENDING, senderId = Session.userId,
-                kind = ImMessage.KIND_FILE, uri = uri.toString(), name = name, size = size,
+                kind = ImMessage.KIND_FILE, uri = uri.toString(), name = name, size = realSize,
             )
         }
     }
 
-    /** 语音：录好的 m4a + 秒数 */
+    /**
+     * 语音：录好的 m4a/amr + 秒数。
+     *
+     * 2026-11-15 第八十五轮：真正的毛病不在编码，而在**发送 API 选错了**（见 [sendRich] 里的分流）。
+     * `VoiceMessage` 在 2.9 里继承的是 `MessageContent` 而不是 `MediaMessageContent`，
+     * 走 `sendMediaMessage` 会在 SDK 内部 `checkcast` 时抛 ClassCastException —— 语音必失败。
+     */
     fun sendVoice(peerId: String, uri: Uri, durationSec: Int, isGroup: Boolean = false) {
         sendRich(peerId, isGroup, VoiceMessage.obtain(uri, durationSec), "[语音]") { key ->
             ImMessage(
@@ -866,6 +1378,17 @@ object ImRepository {
         }
     }
 
+    /**
+     * 把融云错误码翻成人话。第九十轮：`RC_MSG_SIZE_OUT_OF_LIMIT` 极易被误读成
+     * 「视频文件太大」，实际是**消息体（JSON）超过 128KB**，多数由视频封面 base64 撑爆。
+     * 封面已在 [resolveThumb] 里压到 ≤48KB；若仍触发，给用户一个能看懂的提示。
+     */
+    private fun describeSendError(e: RongIMClient.ErrorCode?): String = when (e?.name) {
+        "RC_MSG_SIZE_OUT_OF_LIMIT", "MSG_SIZE_OUT_OF_LIMIT" ->
+            "发送失败：消息体超过 128KB（视频封面过大），请重发或换一个视频"
+        else -> "发送失败：${e?.name ?: "未知错误"}"
+    }
+
     /** 富消息统一出口：先乐观上屏，再由 SDK 上传/发送，失败标红 */
     private fun sendRich(
         peerId: String,
@@ -884,29 +1407,64 @@ object ImRepository {
             if (isGroup) Conversation.ConversationType.GROUP else Conversation.ConversationType.PRIVATE,
             content,
         )
-        val key = message.uId ?: UUID.randomUUID().toString()
-        threads[peerId] = threads[peerId].orEmpty() + echo(key)
+        val key = message.uId?.takeIf { it.isNotBlank() } ?: UUID.randomUUID().toString()
+        threads[peerId] = (threads[peerId].orEmpty() + echo(key)).sortedBy { it.time }
         persistThread(peerId)
         val callback = object : IRongCallback.ISendMediaMessageCallback {
-            override fun onProgress(message: Message?, progress: Int) = Unit
+            // 第八十五轮：上传进度与失败原因都留一条日志（tag ImSend），
+            // 以后「媒体发不出去」可以直接看是哪一步断的，不用再猜。
+            override fun onProgress(message: Message?, progress: Int) {
+                if (progress % 25 == 0) {
+                    android.util.Log.i("ImSend", "上传中 " + content.javaClass.simpleName + " " + progress + "%")
+                }
+            }
             override fun onCanceled(message: Message?) = Unit
             override fun onAttached(message: Message?) = Unit
             override fun onSuccess(message: Message?) {
-                mark(peerId, key, ImMessage.STATE_SENT)
+                android.util.Log.i("ImSend", "发送成功 " + content.javaClass.simpleName)
+                mark(peerId, key, ImMessage.STATE_SENT, message?.uId, message?.messageId)
                 refreshConversations()
             }
             override fun onError(message: Message?, e: RongIMClient.ErrorCode?) {
-                mark(peerId, key, ImMessage.STATE_FAILED)
-                error = "发送失败：${e?.name ?: "未知错误"}"
+                android.util.Log.e("ImSend", "发送失败 " + content.javaClass.simpleName + " code=" + e)
+                mark(peerId, key, ImMessage.STATE_FAILED, message?.uId, message?.messageId)
+                error = describeSendError(e)
+            }
+        }
+        /**
+         * 语音专用回调：`sendMessage` 只认 [IRongCallback.ISendMessageCallback]。
+         *
+         * 2026-11-15 第八十五轮（用户：「私信无法发送视频、语音、文件」）：
+         * `io.rong.message.VoiceMessage` 在 2.9 里 **不是** `MediaMessageContent`，
+         * 而 `sendMediaMessage()` 内部第一件事就是 `checkcast MediaMessageContent` —— 必抛
+         * ClassCastException，异常被下面的 runCatching 吞掉，用户只看到「发送失败」。
+         * 官方 App 的 IMKit（`AudioRecordManager.sendAudioFile`）发普通语音用的也是 `sendMessage`，
+         * 只有高清语音 `HQVoiceMessage`（它才是 MediaMessageContent）才走 sendMediaMessage。
+         */
+        val voiceCallback = object : IRongCallback.ISendMessageCallback {
+            override fun onAttached(message: Message?) = Unit
+            override fun onSuccess(message: Message?) {
+                mark(peerId, key, ImMessage.STATE_SENT, message?.uId, message?.messageId)
+                refreshConversations()
+            }
+            override fun onError(message: Message?, e: RongIMClient.ErrorCode?) {
+                android.util.Log.e("ImSend", "语音发送失败 code=" + e)
+                mark(peerId, key, ImMessage.STATE_FAILED, message?.uId, message?.messageId)
+                error = describeSendError(e)
             }
         }
         // 2026-10-31 第五十六轮：融云的 sendMediaMessage 是同步入口，内部读不到本地文件
         // （空文件 / 录音被截断）时会当场抛 RuntimeException，直接闪退。这里兜住并标红。
         runCatching {
-            if (content is LocationMessage) {
-                RongIMClient.getInstance().sendLocationMessage(message, push, null, callback)
-            } else {
-                RongIMClient.getInstance().sendMediaMessage(message, push, null, callback)
+            when (content) {
+                is LocationMessage ->
+                    RongIMClient.getInstance().sendLocationMessage(message, push, null, callback)
+
+                is VoiceMessage ->
+                    RongIMClient.getInstance().sendMessage(message, push, null, voiceCallback)
+
+                else ->
+                    RongIMClient.getInstance().sendMediaMessage(message, push, null, callback)
             }
         }.onFailure {
             android.util.Log.e("ImSend", "sendMediaMessage 抛异常", it)
@@ -915,15 +1473,52 @@ object ImRepository {
         }
     }
 
-    private fun mark(peerId: String, key: String, state: Int) {
-        threads[peerId] = threads[peerId].orEmpty().map {
-            if (it.key == key) it.copy(state = state) else it
+    /**
+     * 更新本地回声的状态。
+     *
+     * 2026-11-15 第八十七轮（用户：「把显示问题一并修掉」）：
+     * [sdkUid] 是发送回调里 SDK 给这条消息分配的 uId。之前本地回声一直用自造的
+     * `UUID` 当 key，服务端回来的那份副本 key 是 uId —— 两个 key 永远对不上，
+     * 合并时只能「两份都留」，界面就出现「一条正常副本 + 一条发送失败幽灵」。
+     * 现在成功/失败都把回声的 key 换成 uId，两份自然并成一条。
+     */
+    private fun mark(
+        peerId: String,
+        key: String,
+        state: Int,
+        sdkUid: String? = null,
+        sdkMessageId: Int? = null,
+    ) {
+        val newKey = sdkUid?.takeIf { it.isNotBlank() }
+        // 用 LinkedHashMap 覆盖写：同 key 时保留**后出现**的那份（刚更新的状态），
+        // 而不是像 distinctBy 那样保留先出现的旧状态。
+        val out = LinkedHashMap<String, ImMessage>()
+        threads[peerId].orEmpty().forEach { m ->
+            out[if (m.key == key) (newKey ?: m.key) else m.key] =
+                if (m.key == key) {
+                    m.copy(key = newKey ?: m.key, state = state, messageId = sdkMessageId ?: m.messageId)
+                } else m
         }
+        threads[peerId] = out.values.sortedBy { it.time }
         persistThread(peerId)
     }
 
     /** 退出登录时断开并清空（token / 会话 / 消息都是本进程内的状态） */
     fun release() {
+        // 第八十三轮：心跳属于「这个账号的会话」，退出登录必须一起停掉
+        heartbeatJob?.cancel()
+        heartbeatJob = null
+        retryJob?.cancel()
+        retryJob = null
+        reconnecting = false
+        activePeer = null
+        activePeerIsGroup = false
+        lastConversationOkAt = 0
+        lastThreadOkAt = 0
+        conversationRequestAt = 0
+        conversationFailures = 0
+        nextRetryAt = 0
+        loadingConversations = false
         runCatching { RongIMClient.getInstance().logout() }
         // 换账号不能看到上一个人的聊天：内存和磁盘快照一起清
         runCatching { java.io.File(AppContext.instance.filesDir, "im_cache").deleteRecursively() }

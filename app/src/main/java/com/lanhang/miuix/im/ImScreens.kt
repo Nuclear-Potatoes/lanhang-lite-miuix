@@ -8,7 +8,10 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -27,7 +30,9 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -51,6 +56,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.Image
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
@@ -62,15 +72,18 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.stringResource
 import com.lanhang.miuix.R
 import android.app.Activity
 import android.content.Context
+import android.content.Intent
 import android.content.ContextWrapper
 import com.lanhang.miuix.moments.UserInfoCache
 import com.lanhang.miuix.ui.MainActivity
 import com.lanhang.miuix.ui.miuix.LanhangAvatar
 import com.lanhang.miuix.ui.miuix.LanhangIcons
+import com.lanhang.miuix.ui.miuix.showMiuixConfirm
 import com.lanhang.miuix.ui.LoadingBlock
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import top.yukonga.miuix.kmp.basic.Card
@@ -83,6 +96,8 @@ import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
 import java.util.Locale
+import androidx.compose.ui.graphics.asAndroidBitmap
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
 import top.yukonga.miuix.kmp.icon.MiuixIcons
 import top.yukonga.miuix.kmp.icon.extended.File
@@ -121,15 +136,9 @@ fun ImConversationsScreen(
     val context = LocalContext.current
     LaunchedEffect(Unit) { context.findActivity()?.ensureNotifyPermission() }
 
-    // 每 20 秒静默刷一次会话列表（私信不是实时页面，别做长连接之外的额外开销）
-    LaunchedEffect(ImRepository.status) {
-        if (ImRepository.status == ImRepository.Status.CONNECTED) {
-            while (true) {
-                kotlinx.coroutines.delay(20_000)
-                ImRepository.refreshConversations()
-            }
-        }
-    }
+    // 2026-11-15 第八十三轮：这里的 20 秒轮询撤了 —— 自动刷新收进 ImRepository 的心跳
+    // （前台每 12s 对齐一次会话与当前会话，带失败重连与卡死自救，见 setForeground / heartbeatTick）。
+    // 页面自己再轮一份只会让同一秒发两个请求，还会在页面不可见时白跑。
 
     val conversations = ImRepository.conversations
 
@@ -495,6 +504,7 @@ private fun GroupAvatar() {
 }
 
 /** 聊天页：文本消息（发/收/历史），单聊与群聊共用 */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun ImChatScreen(
     peerId: String,
@@ -519,8 +529,12 @@ fun ImChatScreen(
     val chatContext = LocalContext.current
     DisposableEffect(peerId) {
         ImNotify.activePeerId = peerId
+        // 第八十三轮：告诉仓库「这条会话正在被看着」，心跳会顺带把它对齐
+        //（融云的消息回调漏一条时，聊天页 12 秒内也会自己补上）
+        ImRepository.setActiveChat(peerId, isGroup)
         ImNotify.cancel(chatContext, peerId)
         onDispose {
+            ImRepository.setActiveChat(null, false)
             if (ImNotify.activePeerId == peerId) ImNotify.activePeerId = null
         }
     }
@@ -627,6 +641,138 @@ fun ImChatScreen(
         else request.launch(permission)
     }
 
+    // ---- 2026-11-15 第八十八轮：长按气泡菜单（复制 / 多选 / 删除）+ 多选批量删除 / 导出长图
+    var menuMessage by remember(peerId) { mutableStateOf<ImMessage?>(null) }
+    var menuBounds by remember(peerId) { mutableStateOf<androidx.compose.ui.geometry.Rect?>(null) }
+    var selectMode by remember(peerId) { mutableStateOf(false) }
+    var selectedKeys by remember(peerId) { mutableStateOf<Set<String>>(emptySet()) }
+    val hostView = LocalView.current
+    var chatTopPx by remember { mutableStateOf(0f) }
+
+    fun exitSelection() {
+        selectMode = false
+        selectedKeys = emptySet()
+    }
+
+    fun toggleSelect(key: String) {
+        selectedKeys = selectedKeys.toMutableSet().apply { if (!add(key)) remove(key) }
+    }
+
+    /** QQ 的「删除」是删本机，不是撤回；条数在弹窗里写清楚，避免误删 */
+    fun requestDelete(keys: Set<String>) {
+        if (keys.isEmpty()) return
+        val count = keys.size
+        showMiuixConfirm(
+            context = chatContext,
+            title = chatContext.getString(R.string.im_delete_title),
+            message = chatContext.getString(R.string.im_delete_message, count),
+            confirmText = chatContext.getString(R.string.common_delete),
+            dismissText = chatContext.getString(R.string.common_cancel),
+        ) {
+            ImRepository.deleteMessages(peerId, keys)
+            exitSelection()
+            say(chatContext.getString(R.string.im_deleted, count))
+        }
+    }
+
+
+
+    // ---- 第八十九轮：QQ 式截图模式（点起止消息选范围 → 只渲染范围内的消息成长图）
+    var shotMode by remember(peerId) { mutableStateOf(false) }
+    var shotStart by remember(peerId) { mutableStateOf<Int?>(null) }
+    var shotEnd by remember(peerId) { mutableStateOf<Int?>(null) }
+    var hideNames by remember(peerId) { mutableStateOf(false) }
+    var shotBusy by remember(peerId) { mutableStateOf(false) }
+    var shotSheetFile by remember(peerId) { mutableStateOf<java.io.File?>(null) }
+    var shotPreviewBmp by remember(peerId) { mutableStateOf<android.graphics.Bitmap?>(null) }
+
+    /** 完整范围（起止都选了）：[min, max] 闭区间下标（局部变量不能带 getter，用函数） */
+    fun shotRange(): IntRange? {
+        val a = shotStart; val b = shotEnd
+        return if (a != null && b != null) minOf(a, b)..maxOf(a, b) else null
+    }
+
+    fun exitShotMode() {
+        shotMode = false
+        shotStart = null
+        shotEnd = null
+        shotSheetFile = null
+        shotPreviewBmp = null
+    }
+
+    /** QQ 的交互：第一次点 = 起点，第二次点 = 终点；已完整时再点 = 从新消息重新开始 */
+    fun pickShotRange(idx: Int) {
+        if (shotStart == null || (shotStart != null && shotEnd != null)) {
+            shotStart = idx
+            shotEnd = null
+        } else if (idx != shotStart) {
+            shotEnd = idx
+        }
+    }
+
+    /**
+     * 生成范围内消息的长图。preview=true 用应用内浮层预览；否则弹 QQ 式底部弹层
+     * （发送给好友 = 系统分享 / 保存到手机 = MediaStore）。
+     */
+    fun generateShot(preview: Boolean) {
+        val range = shotRange() ?: return
+        if (shotBusy) return
+        val activity = chatContext as? Activity
+        if (activity == null || hostView.width <= 0) {
+            say(chatContext.getString(R.string.im_shot_failed))
+            return
+        }
+        // messages 是快照列表，直接按下标取（范围就是按当前列表下标记的）
+        val picked = messages.slice(range)
+        if (picked.isEmpty()) return
+        scope.launch {
+            shotBusy = true
+            say(chatContext.getString(R.string.im_shot_generating))
+            val bmp = ImShot.renderLongImage(
+                activity = activity,
+                widthPx = hostView.width,
+                owner = hostView,
+            ) {
+                Column(
+                    modifier = Modifier
+                        .background(MiuixTheme.colorScheme.background)
+                        .padding(vertical = 10.dp),
+                ) {
+                    picked.forEach { m ->
+                        MessageBubble(
+                            message = m,
+                            peerId = peerId,
+                            peerName = peerName,
+                            // 隐藏昵称：非群聊本来就没有名字，这里把群标记也关掉
+                            isGroup = isGroup && !hideNames,
+                        )
+                    }
+                }
+            }
+            shotBusy = false
+            if (bmp == null) {
+                say(chatContext.getString(R.string.im_shot_failed))
+                return@launch
+            }
+            if (preview) {
+                shotPreviewBmp = bmp
+            } else {
+                val file = ImShot.saveShareFile(chatContext, bmp, "lanhang_chat_" + System.currentTimeMillis())
+                if (file == null) say(chatContext.getString(R.string.im_shot_failed))
+                else shotSheetFile = file
+            }
+        }
+    }
+
+    // 多选 / 截图 / 菜单开着的时候按返回 = 先收掉它们，而不是直接退出会话
+    androidx.activity.compose.BackHandler(enabled = selectMode || shotMode || menuMessage != null) {
+        when {
+            menuMessage != null -> menuMessage = null
+            shotMode -> exitShotMode()
+            else -> exitSelection()
+        }
+    }
+
     // 新消息进来 / 首次加载完成后滚到底：第一次是「瞬移」（页面刚进来，
     // 播动画会看到列表从顶上滑下来），之后才用动画跟着新消息走
     var jumpedToBottom by remember(peerId) { mutableStateOf(false) }
@@ -637,7 +783,80 @@ fun ImChatScreen(
         jumpedToBottom = true
     }
 
-    Column(modifier = modifier.fillMaxSize()) {
+    Box(
+        modifier = modifier
+            .fillMaxSize()
+            .onGloballyPositioned { chatTopPx = it.positionInRoot().y },
+    ) {
+        Column(modifier = Modifier.fillMaxSize()) {
+            // 截图模式顶栏（QQ 同款：标题「截图」+ 副标题「点击起止消息可选择范围」+ 右侧「清空选择」）
+            if (shotMode) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 14.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = stringResource(R.string.common_cancel),
+                        style = MiuixTheme.textStyles.body2,
+                        color = MiuixTheme.colorScheme.primary,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .clickable { exitShotMode() }
+                            .padding(horizontal = 6.dp, vertical = 4.dp),
+                    )
+                    Spacer(Modifier.weight(1f))
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text(
+                            text = stringResource(R.string.im_shot_title),
+                            style = MiuixTheme.textStyles.body1,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                        Text(
+                            text = stringResource(R.string.im_shot_hint),
+                            style = MiuixTheme.textStyles.footnote2,
+                            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                        )
+                    }
+                    Spacer(Modifier.weight(1f))
+                    Text(
+                        text = stringResource(R.string.im_shot_clear),
+                        style = MiuixTheme.textStyles.body2,
+                        color = MiuixTheme.colorScheme.primary,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .clickable { shotStart = null; shotEnd = null }
+                            .padding(horizontal = 6.dp, vertical = 4.dp),
+                    )
+                }
+            }
+            // 多选顶栏（QQ 同款：左边「取消」，中间「已选择 N 条消息」）
+            if (selectMode) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 14.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = stringResource(R.string.common_cancel),
+                        style = MiuixTheme.textStyles.body2,
+                        color = MiuixTheme.colorScheme.primary,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .clickable { exitSelection() }
+                            .padding(horizontal = 6.dp, vertical = 4.dp),
+                    )
+                    Spacer(Modifier.weight(1f))
+                    Text(
+                        text = stringResource(R.string.im_selected_count, selectedKeys.size),
+                        style = MiuixTheme.textStyles.body2,
+                    )
+                    Spacer(Modifier.weight(1f))
+                    Spacer(Modifier.width(40.dp))
+                }
+            }
         if (ImRepository.status != ImRepository.Status.CONNECTED) {
             ImStatusBar(onRefresh = { ImRepository.ensureStarted() })
         }
@@ -660,22 +879,133 @@ fun ImChatScreen(
                 modifier = Modifier.weight(1f).fillMaxWidth(),
                 contentPadding = PaddingValues(vertical = 10.dp),
             ) {
-                items(messages, key = { it.key }) { message ->
-                    MessageBubble(
-                        message = message,
-                        peerId = peerId,
-                        peerName = peerName,
-                        isGroup = isGroup,
-                        onOpenProfile = onOpenProfile,
-                        onOpenSelf = onOpenSelf,
-                        onHint = { say(it) },
-                    )
+                itemsIndexed(messages, key = { _, m -> m.key }) { index, message ->
+                    // 记住气泡在窗口里的位置：长按菜单要贴着这条气泡弹（第八十八轮）
+                    var itemBounds by remember(message.key) {
+                        mutableStateOf<androidx.compose.ui.geometry.Rect?>(null)
+                    }
+                    val dimmed = shotMode && index !in (shotRange() ?: IntRange.EMPTY)
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .onGloballyPositioned { itemBounds = it.boundsInRoot() }
+                            .combinedClickable(
+                                onClick = {
+                                    when {
+                                        selectMode -> toggleSelect(message.key)
+                                        shotMode -> pickShotRange(index)
+                                    }
+                                },
+                                onLongClick = {
+                                    if (!selectMode && !shotMode) {
+                                        menuMessage = message
+                                        menuBounds = itemBounds
+                                    }
+                                },
+                            ),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        if (selectMode) {
+                            SelectDot(
+                                checked = message.key in selectedKeys,
+                                modifier = Modifier.padding(start = 12.dp),
+                            )
+                        }
+                        Box(modifier = Modifier.weight(1f)) {
+                            MessageBubble(
+                                message = message,
+                                peerId = peerId,
+                                peerName = peerName,
+                                isGroup = isGroup,
+                                onOpenProfile = onOpenProfile,
+                                onOpenSelf = onOpenSelf,
+                                onHint = { say(it) },
+                                interactive = !selectMode && !shotMode,
+                                onLongPress = if (selectMode || shotMode) null else {
+                                    { menuMessage = message; menuBounds = itemBounds }
+                                },
+                            )
+                            // QQ 式截图：范围外的消息整条灰化，选中的保持高亮
+                            if (dimmed) {
+                                Box(
+                                    modifier = Modifier
+                                        .matchParentSize()
+                                        .background(Color.Black.copy(alpha = 0.45f)),
+                                )
+                            }
+                        }
+                    }
                 }
             }
         }
 
         // 输入条：贴底、跟着键盘上移。表情面板 / 「+」面板都开在输入条**上方**，
         // 三者（键盘、表情、附件）互斥——同屏时输入区会被顶掉半个屏幕（第五轮用户反馈）。
+        if (shotMode) {
+            // 截图模式底栏（QQ 同款）：预览 / 隐藏昵称 / 完成
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 24.dp, vertical = 10.dp),
+                horizontalArrangement = Arrangement.SpaceEvenly,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                ShotTextAction(
+                    label = stringResource(R.string.im_shot_preview),
+                    enabled = shotRange() != null && !shotBusy,
+                    onClick = { generateShot(preview = true) },
+                )
+                Row(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(12.dp))
+                        .clickable { hideNames = !hideNames }
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = stringResource(R.string.im_shot_hide_names),
+                        style = MiuixTheme.textStyles.body1,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MiuixTheme.colorScheme.onSurface,
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    SelectDot(checked = hideNames)
+                }
+                ShotTextAction(
+                    label = stringResource(R.string.im_shot_done),
+                    enabled = shotRange() != null && !shotBusy,
+                    primary = true,
+                    onClick = { generateShot(preview = false) },
+                )
+            }
+        } else if (selectMode) {
+            // 多选底栏（QQ 同款）：截图 = 进入 QQ 式范围截图（点起止消息选范围后再生成）；删除 = 批量删本机记录
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 24.dp, vertical = 8.dp),
+                horizontalArrangement = Arrangement.SpaceEvenly,
+            ) {
+                SelectionAction(
+                    icon = LanhangIcons.Crop,
+                    label = stringResource(R.string.im_action_capture),
+                    enabled = selectedKeys.isNotEmpty(),
+                    onClick = {
+                        // 第八十九轮：按 QQ 的做法，多选里点「截图」进入截图模式，点起止消息选范围
+                        exitSelection()
+                        shotStart = null
+                        shotEnd = null
+                        shotMode = true
+                    },
+                )
+                SelectionAction(
+                    icon = LanhangIcons.Trash,
+                    label = stringResource(R.string.common_delete),
+                    enabled = selectedKeys.isNotEmpty(),
+                    onClick = { requestDelete(selectedKeys) },
+                )
+            }
+        } else {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
@@ -865,20 +1195,18 @@ fun ImChatScreen(
                 Spacer(Modifier.width(8.dp))
                 if (voiceMode && draft.isBlank()) {
                     // 语音模式下的右侧按钮 = 切回键盘
-                    IconPill(
-                        text = stringResource(R.string.im_keyboard),
-                        icon = LanhangIcons.Backspace,
-                        primary = false,
+                    IconCircle(
+                        icon = LanhangIcons.Keyboard,
+                        description = stringResource(R.string.im_keyboard),
                         onClick = {
                             voiceMode = false
                             keyboard?.show()
                         },
                     )
                 } else if (draft.isBlank()) {
-                    IconPill(
-                        text = stringResource(R.string.im_voice),
+                    IconCircle(
                         icon = MiuixIcons.Mic,
-                        primary = false,
+                        description = stringResource(R.string.im_voice),
                         onClick = {
                             keyboard?.hide()
                             emojiOpen = false
@@ -889,19 +1217,143 @@ fun ImChatScreen(
                         },
                     )
                 } else {
-                    IconPill(
-                        text = stringResource(R.string.im_send),
+                    IconCircle(
                         icon = MiuixIcons.Send,
+                        description = stringResource(R.string.im_send),
                         primary = true,
                         onClick = {
                             val body = draft.trim()
                             if (body.isNotEmpty()) {
-                                ImRepository.sendText(peerId, body, isGroup)
-                                draft = ""
-                                emojiOpen = false
+                                // 2026-11-15 第八十七轮：断网时消息没入队，草稿必须留着 ——
+                                // 否则用户打的一段字点一下就凭空消失（只留下顶上一条连接提示）。
+                                if (ImRepository.sendText(peerId, body, isGroup)) {
+                                    draft = ""
+                                    emojiOpen = false
+                                } else {
+                                    say(context.getString(R.string.im_send_offline))
+                                }
                             }
                         },
                     )
+                }
+            }
+        }
+        }
+    }
+        // 第八十八轮：长按气泡的 QQ 风格菜单浮层（深色圆角卡片 + 图标文字）。
+        // 必须是外层 Box 的子级、和 Column 平级：放在 Column 里的话，fillMaxSize 的浮层
+        // 会把带 weight(1f) 的消息列表挤成 0 高（模拟器实测踩过这个坑）。
+        val activeMenu = menuMessage
+        if (activeMenu != null) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .clickable { menuMessage = null },
+            ) {
+                val bounds = menuBounds
+                val topDp = with(LocalDensity.current) {
+                    val top = ((bounds?.top ?: 0f) - chatTopPx).toDp()
+                    val height = (bounds?.height ?: 0f).toDp()
+                    // 气泡上方空间够就弹在上面，不够就挪到气泡下面（菜单高约 96dp）
+                    if (top > 160.dp) (top - 108.dp) else (top + height + 8.dp)
+                }
+                BubbleActionMenu(
+                    message = activeMenu,
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .padding(top = topDp.coerceAtLeast(8.dp))
+                        .padding(horizontal = 20.dp)
+                        .fillMaxWidth(),
+                    onCopy = {
+                        val text = activeMenu.text.ifBlank { activeMenu.name }
+                        val cm = chatContext.getSystemService(Context.CLIPBOARD_SERVICE)
+                            as? android.content.ClipboardManager
+                        cm?.setPrimaryClip(android.content.ClipData.newPlainText("message", text))
+                        say(chatContext.getString(R.string.im_copied))
+                        menuMessage = null
+                    },
+                    onMulti = {
+                        selectedKeys = setOf(activeMenu.key)
+                        selectMode = true
+                        menuMessage = null
+                    },
+                    onDelete = {
+                        requestDelete(setOf(activeMenu.key))
+                        menuMessage = null
+                    },
+                )
+            }
+        }
+        // 第八十九轮：长图预览浮层（黑底 + 原图 + 点击关闭）
+        shotPreviewBmp?.let { bmp ->
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.92f))
+                    .clickable { shotPreviewBmp = null },
+                contentAlignment = Alignment.Center,
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .verticalScroll(rememberScrollState())
+                        .padding(vertical = 40.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    Image(
+                        bitmap = bmp.asImageBitmap(),
+                        contentDescription = null,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 8.dp)
+                            .clip(RoundedCornerShape(8.dp)),
+                    )
+                    Text(
+                        text = stringResource(R.string.im_shot_tap_close),
+                        color = Color.White,
+                        style = MiuixTheme.textStyles.footnote2,
+                        modifier = Modifier.padding(top = 16.dp),
+                    )
+                }
+            }
+        }
+        // QQ 式底部弹层：发送给好友 / 保存到手机 / 取消
+        shotSheetFile?.let { file ->
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.35f))
+                    .clickable { shotSheetFile = null },
+                contentAlignment = Alignment.BottomCenter,
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp))
+                        .background(MiuixTheme.colorScheme.surface)
+                        .padding(vertical = 8.dp),
+                ) {
+                    SheetAction(label = stringResource(R.string.im_shot_send)) {
+                        runCatching {
+                            chatContext.startActivity(
+                                ImShot.shareIntent(chatContext, file).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                            )
+                        }
+                        shotSheetFile = null
+                    }
+                    SheetAction(label = stringResource(R.string.im_shot_save)) {
+                        scope.launch {
+                            val ok = withContext(Dispatchers.IO) {
+                                runCatching {
+                                    val bmp = android.graphics.BitmapFactory.decodeFile(file.absolutePath)
+                                    bmp != null && ImShot.saveToGallery(chatContext, bmp, file.nameWithoutExtension)
+                                }.getOrDefault(false)
+                            }
+                            say(chatContext.getString(if (ok) R.string.im_shot_saved else R.string.im_shot_failed))
+                            shotSheetFile = null
+                        }
+                    }
+                    SheetAction(label = stringResource(R.string.common_cancel)) { shotSheetFile = null }
                 }
             }
         }
@@ -1004,6 +1456,10 @@ private fun MessageBubble(
     onOpenProfile: (String) -> Unit = {},
     onOpenSelf: () -> Unit = {},
     onHint: (String) -> Unit = {},
+    /** 多选模式下点气泡应该是「勾选」，不是打开内容（第八十八轮） */
+    interactive: Boolean = true,
+    /** 长按气泡 → 复制/多选/删除菜单（第八十八轮） */
+    onLongPress: (() -> Unit)? = null,
 ) {
     val mine = message.mine
     // 群聊：发送者优先按消息里的 senderId 查（每个人都不一样）；单聊只有对方一个人
@@ -1038,7 +1494,7 @@ private fun MessageBubble(
                 modifier = Modifier
                     .clip(CircleShape)
                     // 点头像 → 这个人的个人主页（2026-10-26 第四轮：所有头像/姓名都要能点进主页）
-                    .clickable { onOpenProfile(senderId) },
+                    .tapWhen(interactive) { onOpenProfile(senderId) },
             )
             Spacer(Modifier.width(8.dp))
         }
@@ -1056,14 +1512,14 @@ private fun MessageBubble(
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier
                         .padding(start = 4.dp, bottom = 2.dp)
-                        .clickable { onOpenProfile(senderId) },
+                        .tapWhen(interactive) { onOpenProfile(senderId) },
                 )
             }
             val bubbleColor = if (mine) MiuixTheme.colorScheme.primary
             else MiuixTheme.colorScheme.surfaceContainerHigh
             // 图片气泡自己带圆角和尺寸，不再套内边距（否则四周会多出一圈色边）
             if (message.kind == ImMessage.KIND_IMAGE) {
-                BubbleBody(message = message, mine = mine, onHint = onHint)
+                BubbleBody(message = message, mine = mine, onHint = onHint, interactive = interactive, onLongPress = onLongPress)
             } else {
                 Box(
                     modifier = Modifier
@@ -1071,7 +1527,7 @@ private fun MessageBubble(
                         .background(bubbleColor)
                         .padding(horizontal = 12.dp, vertical = 8.dp),
                 ) {
-                    BubbleBody(message = message, mine = mine, onHint = onHint)
+                    BubbleBody(message = message, mine = mine, onHint = onHint, interactive = interactive, onLongPress = onLongPress)
                 }
             }
             Spacer(Modifier.height(2.dp))
@@ -1100,7 +1556,7 @@ private fun MessageBubble(
                 modifier = Modifier
                     .clip(CircleShape)
                     // 自己的头像 → 我的个人主页
-                    .clickable(onClick = onOpenSelf),
+                    .tapWhen(interactive) { onOpenSelf() },
             )
         }
     }
@@ -1112,8 +1568,20 @@ private fun MessageBubble(
  * 图片点开进应用内预览；视频、文件、位置交给系统（OpenGL 播放器 / 文件查看器 / 地图）；
  * 语音在应用内播放，同一时间只播一条（状态在 [ImMedia.Player]）。
  */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun BubbleBody(message: ImMessage, mine: Boolean, onHint: (String) -> Unit = {}) {
+private fun BubbleBody(
+    message: ImMessage,
+    mine: Boolean,
+    onHint: (String) -> Unit = {},
+    /** 长按气泡呼出菜单（第八十八轮）。文本气泡自己没有手势节点，用不到，靠外层那一行接住 */
+    onLongPress: (() -> Unit)? = null,
+    /**
+     * 多选模式（第八十八轮）下要把它关掉：否则气泡内部自己的 clickable（预览视频 / 打开文件 /
+     * 播地图）会抢走点按，「点气泡勾选」就没法用了 —— Compose 里子的手势总是赢过父容器。
+     */
+    interactive: Boolean = true,
+) {
     val context = LocalContext.current
     val textColor = if (mine) MiuixTheme.colorScheme.onPrimary else MiuixTheme.colorScheme.onSurface
     when (message.kind) {
@@ -1124,7 +1592,7 @@ private fun BubbleBody(message: ImMessage, mine: Boolean, onHint: (String) -> Un
             modifier = Modifier
                 .size(176.dp)
                 .clip(RoundedCornerShape(14.dp))
-                .clickable {
+                .longPressable(interactive, onLongPress) {
                     val url = message.uri.ifBlank { message.thumb }
                     if (url.isNotBlank()) {
                         runCatching { ImagePreviewActivity.start(context, listOf(url), 0) }
@@ -1138,7 +1606,7 @@ private fun BubbleBody(message: ImMessage, mine: Boolean, onHint: (String) -> Un
                 .height(118.dp)
                 .clip(RoundedCornerShape(12.dp))
                 .background(Color.Black.copy(alpha = 0.06f))
-                .clickable {
+                .longPressable(interactive, onLongPress) {
                     // 2026-11-14 第七十四轮（用户：「私信中发送视频或图片时，应该添加一个
                     // 预览功能直接预览发送的图片与视频」）：原来直接 ACTION_VIEW 丢给系统
                     // 播放器，会跳出 App 且没有转场。改成和图片一样的全屏预览（黑底 +
@@ -1185,7 +1653,7 @@ private fun BubbleBody(message: ImMessage, mine: Boolean, onHint: (String) -> Un
 
         ImMessage.KIND_FILE -> Row(
             verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier.clickable {
+            modifier = Modifier.longPressable(interactive, onLongPress) {
                 if (message.uri.isNotBlank()) {
                     ImMedia.openFile(
                         context = context,
@@ -1234,7 +1702,7 @@ private fun BubbleBody(message: ImMessage, mine: Boolean, onHint: (String) -> Un
             val playing = ImMedia.Player.playingKey == message.key
             Row(
                 verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier.clickable {
+                modifier = Modifier.longPressable(interactive, onLongPress) {
                     if (message.uri.isNotBlank()) ImMedia.Player.toggle(context, message.key, message.uri)
                 },
             ) {
@@ -1274,7 +1742,7 @@ private fun BubbleBody(message: ImMessage, mine: Boolean, onHint: (String) -> Un
         }
 
         ImMessage.KIND_LOCATION -> Column(
-            modifier = Modifier.clickable {
+            modifier = Modifier.longPressable(interactive, onLongPress) {
                 ImMedia.openLocation(context, message.lat, message.lng, message.poi)
             },
         ) {
@@ -1303,40 +1771,36 @@ private fun BubbleBody(message: ImMessage, mine: Boolean, onHint: (String) -> Un
 }
 
 /**
- * 输入条右侧的胶囊按钮：图标 + 文字。
+ * 输入条右侧的圆形图标按钮：只有图标，没有任何文字和容器底色。
  *
- * 2026-11-14 第七十三轮：用户反馈「私信主页的语音按钮缺少图标」。原来三个按钮都是
- * 纯文字 `TextButton`，而 Miuix 的 `TextButton` 不支持图文混排，这里自绘一个 38dp 高的
- * 胶囊：`primary` 为真时用主色实心（发送），否则用容器底色（语音 / 键盘）。
+ * 2026-11-15 第八十六轮（用户：「语音按钮不要加阴影，与左侧的按钮设计不统一，只保留图标就好，
+ * 不需要『语音』的文字；键盘同理」）：原来是 `IconPill`——38dp 胶囊 + `surfaceContainerHigh`
+ * 容器底色 + 「语音 / 键盘 / 发送」文字，看起来像浮起来的一块，跟左侧「+ / 表情」那两个
+ * 透明圆形图标完全不是一套东西。现在统一成同一套 38dp 圆形：
+ * - 普通态（语音 / 键盘）：透明底 + `onSurfaceVariantSummary` 图标，和 `+`、表情完全一致；
+ * - 主操作（发送）：主色实心圆 + 白色图标，是全条唯一的强调色。
  */
 @Composable
-private fun IconPill(
-    text: String,
+private fun IconCircle(
     icon: ImageVector,
-    primary: Boolean,
+    description: String,
+    primary: Boolean = false,
     onClick: () -> Unit,
 ) {
-    val bg = if (primary) MiuixTheme.colorScheme.primary else MiuixTheme.colorScheme.surfaceContainerHigh
-    val fg = if (primary) Color.White else MiuixTheme.colorScheme.onSurface
-    Row(
+    Box(
         modifier = Modifier
-            .height(38.dp)
-            .clip(RoundedCornerShape(19.dp))
-            .background(bg)
-            .clickable(onClick = onClick)
-            .padding(horizontal = 14.dp),
-        verticalAlignment = Alignment.CenterVertically,
+            .size(38.dp)
+            .clip(CircleShape)
+            .background(if (primary) MiuixTheme.colorScheme.primary else Color.Transparent)
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
     ) {
         Icon(
             imageVector = icon,
-            contentDescription = text,
-            tint = fg,
-            modifier = Modifier.size(18.dp),
+            contentDescription = description,
+            tint = if (primary) Color.White else MiuixTheme.colorScheme.onSurfaceVariantSummary,
+            modifier = Modifier.size(22.dp),
         )
-        if (text.isNotBlank()) {
-            Spacer(Modifier.width(5.dp))
-            Text(text = text, style = MiuixTheme.textStyles.body2, color = fg)
-        }
     }
 }
 /**
@@ -1549,4 +2013,174 @@ internal fun Context.findActivity(): MainActivity? {
         current = current.baseContext
     }
     return (current as? Activity) as? MainActivity
+}
+
+
+// ------------------------------------------------------------------ 第八十八轮：长按菜单 / 多选
+
+/**
+ * QQ 风格的长按菜单：深色圆角卡片 + 一排「图标在上、文字在下」的操作项。
+ * 只放用户要的三项：复制 / 多选 / 删除（不做转发、撤回、提醒那一整套）。
+ */
+@Composable
+private fun BubbleActionMenu(
+    message: ImMessage,
+    modifier: Modifier = Modifier,
+    onCopy: () -> Unit,
+    onMulti: () -> Unit,
+    onDelete: () -> Unit,
+) {
+    Box(
+        modifier = modifier
+            .clip(RoundedCornerShape(18.dp))
+            .background(Color(0xF03A3A3A))
+            .padding(vertical = 4.dp),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceEvenly,
+        ) {
+            // 文本消息才有「复制」；文件/语音/视频复制一段「[视频]」没有意义
+            if (message.kind == ImMessage.KIND_TEXT) {
+                MenuActionItem(icon = LanhangIcons.Copy, label = stringResource(R.string.im_menu_copy), onClick = onCopy)
+            }
+            MenuActionItem(icon = LanhangIcons.CheckCircle, label = stringResource(R.string.im_menu_multi), onClick = onMulti)
+            MenuActionItem(icon = LanhangIcons.Trash, label = stringResource(R.string.common_delete), onClick = onDelete)
+        }
+    }
+}
+
+@Composable
+private fun MenuActionItem(
+    icon: ImageVector,
+    label: String,
+    onClick: () -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .clip(RoundedCornerShape(12.dp))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 22.dp, vertical = 12.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = label,
+            tint = Color.White,
+            modifier = Modifier.size(22.dp),
+        )
+        Spacer(Modifier.height(6.dp))
+        Text(text = label, color = Color.White, style = MiuixTheme.textStyles.footnote1)
+    }
+}
+
+/** 多选圆圈：未选 = 空心灰圈，已选 = 主色实心 + 白色对勾（QQ 左侧那一排） */
+@Composable
+private fun SelectDot(checked: Boolean, modifier: Modifier = Modifier) {
+    Box(
+        modifier = modifier
+            .size(22.dp)
+            .clip(CircleShape)
+            .background(if (checked) MiuixTheme.colorScheme.primary else Color.Transparent)
+            .border(
+                width = 1.5.dp,
+                color = if (checked) MiuixTheme.colorScheme.primary
+                else MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                shape = CircleShape,
+            ),
+        contentAlignment = Alignment.Center,
+    ) {
+        if (checked) Text(text = "✓", color = Color.White, fontSize = 13.sp)
+    }
+}
+
+/** 截图模式底栏的粗体文字按钮（QQ 同款，无图标） */
+@Composable
+private fun ShotTextAction(
+    label: String,
+    enabled: Boolean,
+    primary: Boolean = false,
+    onClick: () -> Unit,
+) {
+    val color = when {
+        !enabled -> MiuixTheme.colorScheme.onSurfaceVariantSummary.copy(alpha = 0.4f)
+        primary -> MiuixTheme.colorScheme.primary
+        else -> MiuixTheme.colorScheme.onSurface
+    }
+    Text(
+        text = label,
+        style = MiuixTheme.textStyles.body1,
+        fontWeight = FontWeight.SemiBold,
+        color = color,
+        modifier = Modifier
+            .clip(RoundedCornerShape(12.dp))
+            .clickable(enabled = enabled, onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 10.dp),
+    )
+}
+
+/** QQ 式底部弹层的一行（发送给好友 / 保存到手机 / 取消） */
+@Composable
+private fun SheetAction(label: String, onClick: () -> Unit) {
+    Text(
+        text = label,
+        style = MiuixTheme.textStyles.body1,
+        color = MiuixTheme.colorScheme.onSurface,
+        textAlign = TextAlign.Center,
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(vertical = 16.dp),
+    )
+}
+
+/** 多选底栏的一个操作（截图 / 删除），未选中任何消息时置灰且不可点 */
+@Composable
+private fun SelectionAction(
+    icon: ImageVector,
+    label: String,
+    enabled: Boolean,
+    onClick: () -> Unit,
+) {
+    val tint = if (enabled) MiuixTheme.colorScheme.onSurface
+    else MiuixTheme.colorScheme.onSurfaceVariantSummary.copy(alpha = 0.4f)
+    Column(
+        modifier = Modifier
+            .clip(RoundedCornerShape(12.dp))
+            .clickable(enabled = enabled, onClick = onClick)
+            .padding(horizontal = 20.dp, vertical = 8.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Icon(imageVector = icon, contentDescription = label, tint = tint, modifier = Modifier.size(24.dp))
+        Spacer(Modifier.height(4.dp))
+        Text(text = label, style = MiuixTheme.textStyles.footnote1, color = tint)
+    }
+}
+
+
+/**
+ * 多选模式（第八十八轮）下**不安装** clickable —— 注意不能写成 `clickable(enabled = false)`：
+ * disabled 的 clickable 仍然会装一个手势节点并把点按吃掉，父层（列表项的 combinedClickable）
+ * 就永远收不到「点一下 = 勾选」这个事件（模拟器实测：视频气泡怎么点都勾不上）。
+ * 这里直接不加修饰符，父层自然能接住。
+ */
+private fun Modifier.tapWhen(interactive: Boolean, onTap: () -> Unit): Modifier =
+    if (interactive) clickable(onClick = onTap) else this
+
+
+/**
+ * [tapWhen] 的升级版：有长按回调时挂 `combinedClickable`（点按 = [onTap]，长按 = [onLongClick]），
+ * 没有就退回普通 clickable，多选态什么都不挂。
+ *
+ * 为什么媒体气泡要自己带长按：外层列表项虽然有 combinedClickable，但子层（视频/文件/图片）的
+ * clickable 会先把手势吃掉，长按落到子层就变成「松手打开预览」，菜单永远弹不出来（实测踩坑）。
+ */
+private fun Modifier.longPressable(
+    interactive: Boolean,
+    onLongClick: (() -> Unit)?,
+    onTap: () -> Unit,
+): Modifier = when {
+    !interactive -> this
+    onLongClick != null -> combinedClickable(onClick = onTap, onLongClick = onLongClick)
+    else -> clickable(onClick = onTap)
 }
