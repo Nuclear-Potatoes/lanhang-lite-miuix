@@ -20,6 +20,8 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -677,37 +679,26 @@ fun ImChatScreen(
 
 
 
-    // ---- 第八十九轮：QQ 式截图模式（点起止消息选范围 → 只渲染范围内的消息成长图）
+    // ---- 第九十二轮：截图模式改成「逐条点选」
+    // 灰 = 未选、亮 = 已选；点灰色把它加入，再点一次（已变亮）就取消。
+    // 原来是「点起点 → 点终点 → 再点从头开始」的连续范围模型，用户反馈交互很奇怪：
+    // 只点了起点时整屏都是灰的，点已选中的亮条也会把范围清空重来。
     var shotMode by remember(peerId) { mutableStateOf(false) }
-    var shotStart by remember(peerId) { mutableStateOf<Int?>(null) }
-    var shotEnd by remember(peerId) { mutableStateOf<Int?>(null) }
-    var hideNames by remember(peerId) { mutableStateOf(false) }
+    /** 用消息 key 记而不是下标：截图期间来了新消息，下标会整体位移 */
+    var shotSelected by remember(peerId) { mutableStateOf<Set<String>>(emptySet()) }
     var shotBusy by remember(peerId) { mutableStateOf(false) }
     var shotSheetFile by remember(peerId) { mutableStateOf<java.io.File?>(null) }
     var shotPreviewBmp by remember(peerId) { mutableStateOf<android.graphics.Bitmap?>(null) }
 
-    /** 完整范围（起止都选了）：[min, max] 闭区间下标（局部变量不能带 getter，用函数） */
-    fun shotRange(): IntRange? {
-        val a = shotStart; val b = shotEnd
-        return if (a != null && b != null) minOf(a, b)..maxOf(a, b) else null
-    }
-
     fun exitShotMode() {
         shotMode = false
-        shotStart = null
-        shotEnd = null
+        shotSelected = emptySet()
         shotSheetFile = null
         shotPreviewBmp = null
     }
 
-    /** QQ 的交互：第一次点 = 起点，第二次点 = 终点；已完整时再点 = 从新消息重新开始 */
-    fun pickShotRange(idx: Int) {
-        if (shotStart == null || (shotStart != null && shotEnd != null)) {
-            shotStart = idx
-            shotEnd = null
-        } else if (idx != shotStart) {
-            shotEnd = idx
-        }
+    fun toggleShot(key: String) {
+        shotSelected = shotSelected.toMutableSet().apply { if (!add(key)) remove(key) }
     }
 
     /**
@@ -715,15 +706,14 @@ fun ImChatScreen(
      * （发送给好友 = 系统分享 / 保存到手机 = MediaStore）。
      */
     fun generateShot(preview: Boolean) {
-        val range = shotRange() ?: return
-        if (shotBusy) return
+        if (shotBusy || shotSelected.isEmpty()) return
         val activity = chatContext as? Activity
         if (activity == null || hostView.width <= 0) {
             say(chatContext.getString(R.string.im_shot_failed))
             return
         }
-        // messages 是快照列表，直接按下标取（范围就是按当前列表下标记的）
-        val picked = messages.slice(range)
+        // 按聊天里的原始顺序渲染被选中的消息（选中的 key 集合本身无序）
+        val picked = messages.filter { it.key in shotSelected }
         if (picked.isEmpty()) return
         scope.launch {
             shotBusy = true
@@ -743,8 +733,7 @@ fun ImChatScreen(
                             message = m,
                             peerId = peerId,
                             peerName = peerName,
-                            // 隐藏昵称：非群聊本来就没有名字，这里把群标记也关掉
-                            isGroup = isGroup && !hideNames,
+                            isGroup = isGroup,
                         )
                     }
                 }
@@ -814,9 +803,10 @@ fun ImChatScreen(
                             fontWeight = FontWeight.SemiBold,
                         )
                         Text(
-                            text = stringResource(R.string.im_shot_hint),
+                            text = stringResource(R.string.im_shot_hint, shotSelected.size),
                             style = MiuixTheme.textStyles.footnote2,
                             color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                            maxLines = 1,
                         )
                     }
                     Spacer(Modifier.weight(1f))
@@ -826,7 +816,7 @@ fun ImChatScreen(
                         color = MiuixTheme.colorScheme.primary,
                         modifier = Modifier
                             .clip(RoundedCornerShape(8.dp))
-                            .clickable { shotStart = null; shotEnd = null }
+                            .clickable { shotSelected = emptySet() }
                             .padding(horizontal = 6.dp, vertical = 4.dp),
                     )
                 }
@@ -879,12 +869,13 @@ fun ImChatScreen(
                 modifier = Modifier.weight(1f).fillMaxWidth(),
                 contentPadding = PaddingValues(vertical = 10.dp),
             ) {
-                itemsIndexed(messages, key = { _, m -> m.key }) { index, message ->
+                itemsIndexed(messages, key = { _, m -> m.key }) { _, message ->
                     // 记住气泡在窗口里的位置：长按菜单要贴着这条气泡弹（第八十八轮）
                     var itemBounds by remember(message.key) {
                         mutableStateOf<androidx.compose.ui.geometry.Rect?>(null)
                     }
-                    val dimmed = shotMode && index !in (shotRange() ?: IntRange.EMPTY)
+                    // 灰 = 未选中、亮 = 已选中（第九十二轮：从「起止范围」改成逐条点选）
+                    val dimmed = shotMode && message.key !in shotSelected
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -893,7 +884,7 @@ fun ImChatScreen(
                                 onClick = {
                                     when {
                                         selectMode -> toggleSelect(message.key)
-                                        shotMode -> pickShotRange(index)
+                                        shotMode -> toggleShot(message.key)
                                     }
                                 },
                                 onLongClick = {
@@ -942,7 +933,7 @@ fun ImChatScreen(
         // 输入条：贴底、跟着键盘上移。表情面板 / 「+」面板都开在输入条**上方**，
         // 三者（键盘、表情、附件）互斥——同屏时输入区会被顶掉半个屏幕（第五轮用户反馈）。
         if (shotMode) {
-            // 截图模式底栏（QQ 同款）：预览 / 隐藏昵称 / 完成
+            // 截图模式底栏（第九十二轮去掉「隐藏昵称」）：预览 / 完成
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -952,28 +943,12 @@ fun ImChatScreen(
             ) {
                 ShotTextAction(
                     label = stringResource(R.string.im_shot_preview),
-                    enabled = shotRange() != null && !shotBusy,
+                    enabled = shotSelected.isNotEmpty() && !shotBusy,
                     onClick = { generateShot(preview = true) },
                 )
-                Row(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(12.dp))
-                        .clickable { hideNames = !hideNames }
-                        .padding(horizontal = 12.dp, vertical = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text(
-                        text = stringResource(R.string.im_shot_hide_names),
-                        style = MiuixTheme.textStyles.body1,
-                        fontWeight = FontWeight.SemiBold,
-                        color = MiuixTheme.colorScheme.onSurface,
-                    )
-                    Spacer(Modifier.width(8.dp))
-                    SelectDot(checked = hideNames)
-                }
                 ShotTextAction(
                     label = stringResource(R.string.im_shot_done),
-                    enabled = shotRange() != null && !shotBusy,
+                    enabled = shotSelected.isNotEmpty() && !shotBusy,
                     primary = true,
                     onClick = { generateShot(preview = false) },
                 )
@@ -991,10 +966,11 @@ fun ImChatScreen(
                     label = stringResource(R.string.im_action_capture),
                     enabled = selectedKeys.isNotEmpty(),
                     onClick = {
-                        // 第八十九轮：按 QQ 的做法，多选里点「截图」进入截图模式，点起止消息选范围
+                        // 第九十二轮：多选里勾选过的消息直接带进截图模式（它们保持亮色），
+                        // 没勾的保持灰色，再点灰条即可补选 / 点亮条即可取消
+                        val carried = selectedKeys
                         exitSelection()
-                        shotStart = null
-                        shotEnd = null
+                        shotSelected = carried
                         shotMode = true
                     },
                 )
@@ -1254,8 +1230,9 @@ fun ImChatScreen(
                 val topDp = with(LocalDensity.current) {
                     val top = ((bounds?.top ?: 0f) - chatTopPx).toDp()
                     val height = (bounds?.height ?: 0f).toDp()
-                    // 气泡上方空间够就弹在上面，不够就挪到气泡下面（菜单高约 96dp）
-                    if (top > 160.dp) (top - 108.dp) else (top + height + 8.dp)
+                    // 气泡上方空间够就弹在上面，不够就挪到气泡下面
+                    // （第九十二轮菜单收紧后高约 58dp，留 8dp 余量）
+                    if (top > 120.dp) (top - 66.dp) else (top + height + 8.dp)
                 }
                 BubbleActionMenu(
                     message = activeMenu,
@@ -1263,7 +1240,7 @@ fun ImChatScreen(
                         .align(Alignment.TopCenter)
                         .padding(top = topDp.coerceAtLeast(8.dp))
                         .padding(horizontal = 20.dp)
-                        .fillMaxWidth(),
+                        .wrapContentWidth(),
                     onCopy = {
                         val text = activeMenu.text.ifBlank { activeMenu.name }
                         val cm = chatContext.getSystemService(Context.CLIPBOARD_SERVICE)
@@ -2032,13 +2009,18 @@ private fun BubbleActionMenu(
 ) {
     Box(
         modifier = modifier
-            .clip(RoundedCornerShape(18.dp))
+            .clip(RoundedCornerShape(14.dp))
+            // 第九十二轮：吃掉卡片空白处的点按，否则点到按钮之间的缝会穿透到外层
+            // 遮罩、把菜单直接关掉（用户说的「点击范围有限」）
+            .clickable(interactionSource = null, indication = null) {}
             .background(Color(0xF03A3A3A))
-            .padding(vertical = 4.dp),
+            .padding(horizontal = 6.dp, vertical = 3.dp),
     ) {
+        // 不再 fillMaxWidth + SpaceEvenly：卡片按内容收紧，按钮挨在一起更好点
         Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceEvenly,
+            modifier = Modifier.wrapContentWidth(),
+            horizontalArrangement = Arrangement.spacedBy(2.dp),
+            verticalAlignment = Alignment.CenterVertically,
         ) {
             // 文本消息才有「复制」；文件/语音/视频复制一段「[视频]」没有意义
             if (message.kind == ImMessage.KIND_TEXT) {
@@ -2058,18 +2040,21 @@ private fun MenuActionItem(
 ) {
     Column(
         modifier = Modifier
-            .clip(RoundedCornerShape(12.dp))
+            .clip(RoundedCornerShape(10.dp))
             .clickable(onClick = onClick)
-            .padding(horizontal = 22.dp, vertical = 12.dp),
+            .widthIn(min = 56.dp)
+            .heightIn(min = 52.dp)
+            .padding(horizontal = 12.dp, vertical = 8.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
     ) {
         Icon(
             imageVector = icon,
             contentDescription = label,
             tint = Color.White,
-            modifier = Modifier.size(22.dp),
+            modifier = Modifier.size(20.dp),
         )
-        Spacer(Modifier.height(6.dp))
+        Spacer(Modifier.height(4.dp))
         Text(text = label, color = Color.White, style = MiuixTheme.textStyles.footnote1)
     }
 }

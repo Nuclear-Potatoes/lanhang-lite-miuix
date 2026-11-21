@@ -547,6 +547,10 @@
     <!-- 第九十一轮：他人主页的加好友 -->
     <string name="profile_add_friend">加好友</string>
     <string name="profile_friend_added">已添加</string>
+    <!-- 第九十二轮：申请已发出、对方还没同意 -->
+    <string name="profile_friend_pending">申请中</string>
+    <!-- 第九十二轮：单聊顶栏右上角「…」进对方主页 -->
+    <string name="im_chat_more">查看个人主页</string>
     <string name="friend_invite_greeting">你好，我是%1$s，想加你为好友</string>
     <string name="friend_invite_sent">好友申请已发送</string>
     <string name="friend_invite_failed">发送失败：%1$s</string>
@@ -560,10 +564,10 @@
     <string name="im_send_offline">连接不上私信服务，消息没有发出去（网络恢复后会自动重连）</string>
     <string name="im_copied">已复制</string>
     <string name="im_shot_title">截图</string>
-    <string name="im_shot_hint">点击起止消息可选择范围</string>
+    <!-- 第九十二轮：截图改成逐条点选，%1$d 是已选条数 -->
+    <string name="im_shot_hint">点灰条选中 / 再点取消（已选 %1$d 条）</string>
     <string name="im_shot_clear">清空选择</string>
     <string name="im_shot_preview">预览</string>
-    <string name="im_shot_hide_names">隐藏昵称</string>
     <string name="im_shot_done">完成</string>
     <string name="im_shot_generating">正在生成图片…</string>
     <string name="im_shot_send">发送给好友</string>
@@ -746,7 +750,10 @@
     <string name="moments_search_typing">输入关键词开始搜索（多个词用空格分隔）</string>
     <string name="moments_search_empty">没有匹配的动态</string>
     <string name="moments_search_count">共 %1$d 条匹配</string>
-    <string name="moments_search_scope">只在已加载的 %1$d 条动态里搜索，继续下滑加载后再搜</string>
+    <string name="moments_search_scope">搜索范围：最近 %1$d 条动态</string>
+<string name="moments_search_loading">正在往前多翻一些动态…（已 %1$d / %2$d 条）</string>
+<string name="moments_search_loading_short">正在往前多翻一些动态…（已 %1$d 条）</string>
+<string name="moments_search_pool_failed">补充动态失败，点这里重试</string>
     <string name="moments_search_open_post">查看</string>
 
     <string name="moments_filter_title">工作圈过滤</string>

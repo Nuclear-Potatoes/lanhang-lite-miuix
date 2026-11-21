@@ -435,10 +435,9 @@
     <string name="im_send_offline">Not connected to the chat service. Message was not sent.</string>
     <string name="im_copied">Copied</string>
     <string name="im_shot_title">Screenshot</string>
-    <string name="im_shot_hint">Tap start &amp; end messages to pick a range</string>
+    <string name="im_shot_hint">Tap to select / deselect (%1$d picked)</string>
     <string name="im_shot_clear">Clear</string>
     <string name="im_shot_preview">Preview</string>
-    <string name="im_shot_hide_names">Hide names</string>
     <string name="im_shot_done">Done</string>
     <string name="im_shot_generating">Generating image…</string>
     <string name="im_shot_send">Send to friend</string>
@@ -611,7 +610,10 @@
     <string name="moments_search_typing">Type keywords to search (separate with spaces)</string>
     <string name="moments_search_empty">No matching posts</string>
     <string name="moments_search_count">%1$d matches</string>
-    <string name="moments_search_scope">Only the %1$d loaded posts are searched; scroll to load more and search again</string>
+    <string name="moments_search_scope">Searching the latest %1$d posts</string>
+<string name="moments_search_loading">Loading more posts… (%1$d / %2$d)</string>
+<string name="moments_search_loading_short">Loading more posts… (%1$d)</string>
+<string name="moments_search_pool_failed">Couldn\'t load more posts. Tap to retry</string>
     <string name="moments_search_open_post">View</string>
 
     <string name="moments_filter_title">Moments filter</string>
@@ -723,6 +725,8 @@
     <string name="profile_message">Message</string>
     <string name="profile_add_friend">Add friend</string>
     <string name="profile_friend_added">Added</string>
+    <string name="profile_friend_pending">Pending</string>
+    <string name="im_chat_more">View profile</string>
     <string name="friend_invite_greeting">Hi, I am %1$s. Would you like to be friends?</string>
     <string name="friend_invite_sent">Friend request sent</string>
     <string name="friend_invite_failed">Failed: %1$s</string>

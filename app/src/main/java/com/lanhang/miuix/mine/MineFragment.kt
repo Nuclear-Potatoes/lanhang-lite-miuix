@@ -47,6 +47,7 @@ import com.lanhang.miuix.moments.MomentFeedSource
 import com.lanhang.miuix.moments.MomentItem
 import com.lanhang.miuix.moments.UserInfoCache
 import com.lanhang.miuix.im.ImRepository
+import com.lanhang.miuix.ui.miuix.LanhangIcons
 import com.lanhang.miuix.profile.ProfileStore
 import com.lanhang.miuix.profile.ProfileStackState
 import com.lanhang.miuix.profile.profileTitle
@@ -339,7 +340,19 @@ class MineFragment : Fragment() {
         } else if (page == MinePage.IM_CHAT) {
             // 聊天页顶栏显示对方名字 / 群名（拿不到就退回「私信」）
             val title = uiState.imPeerName.takeIf { it.isNotBlank() } ?: getString(R.string.mine_im)
-            act.showToolbarSub(title, onBack = { goBack() })
+            val peer = uiState.imPeerId
+            // 第九十二轮：单聊右上角加「…」，点它进对方个人主页；群聊没有单一对象，不加图标
+            if (!ImRepository.isGroup(peer)) {
+                act.showToolbarSub(
+                    title,
+                    onBack = { goBack() },
+                    actionIcon = LanhangIcons.More,
+                    actionContentDescription = getString(R.string.im_chat_more),
+                    onAction = { openOtherProfile(peer) },
+                )
+            } else {
+                act.showToolbarSub(title, onBack = { goBack() })
+            }
         } else if (page == MinePage.PROFILE_OTHER) {
             // 与他人主页同一份标题：姓名回来之前显示「个人主页」，回来之后是「X 的个人主页」
             val uid = profileStack.current.orEmpty()

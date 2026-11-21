@@ -383,6 +383,20 @@ object LanhangIconSet {
         }
     }
 
+    /**
+     * 更多：横排三个实心圆点（微信 / QQ 聊天页右上角那个「…」，第九十二轮）。
+     * 实心而非零长度描边线段：Skia 对零长 stroke 的 cap 处理不可靠（同文件 Keyboard 的教训）。
+     */
+    val More: ImageVector by lazy {
+        strokeIcon("Lanhang.More") {
+            path(fill = SolidColor(Color.Black)) {
+                circle(cx = 5.4f, cy = 12f, r = 1.75f)
+                circle(cx = 12f, cy = 12f, r = 1.75f)
+                circle(cx = 18.6f, cy = 12f, r = 1.75f)
+            }
+        }
+    }
+
     /** 复制：前后两张纸（长按消息菜单用，第八十八轮） */
     val Copy: ImageVector by lazy {
         strokeIcon("Lanhang.Copy") {

@@ -4,12 +4,17 @@ import android.app.Activity
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.Matrix
 import android.graphics.Paint
 import android.graphics.RectF
 import android.graphics.drawable.GradientDrawable
 import android.hardware.Camera
+import android.media.ExifInterface
+import android.net.Uri
 import android.os.Bundle
 import android.view.Gravity
 import android.view.SurfaceHolder
@@ -25,6 +30,7 @@ import com.google.zxing.BinaryBitmap
 import com.google.zxing.DecodeHintType
 import com.google.zxing.MultiFormatReader
 import com.google.zxing.PlanarYUVLuminanceSource
+import com.google.zxing.RGBLuminanceSource
 import com.google.zxing.common.HybridBinarizer
 import kotlin.math.max
 import kotlin.math.min
@@ -51,6 +57,14 @@ import kotlin.math.min
  * 2. 补取景框 —— 原来只有底部一行文字，用户不知道该把二维码对准哪里。
  *    现在四角亮框 + 四周压暗，中间是可直接扫描的方形区域。
  * 3. 补手电筒开关 —— 光线不足时用 `FLASH_MODE_TORCH` 常亮补光，再次点击熄灭。
+ *
+ * 第九十五轮（2026-11-20）按用户要求再补一件事：**从相册选图片扫码**。
+ * 有些二维码在屏幕上（截图、聊天里收到的图、别人发给你的海报），相机拍不准也拍不清，
+ * 直接在相册里挑原图识别最省事。左下角新增一个相册按钮（图标照 Material Icons
+ * `photo_library` outlined，见 `res/drawable/ic_album.xml`），走系统相册
+ * （`ACTION_GET_CONTENT`，不需要读相册权限），选中后把图解码出来交给 zxing。
+ * 大图按 `inSampleSize` 缩放后再解（防 OOM），并按 EXIF 方向旋正（手机拍的照片常带 90/180/270，
+ * 不旋正会扫不到）。识别成功走和相机扫描完全一样的回传路径。
  */
 class ScanQrActivity : Activity(), SurfaceHolder.Callback, Camera.PreviewCallback {
 
@@ -62,6 +76,20 @@ class ScanQrActivity : Activity(), SurfaceHolder.Callback, Camera.PreviewCallbac
 
         /** 结果码：用户主动放弃（按返回键 / 点关闭）。 */
         const val RESULT_CANCELLED = 1002
+
+        /** 第九十三轮：本页自己申请相机运行时权限的请求码。 */
+        private const val REQ_CAMERA = 7101
+
+        /** 第九十五轮：从相册选图识别的请求码。 */
+        private const val REQ_PICK_IMAGE = 7102
+
+        /**
+         * 第九十五轮：相册图解码后最长边的上限（像素）。
+         *
+         * 1600 是经验值：够 zxing 认出二维码，又把内存压在 `1600×1600×4B ≈ 10MB` 以内；
+         * 再往上加，识别率并不会明显变好，反而让低端机在 OOM 边缘晃。
+         */
+        private const val MAX_IMAGE_SIDE = 1600
 
         fun intent(context: Context): Intent = Intent(context, ScanQrActivity::class.java)
     }
@@ -84,17 +112,56 @@ class ScanQrActivity : Activity(), SurfaceHolder.Callback, Camera.PreviewCallbac
     /** 设备是否支持常亮补光；null 表示还没问过摄像头。 */
     private var torchSupported: Boolean? = null
 
+    /** 相册按钮（第九十五轮）。 */
+    private var albumButton: ImageView? = null
+
     private fun dp(value: Float): Int = max(1, (value * resources.displayMetrics.density).toInt())
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         if (checkSelfPermission(android.Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
-            // 正常路径不会走到这里（OaWebViewActivity 那边已经先申请过），
-            // 万一没有就直接放弃，让网页收到「取消」，不要卡一个黑屏。
-            setResult(RESULT_CANCELLED)
-            finish()
+            // 第九十三轮修正：这里以前直接 finish，注释写着「上游已经先申请过」——
+            // 但全工程根本没有第二处申请 CAMERA（清单只声明、OaWebViewActivity 只代网页 grant），
+            // 于是第一次点扫码就是「立刻返回、网页收到 code=0、用户看到毫无反应」。
+            // 现在自己申请，拿到权限再建界面；被拒绝才明确提示并回取消。
+            android.util.Log.i("ScanQr", "相机权限未授予，自己申请")
+            runCatching {
+                requestPermissions(arrayOf(android.Manifest.permission.CAMERA), REQ_CAMERA)
+            }.onFailure {
+                android.util.Log.w("ScanQr", "权限申请发起失败", it)
+                toastAndFinish("无法申请相机权限，请在系统设置里允许「蓝航」使用相机")
+            }
             return
         }
+        buildUi()
+    }
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray,
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode != REQ_CAMERA) return
+        val granted = grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED
+        android.util.Log.i("ScanQr", "相机权限结果 granted=" + granted)
+        if (granted) {
+            buildUi()
+        } else {
+            toastAndFinish("需要相机权限才能扫码，请在系统设置里允许「蓝航」使用相机")
+        }
+    }
+
+    private fun toastAndFinish(message: String) {
+        runCatching {
+            android.widget.Toast.makeText(this, message, android.widget.Toast.LENGTH_LONG).show()
+        }
+        setResult(RESULT_CANCELLED)
+        finish()
+    }
+
+    /** 真正搭界面 + 开预览。只有拿到相机权限后才会走到这里。 */
+    private fun buildUi() {
         reader.setHints(
             mapOf(
                 DecodeHintType.POSSIBLE_FORMATS to listOf(
@@ -158,6 +225,7 @@ class ScanQrActivity : Activity(), SurfaceHolder.Callback, Camera.PreviewCallbac
             setPadding(dp(17f), dp(17f), dp(17f), dp(17f))
             isClickable = true
             isFocusable = true
+            contentDescription = "手电筒"
             setOnClickListener { toggleTorch() }
             applyTorchLook(false)
         }
@@ -168,6 +236,29 @@ class ScanQrActivity : Activity(), SurfaceHolder.Callback, Camera.PreviewCallbac
             FrameLayout.LayoutParams(torchSize, torchSize).apply {
                 gravity = Gravity.BOTTOM or Gravity.END
                 rightMargin = dp(28f)
+                bottomMargin = dp(20f)
+            },
+        )
+
+        // 相册：左下角一个同样大小的圆钮。二维码在屏幕上（截图、别人发的海报）时，
+        // 相机怎么对都对不准，直接挑相册里的原图识别最省事。
+        val album = ImageView(this).apply {
+            setImageResource(R.drawable.ic_album)
+            scaleType = ImageView.ScaleType.CENTER_INSIDE
+            setPadding(dp(17f), dp(17f), dp(17f), dp(17f))
+            isClickable = true
+            isFocusable = true
+            contentDescription = "从相册选图"
+            setOnClickListener { pickImage() }
+            applyRoundLook(false, R.drawable.ic_album)
+        }
+        albumButton = album
+        val albumSize = dp(64f)
+        root.addView(
+            album,
+            FrameLayout.LayoutParams(albumSize, albumSize).apply {
+                gravity = Gravity.BOTTOM or Gravity.START
+                leftMargin = dp(28f)
                 bottomMargin = dp(20f)
             },
         )
@@ -197,13 +288,24 @@ class ScanQrActivity : Activity(), SurfaceHolder.Callback, Camera.PreviewCallbac
 
     /** 按钮外观：开启时白底深色图标（表示「正在补光」），关闭时半透明黑底白色图标。 */
     private fun ImageView.applyTorchLook(on: Boolean) {
-        val bg = GradientDrawable().apply {
+        applyRoundLook(on, R.drawable.ic_torch)
+    }
+
+    /**
+     * 圆钮外观，手电筒与相册共用，保证两个按钮长得一样。
+     *
+     * [active] 为 true 时白底深色图标（表示「已开启」），false 时半透明黑底白图标。
+     * 先 `setImageResource` 再 `setColorFilter`：换图后旧的滤镜会被清掉，
+     * 顺序反了这个按钮就会变成彩色原图。
+     */
+    private fun ImageView.applyRoundLook(active: Boolean, icon: Int) {
+        setImageResource(icon)
+        background = GradientDrawable().apply {
             shape = GradientDrawable.OVAL
-            setColor(if (on) 0xF2FFFFFF.toInt() else 0x66000000)
-            setStroke(dp(1f), if (on) 0x00000000 else 0x40FFFFFF)
+            setColor(if (active) 0xF2FFFFFF.toInt() else 0x66000000)
+            setStroke(dp(1f), if (active) 0x00000000 else 0x40FFFFFF)
         }
-        background = bg
-        setColorFilter(if (on) 0xFF1A1A1A.toInt() else Color.WHITE)
+        setColorFilter(if (active) 0xFF1A1A1A.toInt() else Color.WHITE)
     }
 
     /**
@@ -213,6 +315,134 @@ class ScanQrActivity : Activity(), SurfaceHolder.Callback, Camera.PreviewCallbac
      * 这时直接给用户一句提示，不要静默失败。设置失败（比如被别的应用占用）
      * 会把状态回滚，保证按钮显示和实际硬件状态一致。
      */
+    /**
+     * 打开系统相册挑一张图。
+     *
+     * 用 `ACTION_GET_CONTENT` 而不是读 `MediaStore`：前者由系统相册自己做，
+     * 不需要申请 `READ_MEDIA_IMAGES`，用户选哪张就给哪张的临时读权限，权限面最小。
+     */
+    private fun pickImage() {
+        // 去相册途中先把预览停掉：相机一直开着白占资源，返回时也容易拿到已失效的 Surface。
+        stopPreview()
+        val intent = Intent(Intent.ACTION_GET_CONTENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "image/*"
+        }
+        runCatching {
+            startActivityForResult(intent, REQ_PICK_IMAGE)
+        }.onFailure {
+            // 同 onActivityResult：先恢复预览，再写提示，否则文案会被 startPreview 重置。
+            startPreviewIfSurfaceReady()
+            if (camera != null) hint?.text = "没有找到可用的相册"
+        }
+    }
+
+    @Deprecated("旧的 startActivityForResult 回调，与 Camera1 时代保持一致")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode != REQ_PICK_IMAGE) return
+        val uri = data?.data
+        if (resultCode != RESULT_OK || uri == null) {
+            // 用户在相册里按了返回：恢复取景，不当作取消整个扫码。
+            startPreviewIfSurfaceReady()
+            return
+        }
+        val text = runCatching { decodeImage(uri) }.getOrNull()
+        if (text.isNullOrEmpty()) {
+            android.util.Log.i("ScanQr", "相册图片没识别到码 uri=$uri")
+            // 顺序不能反：startPreview 会自己把提示重置成「把二维码放进框内」，
+            // 先设文案再起预览就白设了。相机没起来时也不要盖掉它的失败原因。
+            startPreviewIfSurfaceReady()
+            if (camera != null) hint?.text = "这张图里没找到二维码"
+            return
+        }
+        android.util.Log.i("ScanQr", "相册识别成功 len=${text.length} text=$text")
+        deliver(text)
+    }
+
+    /**
+     * 从相册 URI 里解出二维码文本，解不出返回 null。
+     *
+     * 三步都不能省：① 先只读图头算 `inSampleSize`，四千万像素的原图直接
+     * `decodeStream` 会 OOM；② 按 EXIF 方向旋正，手机拍的照片常带 90/180/270，
+     * 不旋正 zxing 扫不到；③ 转成 `RGBLuminanceSource` 交给同一个 [reader]。
+     */
+    private fun decodeImage(uri: Uri): String? {
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        runCatching {
+            contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, bounds) }
+        }
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+        var sample = 1
+        while (bounds.outWidth / sample > MAX_IMAGE_SIDE || bounds.outHeight / sample > MAX_IMAGE_SIDE) {
+            sample *= 2
+        }
+        val opts = BitmapFactory.Options().apply { inSampleSize = sample }
+        val decoded = runCatching {
+            contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, opts) }
+        }.getOrNull() ?: return null
+        val upright = rotateByExif(decoded, uri)
+        if (upright !== decoded) decoded.recycle()
+        val w = upright.width
+        val h = upright.height
+        if (w <= 0 || h <= 0) {
+            upright.recycle()
+            return null
+        }
+        val pixels = IntArray(w * h)
+        upright.getPixels(pixels, 0, w, 0, 0, w, h)
+        upright.recycle()
+        val bitmap = BinaryBitmap(HybridBinarizer(RGBLuminanceSource(w, h, pixels)))
+        val result = runCatching { reader.decodeWithState(bitmap) }.getOrNull()
+        reader.reset()
+        return result?.text?.takeIf { it.isNotBlank() }
+    }
+
+    /** 按 EXIF 方向把图旋正；方向未知或本来就是正的，原样返回。 */
+    private fun rotateByExif(source: Bitmap, uri: Uri): Bitmap {
+        val orientation = runCatching {
+            contentResolver.openInputStream(uri)?.use {
+                ExifInterface(it).getAttributeInt(
+                    ExifInterface.TAG_ORIENTATION,
+                    ExifInterface.ORIENTATION_NORMAL,
+                )
+            }
+        }.getOrNull() ?: ExifInterface.ORIENTATION_NORMAL
+        val matrix = Matrix()
+        when (orientation) {
+            ExifInterface.ORIENTATION_ROTATE_90 -> matrix.postRotate(90f)
+            ExifInterface.ORIENTATION_ROTATE_180 -> matrix.postRotate(180f)
+            ExifInterface.ORIENTATION_ROTATE_270 -> matrix.postRotate(270f)
+            ExifInterface.ORIENTATION_FLIP_HORIZONTAL -> matrix.postScale(-1f, 1f)
+            ExifInterface.ORIENTATION_FLIP_VERTICAL -> matrix.postScale(1f, -1f)
+            ExifInterface.ORIENTATION_TRANSPOSE -> {
+                matrix.postRotate(90f)
+                matrix.postScale(-1f, 1f)
+            }
+            ExifInterface.ORIENTATION_TRANSVERSE -> {
+                matrix.postRotate(270f)
+                matrix.postScale(-1f, 1f)
+            }
+            else -> return source
+        }
+        return runCatching {
+            Bitmap.createBitmap(source, 0, 0, source.width, source.height, matrix, true)
+        }.getOrDefault(source)
+    }
+
+    /** 相机与相册共用出口：识别成功就带着结果关页。 */
+    private fun deliver(text: String) {
+        stopPreview()
+        setResult(RESULT_SCANNED, Intent().putExtra(EXTRA_RESULT, text))
+        finish()
+    }
+
+    /** 表面仍然有效就重启预览（从相册回来时用，否则取景框是黑的）。 */
+    private fun startPreviewIfSurfaceReady() {
+        val holder = surfaceView?.holder ?: return
+        if (holder.surface?.isValid == true) startPreview(holder)
+    }
+
     private fun toggleTorch() {
         val cam = camera
         if (cam == null) {
@@ -361,12 +591,7 @@ class ScanQrActivity : Activity(), SurfaceHolder.Callback, Camera.PreviewCallbac
         reader.reset()
         if (result != null) {
             // 扫到了：先停预览再回调，避免同一条码连着触发好几次。
-            stopPreview()
-            setResult(
-                RESULT_SCANNED,
-                Intent().putExtra(EXTRA_RESULT, result.text.orEmpty()),
-            )
-            finish()
+            deliver(result.text.orEmpty())
         }
     }
 
@@ -379,6 +604,17 @@ class ScanQrActivity : Activity(), SurfaceHolder.Callback, Camera.PreviewCallbac
     override fun onPause() {
         stopPreview()
         super.onPause()
+    }
+
+    /**
+     * 第九十五轮：从相册返回时要把预览重新拉起来。
+     *
+     * [onPause] 里已经把相机释放了，而 `surfaceCreated` 只会在 Surface 重建时回调一次，
+     * 相册盖上来再退回去通常不会重建 Surface —— 不在这里补一刀，用户看到的就是黑屏。
+     */
+    override fun onResume() {
+        super.onResume()
+        if (camera == null) startPreviewIfSurfaceReady()
     }
 
     /**

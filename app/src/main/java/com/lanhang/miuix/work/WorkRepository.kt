@@ -88,17 +88,20 @@ object WorkRepository {
      */
     suspend fun prepareFor(openUrl: String, appId: String?): WorkLaunch = withContext(Dispatchers.IO) {
         if (openUrl.isBlank()) return@withContext WorkLaunch("", null, null)
+        // 第九十六轮：token 一律现取，绝不用缓存的 Session.ldapToken。
+        // 有 appId（缴电费/教务系统等办事应用）→ 现取该应用的专属 appToken；
+        // 无 appId（门户）→ 现取 ldapToken。Session.ldapToken 约 2 小时过期且登录后不刷新，
+        // 直接拿它去打网关就是「偶发客户端身份鉴权失败」的根源。
         val token = appId?.takeIf { it.isNotBlank() }
             ?.let { id -> runCatching { RceApi.getAppToken(id) }.getOrNull() }
+            ?: runCatching { RceApi.getLdapToken() }.getOrNull()
         WorkLaunch(preflight(openUrl, token), token, cookieFor(openUrl))
     }
 
     /** 门户页（配置里的 features.work.url）同样先走一遍网关，拿 ldap token */
     suspend fun preparePortal(url: String): WorkLaunch = withContext(Dispatchers.IO) {
-        if (url.isBlank()) return@withContext WorkLaunch("", null, null)
-        val token = Session.ldapToken.takeIf { it.isNotBlank() }
-            ?: runCatching { RceApi.getLdapToken() }.getOrNull()
-        WorkLaunch(preflight(url, token), token, cookieFor(url))
+        // 第九十六轮：统一走 prepareFor —— 它现在保证 token 现取（ldapToken 会过期，不读缓存）
+        prepareFor(url, null)
     }
 
     /** 跟随跳转，把落地地址和沿途 Cookie 收进 ApiClient 的 CookieJar */

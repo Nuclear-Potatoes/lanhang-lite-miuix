@@ -65,6 +65,24 @@ import top.yukonga.miuix.kmp.theme.MiuixTheme
 private const val TAB_LIST_KEY = "tab_moments"
 
 /**
+ * 搜索池上限（第九十四轮）。
+ *
+ * 用户原话：「工作圈搜索的范围太小了，只有十条，扩展到 500 条」。
+ * 服务端没有搜索接口，能搜的只有本机手上的动态，所以进搜索页时自己往前翻，
+ * 最多攒这么多条 —— 既是范围，也是一次搜索最多发起多少次请求的天花板。
+ */
+private const val SEARCH_POOL_LIMIT = 500
+
+/**
+ * 搜索池每页请求条数。
+ *
+ * [MomentsApi.PAGE_SIZE] 是 10（动态流一屏的量，翻 50 页才能到 500，太慢），
+ * 这里明确要 50。若服务端不认这个 size、照样按 10 条返回，下面的循环
+ * 靠「本页是否带来新内容」判断，不会空转也不会提前误判到底。
+ */
+private const val SEARCH_PAGE_SIZE = 50
+
+/**
  * 工作圈宿主。视觉层换成 Compose + Miuix（见 [MomentsScreen]），
  * 这里只保留数据、翻页与增删改动作。
  */
@@ -80,6 +98,17 @@ class MomentsFragment : Fragment() {
     private var emptyText by mutableStateOf<String?>(null)
 
     private var fromFeedId: String? = null
+
+    // ---- 搜索池（第九十四轮）----
+    //
+    // 以前搜索页直接吃动态流内存里的 `items`：只翻过一页时，搜索范围就只有 10 条。
+    // 现在进搜索页就单独往前翻一个池子（最多 [SEARCH_POOL_LIMIT] 条），
+    // 边翻边可见 —— 用户不必等 500 条全下完才能搜。
+    private var searchPool by mutableStateOf<List<MomentItem>>(emptyList())
+    private var searchPoolLoading by mutableStateOf(false)
+    private var searchPoolEnded by mutableStateOf(false)
+    private var searchPoolFailed by mutableStateOf(false)
+    private var searchPoolJob: kotlinx.coroutines.Job? = null
 
     /** 点赞/评论会改 MomentItem 里的普通可变列表，靠它触发重组 */
     private var revision by mutableStateOf(0)
@@ -290,7 +319,16 @@ class MomentsFragment : Fragment() {
                         )
 
                         MomentPage.SEARCH -> MomentSearchScreen(
-                            items = items,
+                            // 搜索池还在下载时先拿动态流已有的顶上，界面不会空
+                            items = searchPool.ifEmpty { items },
+                            poolLoading = searchPoolLoading,
+                            poolEnded = searchPoolEnded,
+                            poolFailed = searchPoolFailed,
+                            poolLimit = SEARCH_POOL_LIMIT,
+                            onRetryPool = {
+                                searchPoolFailed = false
+                                ensureSearchPool()
+                            },
                             query = searchQuery,
                             onQueryChange = { searchQuery = it },
                             onOpenProfile = { openProfile(it) },
@@ -446,6 +484,8 @@ class MomentsFragment : Fragment() {
         page = MomentPage.SEARCH
         backCallback.isEnabled = true
         syncToolbar()
+        // 第九十四轮：进页面就开始补搜索池，用户边打字边往下翻
+        ensureSearchPool()
     }
 
     private fun closeSearch() {
@@ -604,6 +644,75 @@ class MomentsFragment : Fragment() {
         loadFailed = items.isEmpty()
         if (items.isEmpty()) emptyText = message else toast(message)
     }
+
+    /**
+     * 把搜索池补到 [SEARCH_POOL_LIMIT] 条（第九十四轮）。
+     *
+     * 做法：从最早一条起按 [SEARCH_PAGE_SIZE] 一页往下翻，攒进 `LinkedHashMap` 去重，
+     * 每拿到一页就刷新 [searchPool] —— 搜得到的东西是**逐步变多**的，不是等到底才出现。
+     *
+     * 三个停止条件：
+     *  1. 攒够 [SEARCH_POOL_LIMIT] 条；
+     *  2. 服务端返回空页（真的翻到底了）；
+     *  3. 本页没有任何新动态（服务端没再给东西 / 游标没往前走）—— 防死循环空转。
+     *
+     * 幂等：已经在跑、或者已经到底且有内容，就直接返回（反复进出搜索页不会重复请求）。
+     */
+    private fun ensureSearchPool() {
+        if (searchPoolJob?.isActive == true) return
+        if (searchPoolEnded && searchPool.isNotEmpty()) return
+        searchPoolLoading = true
+        searchPoolFailed = false
+        searchPoolJob = viewLifecycleOwner.lifecycleScope.launch {
+            try {
+                val acc = LinkedHashMap<String, MomentItem>()
+                // 动态流已经拿到过的先入池：一进搜索页就立刻能搜出结果
+                items.forEach { it.feed.feed_id?.let { id -> acc[id] = it } }
+                if (acc.isNotEmpty()) searchPool = acc.values.toList()
+                var cursor: String? = null
+                while (acc.size < SEARCH_POOL_LIMIT) {
+                    val page = withContext(Dispatchers.IO) {
+                        val ids = MomentsApi.getTimeLine(cursor, SEARCH_PAGE_SIZE)
+                        val feeds = MomentsApi.getFeeds(ids)
+                        val userIds = feeds.flatMap { f ->
+                            listOfNotNull(f.user_id) +
+                                (f.likes?.mapNotNull { it.user_id } ?: emptyList()) +
+                                (f.comments?.mapNotNull { it.user_id } ?: emptyList())
+                        }
+                        UserInfoCache.resolve(userIds)
+                        feeds
+                    }
+                    if (page.isEmpty()) {
+                        searchPoolEnded = true
+                        break
+                    }
+                    var added = 0
+                    page.forEach { f ->
+                        val id = f.feed_id
+                        if (id != null && acc.put(id, MomentItem(f)) == null) added++
+                    }
+                    cursor = page.lastOrNull()?.feed_id ?: cursor
+                    searchPool = acc.values.toList()
+                    if (added == 0) {
+                        searchPoolEnded = true
+                        break
+                    }
+                }
+                if (acc.size >= SEARCH_POOL_LIMIT) searchPoolEnded = true
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: ApiException) {
+                Diagnostics.record(AppContext.instance, AppContext.instance.getString(R.string.moments_tag_load), e)
+                searchPoolFailed = true
+            } catch (t: Throwable) {
+                Diagnostics.record(AppContext.instance, AppContext.instance.getString(R.string.moments_tag_load), t)
+                searchPoolFailed = true
+            } finally {
+                searchPoolLoading = false
+            }
+        }
+    }
+
 
     /**
      * 点赞 / 取消点赞。

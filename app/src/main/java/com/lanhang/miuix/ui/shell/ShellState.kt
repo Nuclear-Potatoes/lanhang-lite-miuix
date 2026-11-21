@@ -52,6 +52,12 @@ class ShellState {
      */
     var actionIcon by mutableStateOf<androidx.compose.ui.graphics.vector.ImageVector?>(null)
 
+    /**
+     * 图标动作的无障碍描述（第九十二轮）。留空时顶栏回落到「搜索」——
+     * 主 Tab 的工作圈搜索一直在用；二级页传自己的描述，别让读屏念成「搜索」。
+     */
+    var actionContentDescription by mutableStateOf<String?>(null)
+
     /** 文字动作的回调（图标动作也走这个） */
     var onAction by mutableStateOf<(() -> Unit)?>(null)
 

@@ -2,6 +2,278 @@
 >
 > **本文档已知缺漏**：① 缺 `## 80.` 与 `## 81.` 两轮记录（代码与 `VERSION.md` 已有，要点见 HANDOFF.md 第七节）；② 缺 `## 55.`（历史遗漏）。
 
+## 96. 第九十六轮（2026-11-21）：偶发「客户端身份鉴权失败」根因 —— 异步预检现取的 token 被丢弃（本地包，未 push）
+
+### 96.1 用户原话
+
+> 赣青二课页面的扫码功能又无法唤起了，修复问题。
+> （补充）偶发性发生鉴权失败的问题，彻查问题并修复。
+> （再补充）偶发性鉴权失败容易在点击「缴电费」「教务系统」时偶发，定位问题并修复。
+
+### 96.2 根因：`Session.ldapToken` 过期 + 现取 token 被丢弃
+
+- `Session.ldapToken` 是 JWT，**约 2 小时过期、登录后永不刷新**（只有 `MiniappApi.handshake()`
+  会用 `isJwtFresh()` 判定并刷新）。HANDOFF.md 早已明载「改密码/改手机号必须现取 token」，
+  那两处 74 轮已单独修过，但工作应用这条路径一直没修。
+- 「缴电费 / 教务系统」走 `WorkPage.openApp → OaWebViewActivity.open(preflightUrl=openUrl, appId=app.id)`：
+  本页 `onCreate` 异步调 `WorkRepository.prepareFor()`，**它现取了新鲜 appToken 和落地 Cookie**，
+  但收到 `WorkLaunch` 后第 249 行只取了 `launch.url`，**token / cookie 全丢**。
+- `createWebView()` 里 Token 头于是回落到 `intent.EXTRA_APP_TOKEN`（工作页传 null）→ 最后
+  `Session.ldapToken` 缓存。刚登录/刚刷新课表时它还新鲜 → 页面能开；过两小时过期 →
+  网关 `go.nchu.edu.cn` 回 `code=4000 客户端身份鉴权失败`。**这就是"偶发性"的全部来源**。
+  （第 93 轮的扫码 bug 已修并验证，本轮用户也提到扫码，但按补充定位，实际要解决的是鉴权。）
+
+### 96.3 修法：token 一律现取，并真正传进 WebView
+
+- `OaWebViewActivity.kt` 新增字段 `resolvedToken` / `resolvedCookie`：
+  - 预检分支：把 `launch.token` / `launch.cookie` 留住再落地 `resolvedUrl`（赋值顺序不能反 ——
+    `createWebView` 是在 url 落地、Compose 重组时才建 WebView 并读 headers）；
+  - 无预检分支：只要传了 `appId`（赣青二课 / 校园网账号页）就先异步现取 appToken 再落地 url；
+  - `createWebView()` 的 Token 头优先级改为 `resolvedToken > intent EXTRA > Session.ldapToken`；
+    落地 Cookie 优先用 `resolvedCookie`，其次 intent 旧快照。
+  - 加两行诊断日志：「预检完成 … 现取token=? 落地Cookie=?」与「Token 来源=预检现取/intent传入/缓存ldap(可能过期)」。
+- `WorkRepository.kt`：`prepareFor()` 的 token 改为一律现取 —— 有 appId 取 appToken，无 appId
+  取 ldapToken，**不再可能返回 null 让 WebView 回落缓存**；`preparePortal()` 直接委托 `prepareFor(url, null)`。
+- 覆盖全部入口：办事应用（预检+appId）、赣青二课（无预检+appId）、工作门户（预检无 appId）、
+  校园网账号页（无预检+appId）、改密码/改手机号（调用方现取传 intent）——没有任何一条路径
+  再依赖会过期的缓存 ldapToken 去打校内网关。
+
+### 96.4 验证（emulator-5554，装 84/1.1.32 新包）
+
+- 「缴电费」：`token resp code=200 getAppToken/7eHpgOZn…` → `preflight code=200 final=…EcardLogin.aspx`
+  → `预检完成 appId=… 现取token=true 落地Cookie=true` → **`Token 来源=预检现取`**；
+  页面正常显示姓名/学号/缴费列表/校区/支付方式，无任何「身份鉴权失败 / code=4000」日志。
+- 「智慧教务（本科生）」：同样 `现取token=true`、`Token 来源=预检现取`，
+  `preflight code=200 final=h5.jwc.nchu.edu.cn/...`，页面显示站点自己的「登陆账号选择」，非鉴权失败。
+- 修复前这两条路径的「Token 来源」必然是「缓存ldap(可能过期)」——日志字段本身就是回归判据。
+- 截图：`s96_ecard.png`（缴费页正常）、`s96_jwc.png`（教务页正常）。
+
+### 96.5 交付
+
+`assembleRelease` 成功（1m40s），APK **8,860,564 字节**，SHA256 `07296CD6…E004CA92`，
+已放项目根 `lanhang-miuix-release.apk` + `artifacts/apk/`；aapt2 确认仍 **versionCode 84 / versionName 1.1.32**，
+v2 签名通过。按用户规矩**未 push、未升版本号**，`push/repo` 未动。备份 `scratch/bak96/`。
+
+### 96.6 教训
+
+- **「偶发」先找会过期的东西**：本例是 JWT token（2h）+ 只在握手时刷新。用户说「偶发」、
+  「点某几个入口才犯」，几乎就是在指「这几条路径用了缓存凭证、别的路径现取」。
+- **异步拿到的东西别只用一半**：`WorkLaunch(url, token, cookie)` 只取 url 是这次的根因。
+  拿到含多个字段的结果对象时，逐个核对每个字段是否都被消费。
+- **赋值顺序 = 时序契约**：`resolvedToken` 必须在 `resolvedUrl` 之前赋值，否则 Compose 在 url
+  落地那一刻建的 WebView 读到的还是旧 token。这类「先设 A 再设触发重组的 B」要写进注释。
+- 加「来源」诊断日志（token 从哪来）非常值得：它把「偶发」变成可判定的日志字段，
+  下次一眼就能确认走的是现取还是缓存。
+
+## 95. 第九十五轮（2026-11-20）：扫码页加「从相册选图」圆钮 —— 本地解码 + 共用回传出口（本地包，未 push）
+
+### 95.1 用户原话
+
+「在扫码界面加入一个新的按钮，提供从相册中选择图片进行扫描的功能，图标参考网络矢量图标库中的相册图标，不要自己绘制」
+
+### 95.2 问题定位
+
+`ui\ScanQrActivity.kt`（Camera1 + zxing）只有一条取景路径：`surfaceCreated → startPreview` → `onPreviewFrame` 里 `PlanarYUVLuminanceSource + rotateCounterClockwise + HybridBinarizer` 解码，命中就 `setResult(RESULT_SCANNED)` + `finish()`。没有第二条输入源，用户手上已有的截图/相册照片完全用不上。`res\drawable\` 里也没有相册图标（只有 ic_torch 等 7 个）。依赖侧现成可用：`app\build.gradle.kts:115` 已有 `com.google.zxing:core:3.5.3`，`RGBLuminanceSource` 直接能把 Bitmap 喂给同一个 `reader`。
+
+另外两个隐患：① `onPause` 会 `stopPreview()` 释放相机，但**没有 `onResume` 重启**——相册盖上来再退回去 Surface 通常不重建，`surfaceCreated` 不回调，画面就黑着；② `startPreview()` 末尾无条件 `hint?.text = "把二维码放进框内"`，谁先写提示谁被覆盖。
+
+### 95.3 改法
+
+**图标**（不自绘，抄库）：新建 `res\drawable\ic_album.xml`，Google Material Icons **`photo_library` outlined** 24×24 单 path，`fillColor="#FFFFFFFF"`，pathData 原样不动；顶部注释写来源 `https://fonts.google.com/icons?selected=Material%20Icons%20Outlined%3Aphoto_library` 与 GitHub 源图路径。注意**注释只能放元素之间，插进属性列表 AAPT2 会报错**。
+
+`ui\ScanQrActivity.kt`：
+- 新增 import `Bitmap` / `BitmapFactory` / `Matrix`、`ExifInterface`、`Uri`、`RGBLuminanceSource`；companion 加 `REQ_PICK_IMAGE = 7102`、`MAX_IMAGE_SIDE = 1600`（1600² × 4B ≈ 10 MB 上限）；字段加 `albumButton: ImageView?`。
+- `buildUi()` 在手电筒块之后加相册圆钮：`R.drawable.ic_album`、64dp、`Gravity.BOTTOM or Gravity.START`、`leftMargin = dp(28f)`、`bottomMargin = dp(20f)`（与右下手电筒左右对称）、`contentDescription = "从相册选图"`、点 `pickImage()`。
+- 外观抽公共函数：`ImageView.applyRoundLook(active, icon)`（`setImageResource` → OVAL `GradientDrawable` → `setColorFilter`；**顺序不能反**，反了按钮会显示彩色原图）；原 `applyTorchLook(on)` 缩成一行委托。
+- `pickImage()`：先 `stopPreview()`（别白占相机，也避免返回时拿到失效 Surface）→ `ACTION_GET_CONTENT` + `CATEGORY_OPENABLE` + `type = "image/*"`（**不需要相册权限**）→ `runCatching { startActivityForResult(..., REQ_PICK_IMAGE) }`，失败先恢复预览再提示。
+- `onActivityResult`（`@Deprecated`，与 Camera1 时代一致）：非 `REQ_PICK_IMAGE` 直接返回；取消/`uri == null` → 只恢复取景（**不当作取消整个扫码**）；否则 `decodeImage(uri)`，空 → log + 恢复预览 + 提示「这张图里没找到二维码」且**不退出**；成功 → log + `deliver(text)`。
+- `decodeImage(uri)`：① `inJustDecodeBounds` 先只读图头，`while (outW/sample > 1600 || outH/sample > 1600) sample *= 2`；② 带 `inSampleSize` 二次 decode；③ `rotateByExif()` 旋正后原图 `recycle()`；④ `getPixels` → `RGBLuminanceSource` → `BinaryBitmap(HybridBinarizer)` → `reader.decodeWithState()` / `reset()`。
+- `rotateByExif()`：`ExifInterface` 读 `TAG_ORIENTATION`，用 `Matrix` 处理 90/180/270 + 两个 FLIP + TRANSPOSE/TRANSVERSE，失败兜底原图。
+- `deliver(text)`：相机与相册**共用出口**（`stopPreview` → `setResult(RESULT_SCANNED, …EXTRA_RESULT)` → `finish()`），原 `onPreviewFrame` 命中分支改为只调它。
+- `onResume()`：`if (camera == null) startPreviewIfSurfaceReady()`；后者只在 `holder.surface.isValid` 时 `startPreview(holder)`。
+- **提示顺序**：两处失败分支都改成「先 `startPreviewIfSurfaceReady()`，再 `if (camera != null) hint?.text = …`」——先写文案会被 `startPreview` 内部重置；相机没起来时也别盖掉它自己的失败原因（「摄像头打不开」/「摄像头初始化失败」）。
+
+### 95.4 验证（emulator-5554，端到端）
+
+- 造测试码：**手写 QR 编码器连错两次**（`scratch\make_qr.py`，版本 4-L 是 1 块 80 数据 + 20 纠错共 100 码字，不是 2×100；格式信息位序、finder 分隔带、reserved 区一个接一个错）→ 改用 zxing `QRCodeWriter`：`scratch\QrMake.java` 出图、`scratch\QrVerify.java` 回验 `DECODED=HELLO-LANHANG-ALBUM-TEST size=720x720`。
+- **相册选图入口**：`adb push` 进 `/sdcard/Pictures/` 的图 `datetaken = NULL`，在 Photo Picker 里排到几百张老图之后，`content update --bind datetaken` 也不刷新 Picker 快照 → 最终靠「先把二维码显示在屏幕上，再 `screencap` 到 `/sdcard/Pictures/`」让时间戳置顶。
+- 进页路径：工作 Tab `tap 458 2460` → 赣青二课 `tap 600 1356` → 顶栏扫码 `tap 1123 299`（`am start -n …/.ui.ScanQrActivity` 会被 `SecurityException: not exported` 拒掉）→ 相册钮 `tap 145 2470` → Photo Picker 选图。
+- **成功路径**（改前后各验一次）：日志 `I ScanQr: 相册识别成功 len=24 text=HELLO-LANHANG-ALBUM-TEST`，随后 `ScanQrActivity` finish，WebView 侧连续三行 `扫码结果res.data: [object Object]` / `扫码结果res.data.qrCode: HELLO-LANHANG-ALBUM-TEST` / `item:  HELLO-LANHANG-ALBUM-TEST`（其后站点的 `JSON.parse` 报 `Unexpected token 'H'` 是站点自己行为，非我方 bug）。**第 93 轮遗留的「`{code:1,data:{qrCode}}` 回传要真机」到此闭合。**
+- **失败路径**：选无码图 → `I ScanQr: 相册图片没识别到码 uri=content://media/picker_get_content/…`，页面不退、取景恢复、提示「这张图里没找到二维码」（`scratch\qa.png` 为修完顺序后的证据，`scratch\q9.png` 为修前被覆盖的那一版）。
+- 截图：`q1.png`（二课首页）、`q2.png`（扫码页新布局：左下相册 / 右下手电筒 / 提示居中）、`q3.png`（Photo Picker）、`qb.png`（缩略图网格）、`qa.png` / `q9.png`（失败路径）。
+
+### 95.5 交付
+
+`BUILD SUCCESSFUL in 2m 16s`（修提示顺序后重编）；APK **8,860,564 字节**，SHA256 `0ADEE9E02BD3AF584678EA09CAFEEE012683B61D506E63F7B69C7B9F0E8CDED2`，已复制到项目根 `lanhang-miuix-release.apk`。engine 未改，无需重编 aar。按用户规矩**未 push、未升版本号**（仍 84 / 1.1.32）。HANDOFF.md 已同步（第一节状态表/差异文件、第四节图标约定、第五节赣青二课、第六节新增「造测试素材 / 相册选图」、第七节把「回传要真机」划掉）。
+
+### 95.6 教训
+
+- **别手搓二维码**：QR 的码字分块、格式信息位序、finder 分隔带、reserved 区任何一处错都只是「解不出来」，不报编译错，排查成本极高。造测试素材一律用 zxing 现成 writer。
+- **改「提示文案」前先看是谁在改它**：`startPreview` 末尾无条件重置 hint，谁先写谁白写。这类「共享状态被后写覆盖」在 Android View 代码里很常见，写完要回头核对时序。
+- **`onPause` 释放的资源，`onResume` 必须补回来**：Camera1 + SurfaceView 在「被别的 Activity 盖一下」这种路径上不会重建 Surface，`surfaceCreated` 不回调，只补 `surfaceCreated` 就必然黑屏。
+- **`ACTION_GET_CONTENT` 返回的 uri 只用一次**（Photo Picker 的 `picker_get_content` 授权是一次性的），别缓存、别跨生命周期持有。
+- 图标一律「抄库 + 注释写来源」，既不违反用户「不要自己绘制」的要求，下次续做也能一眼看出该抄哪个。
+
+## 94. 第九十四轮（2026-11-16）：工作圈搜索范围从 10 条扩到 500 条 —— 搜索池（本地包，未 push）
+
+### 94.1 用户原话
+
+「工作圈搜索的范围太小了，只有十条，扩展到500条」
+
+### 94.2 问题定位
+
+`moments\MomentSearchScreen.kt` 的 `items` 参数直接吃 `MomentsFragment` 里动态流内存中的 `items`。动态流是 `MomentsApi.getTimeLine(fromFeedId)` 分页拉的，`PAGE_SIZE = 10`，只翻过一页时搜索范围就正好是 10 条。服务端**没有搜索接口**（`MomentsApi` 只有 timeline / feeds / like / comment / publish 这些），所以「搜全站」无从谈起，只能自己往前翻。
+
+### 94.3 改法
+
+`moments\MomentsFragment.kt`：
+- 常量 `SEARCH_POOL_LIMIT = 500`、`SEARCH_PAGE_SIZE = 50`（`PAGE_SIZE` 只有 10，翻 50 页太慢）。
+- 新状态 `searchPool` / `searchPoolLoading` / `searchPoolEnded` / `searchPoolFailed` / `searchPoolJob`。
+- 新函数 `ensureSearchPool()`：先把动态流已有的 `items` 塞进 `LinkedHashMap`（一进页面立刻可搜），再从 `cursor = null` 起按 50 条一页翻 `MomentsApi.getTimeLine(cursor, SEARCH_PAGE_SIZE)` + `getFeeds(ids)` + `UserInfoCache.resolve(...)`，**每拿到一页就刷新 `searchPool`**（边翻边可见，不必等 500 条全下完）。停止条件三条：① 攒够 500；② 服务端返回空页；③ 本页没带来任何新动态（防服务端不认 size 时死循环空转）。`CancellationException` 原样抛；`ApiException` / `Throwable` 记 `Diagnostics` 并置 `searchPoolFailed`；`finally` 复位 loading。幂等（在跑就返回；已到底且有内容就返回）。
+- `openSearch()` 末尾调 `ensureSearchPool()`；`MomentPage.SEARCH` 分支改成 `items = searchPool.ifEmpty { items }`，并传 `poolLoading` / `poolEnded` / `poolFailed` / `poolLimit` / `onRetryPool`。
+
+`moments\MomentSearchScreen.kt`：新增 5 个带默认值的参数；状态区加两行 —— loading 显示 `moments_search_loading`（已 X / 500），失败显示 `moments_search_pool_failed`（点它触发 `onRetryPool()`）。KDoc 同步改写（写明「搜的是本机手上的动态池 + 500 条上限的来由」）。
+
+`res\values\strings.xml` + `res\values-en\strings.xml`：`moments_search_scope` 改为「搜索范围：最近 %1$d 条动态」/「Searching the latest %1$d posts」；新增 `moments_search_loading`、`moments_search_loading_short`、`moments_search_pool_failed`。
+
+### 94.4 验证（emulator-5554）
+
+- 装包 → 启动 → 工作圈 Tab `tap 763 2460` → 右上搜索 `tap 1150 111`。
+- 进页面 2 秒即见「正在往前多翻一些动态…（已 300 / 500 条）」（说明服务端认 `size=50`，6 页到 300）→ 再等 4 秒该行消失（已满 500）。
+- 输入 `UU`（`adb shell input text` 只能敲 ASCII，中文得走输入法）→「共 4 条匹配」，命中 11月16日 15:08 / 14日 09:00 / 13日 11:50 等历史动态 —— 远超原来「最近 10 条」的范围。
+- 滚到结果底部：`搜索范围：最近 500 条动态` ✓
+- 截图：`scratch\m2.png`（载入中 300/500）、`m3.png`（载入完成）、`m4.png`（搜 UU 共 4 条）、`m7.png`（底部「最近 500 条」文案）。
+
+### 94.5 交付
+
+`BUILD SUCCESSFUL in 2m 7s`；APK **8,859,944 字节**，SHA256 `D2961DCD1F420827C54E45377DB65D3E0FCE8570A0FA5CEDB49CFCE01B16AAF6`，已复制到项目根 `lanhang-miuix-release.apk`。engine 未改，无需重编 aar。按用户规矩**未 push、未升版本号**（仍 84 / 1.1.32）。HANDOFF.md 已同步（第一节状态表、第五节工作圈、第七节已知限制）。
+
+### 94.6 教训
+
+- 「没有服务端支持」的功能，范围边界必须写在界面上（本轮加了「搜索范围：最近 N 条」），否则用户会以为搜的是全量。
+- 翻页循环必须加「本页无新增就停」的判据，否则服务端一旦忽略 `size` 参数就会无限空转。
+- `adb shell input text` 只吃 ASCII；验证中文关键词要么用输入法广播，要么挑正文里的英文词（本轮挑 `UU`）。
+
+## 93. 第九十三轮（2026-11-16）：赣青二课扫码唤不起的真根因 —— 全工程没申请过 CAMERA 运行时权限（本地包，未 push）
+
+### 93.1 用户原话
+
+> 更新一下文档，修一下bug，赣青二课的扫码功能依旧无法正常唤起，修复问题
+
+### 93.2 根因：CAMERA 只「声明」过，从没「申请」过
+
+- 清单里只有 `<uses-permission android:name="android.permission.CAMERA" />`；
+  `MainActivity` 只申请 `POST_NOTIFICATIONS`，`OaWebViewActivity.onPermissionRequest`
+  是**替网页**授予 `RESOURCE_VIDEO_CAPTURE`（WebChromeClient 回调，不会弹系统权限框）。
+- `ScanQrActivity.onCreate` 老逻辑：`checkSelfPermission(CAMERA)` 不通过 →
+  `setResult(RESULT_CANCELLED); finish()`；旁边那句注释「正常路径不会走到这里
+  （OaWebViewActivity 那边已经先申请过）」——这条假设从来没成立过。
+- 结果：用户在二课页点右上角扫码 → 网页 `CP2.showScanQr` → `LhScan.scan()` → Activity 秒退 →
+  回传 `{code:0}`，视觉上**就是点了毫无反应**。前几轮一直怀疑注入链路 / html5-qrcode / UA，方向全偏了。
+
+### 93.3 修法：主链路自己申请权限
+
+- `ui/OaWebViewActivity.kt`：新增 `REQUEST_SCAN_PERMISSION = 4004` 与 `pendingScanAfterPermission`；
+  `startScanForWeb()` 改为「有权限 → `launchScanPage()`；无权限 → `requestPermissions(CAMERA, 4004)`」，
+  `onRequestPermissionsResult` 接 4004：授予继续拉起扫码页，拒绝则 Toast 说明 +
+  `resolveScanCancelled()` 把 `{code:0}` 还给网页（Promise 不再悬着）。
+- `ui/ScanQrActivity.kt`：那道 `finish()` 兜底不再静默退出 —— `onCreate` 没权限就先
+  `requestPermissions`，`onRequestPermissionsResult` 授予后走 `buildUi()` 建界面，拒绝则 Toast 后退出。
+
+### 93.4 顺带加固注入：uni.scanCode + 幂等补丁 + 30 秒重试
+
+- `SCAN_BRIDGE_JS` 全量重写：`__lhScanHooked` 只装一次；`__lhScanPatch()` 用
+  `cp.showScanQr !== __lhShowScanQrImpl` 做幂等比对，页面晚到 / 换实例都会重新补上。
+- 同时接管 `window.uni.scanCode`（uni-app 的 scanCode 在 App 里是原生能力，网页版直接报错）：
+  成功回 `{result, scanType:'QR_CODE'}`，取消回 `{errMsg:'scanCode:fail cancel'}`，最后补 `complete`。
+- 补丁立即跑一次，并 250ms 轮询、最多 120 次（30 秒）后自停，覆盖 uni-app 单页路由
+  不重新触发 `onPageFinished` 的情况。
+
+### 93.5 验证（emulator-5554）
+
+- 先证「注入链路本来没坏」：有相机权限时点扫码，日志 `LhScan: intercept showScanQr` →
+  `ScanQrActivity` 正常出现，预览 / 四角取景框 / 手电筒都在。
+- 再**主动撤权复现用户场景**：`pm revoke ... android.permission.CAMERA` 后点扫码 →
+  `OaWebView: scan: 相机权限未授予，先申请` + 系统权限框弹出
+  （`GrantPermissionsActivity`）→ 点「仅在使用该应用时允许」→ 直接进扫码页。
+  修复前这一步**完全没有反应**。
+- 关闭扫码页回 WebView 无 JS 异常；再次点击仍能唤起（补丁可重复）；
+  正常加载日志有 `LhScan: showScanQr patched` / `uni.scanCode patched` /
+  `bridge installed CP2=object uni=object native=object`。
+
+### 93.6 交付与教训
+
+- `assembleRelease` 成功（1m45s），APK 8,842,100 字节，SHA256 `898480B9…2502CF`，
+  已放项目根 `lanhang-miuix-release.apk`；engine 未改，无需重编 aar。
+- 该模拟器的相机权限早先被人为授予过（`USER_SET`），所以「模拟器上能跑」并不代表用户能跑 ——
+  **权限缺口类 bug 必须在撤权状态下验**，这在第 77/78 轮已试过两轮仍误判，就是栽在这里。
+- 本轮同时刷新 `HANDOFF.md`（从第 81 轮 / 1.1.29 一次补到第 93 轮现状）。
+
+## 92. 第九十二轮（2026-11-16）：私信顶栏三点、长按菜单收紧、截图逐条点选、好友三态（本地包，未 push）
+
+### 92.1 用户原话
+
+> 第一，私信页面右上角加入三个点图标，点击后进入私信者的个人主页，群聊则不加入图标。
+> 第二，私信界面长按消息出现的气泡点击范围有限，可以将气泡稍微缩小一点，也调小按钮间的间距。
+> 第三，多选后的截图的灰色区域是未被选择的消息，亮色区域是已被选择的消息，如果点击灰色区域代表我要选择这条消息，
+> 如果再次点击说明我取消选中这条消息，现在的交互很奇怪。第四，截图界面不需要加入隐藏昵称按钮，去掉即可。
+> 第五，个人主页界面，已添加好友的按钮为灰色，未添加好友时「加好友」按钮应为蓝色，与发私信按钮保持一致，
+> 用户点击「加好友」后，如果对方暂时未同意，那应该修改按钮颜色为灰色（与已添加按钮颜色一致），文字改为「申请中」。
+
+### 92.2 第一条：单聊顶栏三点 → 对方主页（群聊不加）
+
+- `ui/miuix/LanhangIcons.kt` 新增 `More`：横排三个实心圆（`path(fill=...)` + `circle()`，不用零长 stroke）。
+- `ui/shell/ShellState.kt` / `ShellBars.kt`：顶栏动作增加 `actionContentDescription`，
+  留空时回落到「搜索」，别让读屏把「查看个人主页」念成搜索。
+- `ui/MainActivity.kt`：`showToolbarSub` 增加 `actionIcon` / `actionContentDescription` 参数
+  （原来只有二级页文字动作，图标动作只有主 Tab 有），logout 时补 `FriendStore.clear()`。
+- `mine/MineFragment.kt` 的 `syncToolbar()`：`IM_CHAT` 且 `!ImRepository.isGroup(peer)` 时
+  挂 `LanhangIcons.More`，点击 `openOtherProfile(peer)`；群聊维持原样无图标。
+
+### 92.3 第二条：长按气泡菜单收紧
+
+- `BubbleActionMenu` 去掉 `fillMaxWidth + SpaceEvenly`（全宽铺开、按钮之间全是死区），
+  改 `wrapContentWidth + spacedBy(2.dp)`，圆角 18→14dp；
+  卡片本身挂一个空 `clickable` 吃掉空白处的点按，否则会穿透到遮罩把菜单关掉。
+- `MenuActionItem`：padding 22/12 → 12/8dp，`widthIn(min=56.dp)` / `heightIn(min=52.dp)`
+  保证点击热区，图标 22→20dp；浮层弹出位置按新高度改 108→66dp。
+- 实测菜单宽度从全屏缩到约 1/3 屏，按钮挨在一起，无大块空白。
+
+### 92.4 第三、四条：截图模式改为逐条点选，去掉隐藏昵称
+
+- `im/ImScreens.kt`：`shotStart`/`shotEnd`/`shotRange()`/`pickShotRange()` 全部删除，
+  换成 `shotSelected: Set<String>`（**用消息 key 不用下标**，截图期间来新消息不会错位）。
+  `toggleShot(key)`：点灰条加入、再点亮条取消；`exitShotMode` 清空；
+  `generateShot` 用 `messages.filter { it.key in shotSelected }` 按原顺序渲染。
+- 从多选进截图时把 `selectedKeys` 直接带进 `shotSelected`，原来勾过的保持亮色。
+- 顶栏提示改成 `im_shot_hint` 带 `%1$d` 已选条数；「清空选择」清集合；
+  底栏只剩「预览 / 完成」，**移除隐藏昵称按钮**及 `hideNames` 状态、中英文字符串。
+- 实测：选中数 1 → 点另一条变 2 → 再点变 1，灰/亮遮罩同步变化。
+
+### 92.5 第五条：加好友三态
+
+- `im/FriendStore.kt`：原来只有一个 `added_uids` 集合（发过申请就当已添加，这是第九十一轮的误判），
+  拆成 `added_uids` + `pending_uids` 两个集合和 `State.NONE/PENDING/ADDED`；
+  `markAdded` 会同时把 uid 从 pending 摘掉；`clear` 一起清。
+- `mine/UserProfilePage.kt` 的 `AddFriendChip`：以 `FriendStore.state(uid)` 初始化；
+  进页面用 `/friends/request_list` 校准（state 2/3 → ADDED，0/1 → PENDING，**只升级不降级**，
+  避免刚发出的申请因服务端列表未同步被弹回可点）；
+  `inviteFriend` 成功 → `markPending` + 灰「申请中」；服务端回 ALREADY → `markAdded` + 灰「已添加」；
+  失败才 Toast 报错。未添加态 `primary = true`（和「发私信」同蓝）。
+- 中英文 strings 补 `profile_friend_pending` / `im_chat_more`。
+
+### 92.6 验证与交付
+
+- `assembleRelease` 成功（2m9s），实机（emulator-5554）逐项验证：
+  单聊三点可见并跳「王俊轩 的个人主页」；群聊 2601063 顶栏无图标；
+  菜单缩到约 1/3 屏；截图 1→2→1 点选切换、底栏无隐藏昵称；
+  张敏佳主页「加好友」蓝色 → 点击后「申请中」灰色 → 已添加的王俊轩仍是灰色「已添加」。
+  测试产生的那条真实好友申请随后已在「新的朋友」里删除。
+- `lanhang-miuix-release.apk` SHA256 `8931fdde…fa916`，aapt2 确认 **versionCode 84 / versionName 1.1.32**，
+  v2 签名校验通过。按用户规矩**未 push、未升版本号**，`push/repo` 未动；本地台账备份 `scratch/bak92/`。
+- 自检脚本 `scripts/check_dex.py` 对 R8 混淆后的类会假阴性（`FriendStore` 被内联），
+  改用 dex 字符串常量 `lanhang_friend_state` / `added_uids` / `pending_uids` / `Lanhang.More` 复核通过。
+
 ## 91. 第九十一轮（2026-11-15）：加好友按钮、工作圈缩略图、二课白屏通用修复（发版 1.1.32）
 
 ### 91.1 用户原话

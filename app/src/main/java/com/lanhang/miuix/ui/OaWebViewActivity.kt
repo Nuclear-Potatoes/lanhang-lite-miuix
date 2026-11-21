@@ -121,6 +121,15 @@ class OaWebViewActivity : AppCompatActivity() {
         private const val REQUEST_MEDIA_PERMISSION = 4002
 
         /**
+         * 第九十三轮：网页调 LhScan.scan 起原生扫码前，向系统申请 CAMERA 运行时权限的请求码。
+         *
+         * 以前这里是空的 —— 全工程没有任何一处申请过 CAMERA（清单里只有声明），
+         * [ScanQrActivity] 又假设「上游已经申请过」，拿不到权限就立刻 finish，
+         * 于是网页收到 code=0、用户看到的就是「点扫码毫无反应」。
+         */
+        private const val REQUEST_SCAN_PERMISSION = 4004
+
+        /**
          * 打开一个 OA 应用页。
          *
          * 2026-10-27 第十八轮：加了 [preflightUrl] / [appId]。给了它们，本页会**先出界面**
@@ -155,6 +164,19 @@ class OaWebViewActivity : AppCompatActivity() {
 
     /** 预检没做完时为 null：这段时间页面显示加载态，而不是一片白 */
     private var resolvedUrl by mutableStateOf<String?>(null)
+
+    /**
+     * 第九十六轮：预检时**现取**到的短期 token（工作应用的 appToken / 门户的 ldapToken）。
+     *
+     * 偶发鉴权失败的根因就在这里：`prepareFor()` 明明现取了新鲜 token，但旧代码只取了
+     * [resolvedUrl]，token 被丢掉，[createWebView] 只能回落到 `Session.ldapToken` ——
+     * 那个 JWT 约 2 小时过期且登录后不刷新，过期后网关回 `code=4000 客户端身份鉴权失败`。
+     * 刚登录/刚刷新课表时它还是新的，所以表现为「偶发」。这里把现取 token 留住并交给 WebView。
+     */
+    private var resolvedToken: String? = null
+
+    /** 同上：预检在落地域名下拿到的会话 Cookie，一并交给 WebView */
+    private var resolvedCookie: String? = null
 
     /** 主框架加载失败 / 渲染成白板：露出「重试 / 用浏览器打开」的出路 */
     private var pageTrouble by mutableStateOf(false)
@@ -231,12 +253,41 @@ class OaWebViewActivity : AppCompatActivity() {
         val preflightUrl = intent.getStringExtra(EXTRA_PREFLIGHT_URL)
         val appId = intent.getStringExtra(EXTRA_APP_ID)
         if (preflightUrl.isNullOrBlank()) {
-            resolvedUrl = url
+            // 第九十六轮：不预检落地地址时，token 也照样现取一次。
+            // 改密码 / 改手机号 / 校园网账号页都走这条：以前只靠缓存的 Session.ldapToken，
+            // 过期后就是「身份鉴权失败」。AccountSecurityScreen 虽已现取，但校园网账号页
+            // （CampusNetScreen）只传了 appId 却没现取，这里统一兜住。
+            if (!appId.isNullOrBlank()) {
+                // 有 appId：等现取 token 完成再落地 url —— createWebView 是在 url 落地时
+                // 才建 WebView 并读 headers 的，token 必须在此之前就位（赋值顺序不能反）。
+                uiScope.launch {
+                    val fresh = withContext(Dispatchers.IO) {
+                        runCatching { com.lanhang.miuix.net.RceApi.getAppToken(appId) }.getOrNull()
+                    }
+                    resolvedToken = fresh?.takeIf { it.isNotBlank() }
+                    android.util.Log.i(
+                        "OaWebView", "无预检现取token appId=$appId 成功=" + (resolvedToken != null),
+                    )
+                    resolvedUrl = url
+                }
+            } else {
+                resolvedUrl = url
+            }
         } else {
             uiScope.launch {
                 val launch = withContext(Dispatchers.IO) {
                     runCatching { WorkRepository.prepareFor(preflightUrl, appId) }.getOrNull()
                 }
+                // 第九十六轮：把预检现取的 token / 落地 Cookie 留住。旧代码只取 url，
+                // token 丢失 → WebView 回落过期的 ldapToken → 偶发「客户端身份鉴权失败」。
+                resolvedToken = launch?.token?.takeIf { it.isNotBlank() }
+                resolvedCookie = launch?.cookie?.takeIf { it.isNotBlank() }
+                android.util.Log.i(
+                    "OaWebView",
+                    "预检完成 appId=$appId 现取token=" + (resolvedToken != null) +
+                        " 落地Cookie=" + (resolvedCookie != null) +
+                        " url=" + hideQuery(launch?.url ?: preflightUrl),
+                )
                 resolvedUrl = launch?.url?.takeIf { it.isNotBlank() } ?: preflightUrl
             }
             // 白板看门狗：12s 内正文一直是空的，就不再假装「还在加载」，把出路摆出来
@@ -399,21 +450,82 @@ IconButton(onClick = { finishNow() }) {
      * 第七十七轮：接管二课网页的扫码入口。
      * 站点自己的 window.CP2.showScanQr 是个空壳（Promise 永不 resolve），
      * 这里换成「调 LhScan.scan() 起原生相机，扫到后 resolve 出 code=1 与 data.qrCode」。
-     * 只在页面里跑一次（__lhScanPatched 守卫），失败也不影响其它功能。
+     *
+     * 第九十三轮加固（用户：「扫码依旧无法正常唤起」）：
+     *  1. 原来只在 CP2 已存在时打一次补丁，`CP2 not ready` 就直接放弃，没有重试。
+     *     二课是 uni-app 单页应用，CP2 / uni 可能首屏之后才挂上 window，后续路由跳转
+     *     也不会再触发 onPageFinished —— 所以改成「补丁函数 + 250ms 轮询补挂（30 秒后停）」。
+     *  2. 顺带把 `uni.scanCode` 也挂到同一实现，覆盖站点可能走的另一条调用路径。
+     *  3. 补丁幂等：每次都比对函数引用，站点把 showScanQr 换回自己的 stub 也会被再次接管。
      */
     private val SCAN_BRIDGE_JS = """
         (function () {
-            if (window.__lhScanPatched) return;
-            if (!window.CP2) { console.log('LhScan: CP2 not ready'); return; }
-            window.__lhScanPatched = true;
-            window.CP2.showScanQr = function () {
-                console.log('LhScan: intercept showScanQr');
+            if (window.__lhScanHooked) {
+                try { window.__lhScanPatch && window.__lhScanPatch(); } catch (e) { }
+                return;
+            }
+            window.__lhScanHooked = true;
+
+            function callNative() {
                 return new Promise(function (resolve) {
                     window.__lhScanResolve = resolve;
-                    try { LhScan.scan(); } catch (e) { console.log('LhScan: call failed ' + e); }
+                    try {
+                        LhScan.scan();
+                    } catch (e) {
+                        console.log('LhScan: call failed ' + e);
+                        resolve({ code: 0 });
+                    }
                 });
+            }
+
+            window.__lhScanPatch = function () {
+                try {
+                    var cp = window.CP2;
+                    if (cp && cp.showScanQr !== window.__lhShowScanQrImpl) {
+                        window.__lhShowScanQrImpl = function () {
+                            console.log('LhScan: intercept showScanQr');
+                            return callNative();
+                        };
+                        cp.showScanQr = window.__lhShowScanQrImpl;
+                        console.log('LhScan: showScanQr patched');
+                    }
+                } catch (e) {
+                    console.log('LhScan: patch CP2 failed ' + e);
+                }
+                try {
+                    if (window.uni && typeof window.uni.scanCode === 'function' &&
+                        window.uni.scanCode !== window.__lhUniScanCode) {
+                        window.__lhUniScanCode = function (opts) {
+                            opts = opts || {};
+                            callNative().then(function (r) {
+                                try {
+                                    if (r && r.code === 1 && r.data && r.data.qrCode) {
+                                        if (opts.success) opts.success({ result: r.data.qrCode, scanType: 'QR_CODE' });
+                                    } else {
+                                        if (opts.fail) opts.fail({ errMsg: 'scanCode:fail cancel' });
+                                    }
+                                    if (opts.complete) opts.complete({});
+                                } catch (e2) { }
+                            });
+                        };
+                        window.uni.scanCode = window.__lhUniScanCode;
+                        console.log('LhScan: uni.scanCode patched');
+                    }
+                } catch (e) {
+                    console.log('LhScan: patch uni failed ' + e);
+                }
             };
-            console.log('LhScan: bridge ready');
+
+            window.__lhScanPatch();
+            console.log('LhScan: bridge installed CP2=' + (typeof window.CP2) +
+                ' uni=' + (typeof window.uni) + ' native=' + (typeof window.LhScan));
+            // 站点是 uni-app 单页应用：CP2 / uni 可能首屏之后才挂上 window，
+            // 后续路由跳转也不会再触发 onPageFinished，所以自己轮询补挂（30 秒后停）。
+            var tries = 0;
+            var timer = setInterval(function () {
+                try { window.__lhScanPatch(); } catch (e) { }
+                if (++tries > 120) clearInterval(timer);
+            }, 250);
         })()
     """.trimIndent()
     /**
@@ -815,14 +927,59 @@ IconButton(onClick = { finishNow() }) {
         com.lanhang.miuix.ui.miuix.showRechargeQr(this, link)
     }
 
+    /** 相机权限申请回来之后，是否要继续起扫码页（第九十三轮） */
+    private var pendingScanAfterPermission = false
+
     /**
      * 第七十七轮：网页里的 LhScan.scan 落到这里，起原生扫码页。
      * 必须在主线程开 Activity，JavascriptInterface 的回调线程不是主线程。
+     *
+     * 第九十三轮修正：**先要运行时权限**。之前这里直接 startActivityForResult，
+     * 而 CAMERA 只有清单声明、从来没有运行时申请；[ScanQrActivity] 拿不到权限就
+     * 立刻 finish 并把 code=0 回给网页，用户看到的就是「点了没反应」。
      */
     fun startScanForWeb() {
         runOnUiThread {
-            runCatching { startActivityForResult(ScanQrActivity.intent(this), REQUEST_SCAN_FOR_WEB) }
-                .onFailure { android.util.Log.w("OaWebView", "scan activity failed", it) }
+            if (checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
+                launchScanPage()
+                return@runOnUiThread
+            }
+            android.util.Log.i("OaWebView", "scan: 相机权限未授予，先申请")
+            pendingScanAfterPermission = true
+            runCatching {
+                requestPermissions(arrayOf(Manifest.permission.CAMERA), REQUEST_SCAN_PERMISSION)
+            }.onFailure {
+                android.util.Log.w("OaWebView", "scan: 权限申请发起失败", it)
+                pendingScanAfterPermission = false
+                toast("无法申请相机权限，请在系统设置里允许「蓝航」使用相机")
+                resolveScanCancelled()
+            }
+        }
+    }
+
+    /** 起原生扫码页；起不来就把「取消」回给网页，不能让它一直挂着。 */
+    private fun launchScanPage() {
+        runCatching { startActivityForResult(ScanQrActivity.intent(this), REQUEST_SCAN_FOR_WEB) }
+            .onFailure {
+                android.util.Log.w("OaWebView", "scan activity failed", it)
+                toast("扫码页启动失败：" + (it.message ?: it.javaClass.simpleName))
+                resolveScanCancelled()
+            }
+    }
+
+    /** 把「用户取消 / 没扫到」回给网页那个挂起的 Promise。 */
+    private fun resolveScanCancelled() {
+        val web = scanHostWebView ?: return
+        runOnUiThread {
+            runCatching {
+                web.evaluateJavascript("window.__lhScanResolve && window.__lhScanResolve({code:0});", null)
+            }
+        }
+    }
+
+    private fun toast(message: String) {
+        runCatching {
+            android.widget.Toast.makeText(this, message, android.widget.Toast.LENGTH_LONG).show()
         }
     }
 
@@ -889,6 +1046,21 @@ IconButton(onClick = { finishNow() }) {
         grantResults: IntArray,
     ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        // 第九十三轮：网页扫码入口专用的相机权限回执
+        if (requestCode == REQUEST_SCAN_PERMISSION) {
+            if (!pendingScanAfterPermission) return
+            pendingScanAfterPermission = false
+            val granted = grantResults.isNotEmpty() &&
+                grantResults.all { it == PackageManager.PERMISSION_GRANTED }
+            android.util.Log.i("OaWebView", "scan: 相机权限结果 granted=" + granted)
+            if (granted) {
+                launchScanPage()
+            } else {
+                toast("需要相机权限才能扫码，请在系统设置里允许「蓝航」使用相机")
+                resolveScanCancelled()
+            }
+            return
+        }
         if (requestCode != REQUEST_MEDIA_PERMISSION) return
         val request = pendingMediaRequest ?: return
         pendingMediaRequest = null
@@ -1031,11 +1203,13 @@ IconButton(onClick = { finishNow() }) {
             }
         }
         // 工作模块预检时拿到的 Cookie：只给校内域名，同样逐条写
+        // 第九十六轮：优先用预检协程里留住的落地 Cookie（现取），其次才是启动时 intent 带的旧快照。
         if (campusHost) {
-            intent.getStringExtra(EXTRA_COOKIE)?.takeIf { it.isNotBlank() }?.let { value ->
-                setCookies(cm, "http://$host", value)
-                setCookies(cm, "https://$host", value)
-            }
+            (resolvedCookie ?: intent.getStringExtra(EXTRA_COOKIE))
+                ?.takeIf { it.isNotBlank() }?.let { value ->
+                    setCookies(cm, "http://$host", value)
+                    setCookies(cm, "https://$host", value)
+                }
         }
         cm.flush()
 
@@ -1051,9 +1225,21 @@ IconButton(onClick = { finishNow() }) {
         // 图书馆这类外部站点，会被当成非法客户端（空白的另一半原因）。
         headers = HashMap<String, String>().apply {
             if (campusHost) {
-                intent.getStringExtra(EXTRA_APP_TOKEN)?.takeIf { it.isNotEmpty() }
-                    ?.let { put("Token", it) }
-                    ?: run { Session.ldapToken.takeIf { it.isNotEmpty() }?.let { put("Token", it) } }
+                // 第九十六轮：优先级 预检现取token > intent 带的token > 缓存 ldapToken。
+                // 缓存那个约 2 小时过期且不自动刷新，是「偶发身份鉴权失败」的元凶。
+                val freshToken = resolvedToken
+                    ?: intent.getStringExtra(EXTRA_APP_TOKEN)?.takeIf { it.isNotEmpty() }
+                    ?: Session.ldapToken.takeIf { it.isNotEmpty() }
+                freshToken?.let { put("Token", it) }
+                android.util.Log.i(
+                    "OaWebView",
+                    "Token 来源=" + when {
+                        resolvedToken != null -> "预检现取"
+                        !intent.getStringExtra(EXTRA_APP_TOKEN).isNullOrBlank() -> "intent传入"
+                        !Session.ldapToken.isNullOrBlank() -> "缓存ldap(可能过期)"
+                        else -> "无"
+                    },
+                )
                 put("Version", Session.appVersion)
                 put("DeviceID", Session.deviceId(this@OaWebViewActivity))
                 put("NetType", netType)

@@ -78,6 +78,7 @@ private data class TopBarSpec(
     val hasHome: Boolean,
     val actionText: String?,
     val actionIcon: androidx.compose.ui.graphics.vector.ImageVector?,
+    val actionContentDescription: String?,
 )
 
 /** 大标题栏高度（含副标题与上下留白） */
@@ -142,6 +143,7 @@ fun LanhangTopBar(state: ShellState, large: Boolean) {
         hasHome = state.homeAction != null,
         actionText = state.actionText,
         actionIcon = state.actionIcon,
+        actionContentDescription = state.actionContentDescription,
     )
     // 目标：0 = 大标题形态，1 = 紧凑形态
     val target = if (large) 0f else 1f
@@ -347,7 +349,8 @@ private fun TopBar(
                     IconButton(onClick = onAction) {
                         Icon(
                             imageVector = icon,
-                            contentDescription = stringResource(R.string.common_search),
+                            contentDescription = spec.actionContentDescription
+                                ?: stringResource(R.string.common_search),
                             tint = MiuixTheme.colorScheme.onBackground,
                         )
                     }

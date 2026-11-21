@@ -31,6 +31,7 @@ import com.lanhang.miuix.moments.CommentEntry
 import com.lanhang.miuix.moments.MomentItem
 import com.lanhang.miuix.moments.MomentsScreen
 import com.lanhang.miuix.moments.UserInfoCache
+import com.lanhang.miuix.net.FriendRequest
 import com.lanhang.miuix.net.RceApi
 import com.lanhang.miuix.net.StaffInfo
 import com.lanhang.miuix.net.cleanOrgName
@@ -183,8 +184,8 @@ fun ProfileHeader(
                     )
                     ProfileInfoRow(stringResource(R.string.profile_label_phone), mobile)
                 }
-                // 第九十一轮：他人主页在「发私信」旁加「加好友」；已经是好友 / 发过申请时
-                // 按钮变灰不可点（CardActionChip 自带 enabled 的灰态）。
+                // 第九十二轮：他人主页「发私信」旁的加好友按钮三态 ——
+                // 蓝色「加好友」/ 灰色「申请中」/ 灰色「已添加」（后两者都不可点）。
                 if (!isSelf) {
                     Spacer(Modifier.padding(top = 6.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -212,41 +213,61 @@ fun ProfileHeader(
 }
 
 /**
- * 第九十一轮：他人主页的「加好友」按钮。
+ * 第九十二轮：他人主页「加好友 / 申请中 / 已添加」三态按钮。
  *
- * 学校私有云只给 `POST /friends/invite`（`RceApi.inviteFriend`），**没有好友列表查询接口**。
- * 所以「已添加」用两层判定：① 本地台账 [FriendStore]（发过申请或服务端回
- * `FRIEND_ALREADY_CREATED` 就记一笔）；② 进页面时拿 `/friends/request_list` 校准一次 ——
- * 该列表也含「我发出的申请 / 已互为好友」（state 1/2/3），能覆盖以前用官方客户端加过的人。
- * 网络不通时以本地台账为准，按钮照样可用。
+ * - 未添加：蓝色（[CardActionChip] 的 primary，与旁边「发私信」同色）；
+ * - 申请已发出、对方还没同意：灰色「申请中」；
+ * - 互为好友 / 服务端回 `FRIEND_ALREADY_CREATED`：灰色「已添加」。
+ *
+ * 学校私有云没有好友列表查询接口，用本地台账 [FriendStore] 记状态，进页面时再拿
+ * `/friends/request_list` 校准：state 2/3 = 已同意 → ADDED，state 0/1 = 待处理 → PENDING。
+ * 只做「升级」不做降级，避免申请刚发出、服务端列表还没同步时把按钮弹回可点状态。
  */
 @Composable
 private fun AddFriendChip(uid: String) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    var added by remember(uid) { mutableStateOf(FriendStore.isAdded(uid)) }
+    var status by remember(uid) { mutableStateOf(FriendStore.state(uid)) }
     var busy by remember(uid) { mutableStateOf(false) }
 
     LaunchedEffect(uid) {
-        if (added || uid.isBlank()) return@LaunchedEffect
-        val known = withContext(Dispatchers.IO) {
+        if (uid.isBlank()) return@LaunchedEffect
+        val related = withContext(Dispatchers.IO) {
             runCatching { RceApi.friendRequests(0L).data }
                 .getOrDefault(emptyList())
-                .any { it.uid == uid && it.state in 1..3 }
+                .filter { it.uid == uid }
         }
-        if (known) {
-            FriendStore.markAdded(uid)
-            added = true
+        val accepted = related.any {
+            it.state == FriendRequest.STATE_ACCEPT || it.state == FriendRequest.STATE_ACCEPTED
+        }
+        val pending = related.any {
+            it.state == FriendRequest.STATE_INVITE || it.state == FriendRequest.STATE_INVITED
+        }
+        when {
+            accepted -> {
+                FriendStore.markAdded(uid)
+                status = FriendStore.State.ADDED
+            }
+            pending && status != FriendStore.State.ADDED -> {
+                FriendStore.markPending(uid)
+                status = FriendStore.State.PENDING
+            }
         }
     }
 
+    val canAdd = status == FriendStore.State.NONE
     CardActionChip(
         text = stringResource(
-            if (added) R.string.profile_friend_added else R.string.profile_add_friend
+            when (status) {
+                FriendStore.State.ADDED -> R.string.profile_friend_added
+                FriendStore.State.PENDING -> R.string.profile_friend_pending
+                FriendStore.State.NONE -> R.string.profile_add_friend
+            }
         ),
-        enabled = !added && !busy,
+        enabled = canAdd && !busy,
+        primary = canAdd,
         onClick = {
-            if (added || busy || uid.isBlank()) return@CardActionChip
+            if (!canAdd || busy || uid.isBlank()) return@CardActionChip
             busy = true
             scope.launch {
                 val greeting = context.getString(
@@ -260,14 +281,23 @@ private fun AddFriendChip(uid: String) {
                     it.contains("ALREADY", true) || it.contains("已添加", true) ||
                         it.contains("已是好友", true)
                 } ?: false
-                if (result.isSuccess || already) {
-                    FriendStore.markAdded(uid)
-                    added = true
-                    Toast.makeText(
-                        context, context.getString(R.string.friend_invite_sent), Toast.LENGTH_SHORT,
-                    ).show()
-                } else {
-                    Toast.makeText(
+                when {
+                    already -> {
+                        FriendStore.markAdded(uid)
+                        status = FriendStore.State.ADDED
+                        Toast.makeText(
+                            context, context.getString(R.string.profile_friend_added), Toast.LENGTH_SHORT,
+                        ).show()
+                    }
+                    result.isSuccess -> {
+                        // 第九十二轮关键修正：发出申请 ≠ 已添加，对方没同意前显示「申请中」
+                        FriendStore.markPending(uid)
+                        status = FriendStore.State.PENDING
+                        Toast.makeText(
+                            context, context.getString(R.string.friend_invite_sent), Toast.LENGTH_SHORT,
+                        ).show()
+                    }
+                    else -> Toast.makeText(
                         context,
                         context.getString(
                             R.string.friend_invite_failed, failure?.message.orEmpty(),

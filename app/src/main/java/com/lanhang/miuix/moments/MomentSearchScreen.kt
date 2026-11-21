@@ -49,8 +49,14 @@ import java.util.Locale
 /**
  * 工作圈搜索页（第三十一轮新增，第三十二轮按用户要求改成**整条动态**）。
  *
- * 只搜索**已经加载到本机的动态**：工作圈是分页接口，服务端没有提供搜索能力，
- * 所以这里不做「搜全站」的假承诺 —— 界面上直接写清楚范围，用户继续下滑加载后再搜即可。
+ * 搜的是「本机手上的动态池」：服务端没有搜索接口，所以不做「搜全站」的假承诺 ——
+ * 界面上直接写清楚范围（最近多少条）。
+ *
+ * 第九十四轮：用户反馈「范围太小，只有十条，扩展到 500 条」。
+ * 原来这里吃的是动态流内存里的 `items`，只翻过一页时就只有 10 条可搜。
+ * 现在由宿主（[com.lanhang.miuix.moments.MomentsFragment]）在进页面时另起一个
+ * **搜索池**，按页往前翻到 500 条为止；池子边翻边可见，本页只负责显示
+ * 「已载入多少 / 还在载入 / 载入失败可重试」。
  *
  * 匹配规则与「工作圈过滤」共用 [MomentTextMatcher]：全角转半角、忽略宽窄写、
  * 多个词用空格分隔表示**同时包含**（AND 收窄）。命中片段铺一层主题色底。
@@ -66,6 +72,15 @@ fun MomentSearchScreen(
     onQueryChange: (String) -> Unit,
     onOpenProfile: (String) -> Unit,
     modifier: Modifier = Modifier,
+    /** 搜索池还在往后翻（第九十四轮）：界面要说清楚「范围还在变大」 */
+    poolLoading: Boolean = false,
+    /** 搜索池已经翻到底（没有更多可搜的动态了） */
+    poolEnded: Boolean = true,
+    /** 搜索池补充失败（可点状态行重试） */
+    poolFailed: Boolean = false,
+    /** 搜索池上限，仅用于文案（0 = 不显示上限） */
+    poolLimit: Int = 0,
+    onRetryPool: () -> Unit = {},
     onOpenPost: (MomentItem) -> Unit = {},
     onImage: (List<String>, List<String>, Int, Rect?) -> Unit = { _, _, _, _ -> },
     listState: LazyListState = rememberLazyListState(),
@@ -102,6 +117,29 @@ fun MomentSearchScreen(
             color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
             modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
         )
+        // 搜索池状态（第九十四轮）：池子还在往后翻 / 翻失败了，都必须明说
+        if (poolLoading) {
+            Text(
+                text = if (poolLimit > 0) {
+                    stringResource(R.string.moments_search_loading, items.size, poolLimit)
+                } else {
+                    stringResource(R.string.moments_search_loading_short, items.size)
+                },
+                style = MiuixTheme.textStyles.footnote2,
+                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                modifier = Modifier.padding(horizontal = 16.dp).padding(bottom = 4.dp),
+            )
+        } else if (poolFailed) {
+            Text(
+                text = stringResource(R.string.moments_search_pool_failed),
+                style = MiuixTheme.textStyles.footnote2,
+                color = accent,
+                modifier = Modifier
+                    .padding(horizontal = 16.dp)
+                    .padding(bottom = 4.dp)
+                    .clickable { onRetryPool() },
+            )
+        }
         LazyColumn(
             state = listState,
             contentPadding = PaddingValues(top = 4.dp, bottom = 16.dp),

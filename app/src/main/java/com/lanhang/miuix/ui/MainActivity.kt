@@ -610,6 +610,7 @@ class MainActivity : AppCompatActivity() {
         shell.homeAction = null
         shell.actionText = null
         shell.actionIcon = actionIcon
+        shell.actionContentDescription = null
         shell.onAction = if (actionIcon == null) null else onAction
     }
 
@@ -628,13 +629,17 @@ class MainActivity : AppCompatActivity() {
         actionText: String? = null,
         onAction: (() -> Unit)? = null,
         onHome: (() -> Unit)? = null,
+        /** 第九十二轮：聊天页右上角三点（进对方主页）；与 actionText 互斥，群聊传 null */
+        actionIcon: androidx.compose.ui.graphics.vector.ImageVector? = null,
+        actionContentDescription: String? = null,
     ) {
         shell.title = title
         shell.backAction = onBack
         shell.homeAction = onHome
         shell.actionText = actionText
-        shell.actionIcon = null
-        shell.onAction = if (actionText == null) null else onAction
+        shell.actionIcon = actionIcon
+        shell.actionContentDescription = actionContentDescription
+        shell.onAction = if (actionText == null && actionIcon == null) null else onAction
     }
 
     /** 设置页「课表工具 → 调试」入口：手动握手并拉一次课表原始数据 */
@@ -699,6 +704,8 @@ class MainActivity : AppCompatActivity() {
         Session.clear()
         com.lanhang.miuix.net.ApiClient.clearCookies()
         com.lanhang.miuix.net.MomentsApi.logout()
+        // 第九十二轮：好友申请台账也按账号隔离，换账号不能带着上一个人的「申请中/已添加」
+        com.lanhang.miuix.im.FriendStore.clear()
         cacheDir.deleteRecursively()
         com.lanhang.miuix.widget.ScheduleWidgetUpdater.updateAll(applicationContext)
         startActivity(android.content.Intent(this, LoginActivity::class.java))
